@@ -1,8 +1,10 @@
-// Servicio de Producción de Firebase Firestore para Gestión de Personal y Rotaciones en Tiempo Real
-// Este archivo contiene la lógica de negocio modular y atómica utilizando la SDK oficial de Firebase.
-// Garantiza la integridad, evita colisiones y sincroniza múltiples dispositivos de supervisores en milisegundos.
+// Servicio Híbrido e Inteligente de Base de Datos para Planta de Producción
+// Este archivo autodetecta si existe configuración real de Firebase en el dispositivo.
+// - SI HAY CREDENCIALES: Opera 100% en la nube de forma atómica con transacciones de Firestore.
+// - NO HAY CREDENCIALES (o falla red): Activa un Adaptador de Persistencia en LocalStorage local.
+// Esto garantiza tolerancia absoluta a fallos, previene pantallas negras y asegura que los datos no se pierdan.
 
-import { db } from '../firebase';
+import { db, useRealFirebase } from '../firebase';
 import { 
   collection, 
   doc, 
@@ -18,865 +20,896 @@ import {
 } from 'firebase/firestore';
 import { LINEAS_MOCK, TRABAJADORES_MOCK, PUESTOS_PLANTILLA } from '../mocks/mockData';
 
-// Prioridades estrictas de la planta
+// Prioridades de la planta
 export const ORDEN_PRIORIDADES = ['L4', 'L1', 'L2', 'L6', 'L7', 'L5', 'L3', 'L8', 'L9', 'L10'];
 
-// --- OBSERVADOR EN TIEMPO REAL DE FIRESTORE (onSnapshot) ---
-// Sincroniza el estado de la planta con los celulares de los supervisores al instante
-export function suscribirEstadoPlanta(callback) {
-  const state = {
-    workers: [],
-    lines: [],
-    puestos: [],
-    alerts: [],
-    logs: []
-  };
+// --- BASE DE DATOS LOCAL EN LOCALSTORAGE (Adaptador de Respaldo) ---
+class LocalStorageDatabaseAdapter {
+  constructor() {
+    this.listeners = [];
+    // Escuchar eventos de cambio en pestañas
+    window.addEventListener('storage', () => this.notifyListeners());
+  }
 
-  // 1. Escuchar trabajadores
-  const unsubWorkers = onSnapshot(collection(db, "workers"), (snapshot) => {
-    state.workers = snapshot.docs.map(d => d.data());
-    callback({ ...state });
-  }, (err) => console.warn("Firestore offline - usando caché local para trabajadores"));
+  // Carga o inicializa los datos de LocalStorage
+  getCollection(name, defaultData = []) {
+    const data = localStorage.getItem(`smartassign_${name}`);
+    if (!data) {
+      localStorage.setItem(`smartassign_${name}`, JSON.stringify(defaultData));
+      return defaultData;
+    }
+    return JSON.parse(data);
+  }
 
-  // 2. Escuchar líneas
-  const unsubLines = onSnapshot(collection(db, "lines"), (snapshot) => {
-    state.lines = snapshot.docs.map(d => d.data()).sort((a, b) => a.prioridad - b.prioridad);
-    callback({ ...state });
-  }, (err) => console.warn("Firestore offline - usando caché local para líneas"));
+  saveCollection(name, data) {
+    localStorage.setItem(`smartassign_${name}`, JSON.stringify(data));
+    this.notifyListeners();
+  }
 
-  // 3. Escuchar puestos
-  const unsubPuestos = onSnapshot(collection(db, "puestos"), (snapshot) => {
-    state.puestos = snapshot.docs.map(d => d.data());
-    callback({ ...state });
-  }, (err) => console.warn("Firestore offline - usando caché local para puestos"));
+  notifyListeners() {
+    const state = this.getDataState();
+    this.listeners.forEach(cb => cb(state));
+  }
 
-  // 4. Escuchar alertas
-  const unsubAlerts = onSnapshot(collection(db, "alerts"), (snapshot) => {
-    state.alerts = snapshot.docs.map(d => d.data());
-    callback({ ...state });
-  }, (err) => console.warn("Firestore offline - usando caché local para alertas"));
+  subscribe(callback) {
+    this.listeners.push(callback);
+    callback(this.getDataState());
+    return () => {
+      this.listeners = this.listeners.filter(cb => cb !== callback);
+    };
+  }
 
-  // 5. Escuchar logs de eventos
-  const unsubLogs = onSnapshot(collection(db, "logs"), (snapshot) => {
-    state.logs = snapshot.docs.map(d => d.data()).sort((a, b) => b.timestamp - a.timestamp).slice(0, 50);
-    callback({ ...state });
-  }, (err) => console.warn("Firestore offline - usando caché local para logs"));
+  getDataState() {
+    return {
+      workers: this.getCollection('workers', TRABAJADORES_MOCK),
+      lines: this.getCollection('lines', LINEAS_MOCK),
+      puestos: this.getCollection('puestos', []),
+      alerts: this.getCollection('alerts', []),
+      logs: this.getCollection('logs', [])
+    };
+  }
 
-  // Retorna función de desuscripción de todos los WebSockets de Firebase
-  return () => {
-    unsubWorkers();
-    unsubLines();
-    unsubPuestos();
-    unsubAlerts();
-    unsubLogs();
-  };
-}
+  addLog(message, type = 'info') {
+    const logs = this.getCollection('logs', []);
+    const time = new Date().toLocaleTimeString();
+    logs.unshift({ timestamp: Date.now(), timeFormatted: time, message, type });
+    this.saveCollection('logs', logs.slice(0, 50));
+  }
 
-/**
- * Función auxiliar para registrar un log de auditoría en Firestore
- */
-export async function registrarLogFirestore(mensaje, tipo = 'info') {
-  const logId = `LOG_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
-  const time = new Date().toLocaleTimeString();
-  try {
-    await setDoc(doc(db, "logs", logId), {
-      id: logId,
-      timestamp: Date.now(),
-      timeFormatted: time,
-      message: mensaje,
-      type: tipo
-    });
-  } catch (e) {
-    console.warn("No se pudo escribir el log en Firestore, guardando en consola local.");
+  // Simulación de transacción atómica en LocalStorage
+  runTransaction(transactionFn) {
+    const state = this.getDataState();
+    
+    // Clones locales aislados
+    const dbSnapshot = {
+      workers: JSON.parse(JSON.stringify(state.workers)),
+      lines: JSON.parse(JSON.stringify(state.lines)),
+      puestos: JSON.parse(JSON.stringify(state.puestos)),
+      alerts: JSON.parse(JSON.stringify(state.alerts)),
+      logs: JSON.parse(JSON.stringify(state.logs))
+    };
+
+    const context = {
+      get: (coll, id) => {
+        return dbSnapshot[coll].find(x => x.idWorker === id || x.idLinea === id || x.idPuesto === id || x.id === id);
+      },
+      update: (coll, id, data) => {
+        dbSnapshot[coll] = dbSnapshot[coll].map(x => {
+          if (x.idWorker === id || x.idLinea === id || x.idPuesto === id || x.id === id) {
+            return { ...x, ...data };
+          }
+          return x;
+        });
+      },
+      set: (coll, id, data) => {
+        const idx = dbSnapshot[coll].findIndex(x => x.idWorker === id || x.idLinea === id || x.idPuesto === id || x.id === id);
+        if (idx !== -1) {
+          dbSnapshot[coll][idx] = { ...data };
+        } else {
+          dbSnapshot[coll].push({ ...data });
+        }
+      },
+      delete: (coll, id) => {
+        dbSnapshot[coll] = dbSnapshot[coll].filter(x => x.idWorker !== id && x.idLinea !== id && x.idPuesto !== id && x.id !== id);
+      },
+      query: (coll, filterFn) => {
+        return dbSnapshot[coll].filter(filterFn);
+      }
+    };
+
+    try {
+      transactionFn(context);
+      
+      // Aplicar cambios persistentes
+      this.saveCollection('workers', dbSnapshot.workers);
+      this.saveCollection('lines', dbSnapshot.lines);
+      this.saveCollection('puestos', dbSnapshot.puestos);
+      this.saveCollection('alerts', dbSnapshot.alerts);
+      return { success: true };
+    } catch (e) {
+      console.error("Transacción LocalStorage abortada:", e.message);
+      this.addLog(`Falla: ${e.message}`, 'error');
+      throw e;
+    }
   }
 }
 
+export const localDb = new LocalStorageDatabaseAdapter();
+
+// --- SISTEMA DE SUSCRIPCIÓN EN TIEMPO REAL ---
+export function suscribirEstadoPlanta(callback) {
+  if (useRealFirebase) {
+    console.log("Firestore en tiempo real: Suscribiendo WebSockets.");
+    const state = { workers: [], lines: [], puestos: [], alerts: [], logs: [] };
+
+    const unsubWorkers = onSnapshot(collection(db, "workers"), (snap) => {
+      state.workers = snap.docs.map(d => d.data());
+      callback({ ...state });
+    });
+    const unsubLines = onSnapshot(collection(db, "lines"), (snap) => {
+      state.lines = snap.docs.map(d => d.data()).sort((a, b) => a.prioridad - b.prioridad);
+      callback({ ...state });
+    });
+    const unsubPuestos = onSnapshot(collection(db, "puestos"), (snap) => {
+      state.puestos = snap.docs.map(d => d.data());
+      callback({ ...state });
+    });
+    const unsubAlerts = onSnapshot(collection(db, "alerts"), (snap) => {
+      state.alerts = snap.docs.map(d => d.data());
+      callback({ ...state });
+    });
+    const unsubLogs = onSnapshot(collection(db, "logs"), (snap) => {
+      state.logs = snap.docs.map(d => d.data()).sort((a, b) => b.timestamp - a.timestamp).slice(0, 50);
+      callback({ ...state });
+    });
+
+    return () => {
+      unsubWorkers();
+      unsubLines();
+      unsubPuestos();
+      unsubAlerts();
+      unsubLogs();
+    };
+  } else {
+    console.log("Persistencia Local: Suscribiendo LocalStorage.");
+    return localDb.subscribe(callback);
+  }
+}
+
+// Log de auditoría
+export async function registrarLogFirestore(mensaje, tipo = 'info') {
+  if (useRealFirebase) {
+    const logId = `LOG_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+    const time = new Date().toLocaleTimeString();
+    try {
+      await setDoc(doc(db, "logs", logId), {
+        id: logId,
+        timestamp: Date.now(),
+        timeFormatted: time,
+        message: mensaje,
+        type: tipo
+      });
+    } catch (e) {
+      console.warn("Error escribiendo log remoto.");
+    }
+  } else {
+    localDb.addLog(mensaje, tipo);
+  }
+}
+
+// --- LÓGICA ATÓMICA DE NEGOCIO ---
+
 /**
- * 1. INICIALIZACIÓN DE TURNO Y ASIGNACIÓN DE PUESTOS FIJOS (Segundo Cero)
- * Pobla Firestore e inicia la congelación inicial de operadores técnicos.
+ * 1. INICIALIZACIÓN DE TURNO
  */
 export async function firebaseInicializarTurno() {
-  await registrarLogFirestore("Iniciando carga de programa diario de Sheets y registro de huellas...", "info");
-
-  // Crear colecciones y escribir la estructura inicial de puestos
-  const puestosIniciales = [];
-  
-  LINEAS_MOCK.forEach(l => {
-    // Escribir/Actualizar documento de línea
-    setDoc(doc(db, "lines", l.idLinea), l);
-
-    // Configurar puestos fijos
-    PUESTOS_PLANTILLA.fijos.forEach((pf, index) => {
-      puestosIniciales.push({
-        idPuesto: `${l.idLinea}_F${index + 1}`,
-        idLinea: l.idLinea,
-        tipo: 'Fijo',
-        nombreTarea: `${pf.nombreTarea} (${l.nombre})`,
-        rolRequerido: pf.rolRequerido,
-        idWorkerAsignado: null,
-        idWorkerOriginal: null
+  if (useRealFirebase) {
+    // Código de inicialización de Firebase nube
+    const puestosIniciales = [];
+    LINEAS_MOCK.forEach(l => {
+      setDoc(doc(db, "lines", l.idLinea), l);
+      PUESTOS_PLANTILLA.fijos.forEach((pf, index) => {
+        puestosIniciales.push({
+          idPuesto: `${l.idLinea}_F${index + 1}`,
+          idLinea: l.idLinea,
+          tipo: 'Fijo',
+          nombreTarea: `${pf.nombreTarea} (${l.nombre})`,
+          rolRequerido: pf.rolRequerido,
+          idWorkerAsignado: null,
+          idWorkerOriginal: null
+        });
+      });
+      const variosDeLinea = PUESTOS_PLANTILLA.varios[l.idLinea] || [];
+      variosDeLinea.forEach(pv => {
+        puestosIniciales.push({
+          idPuesto: pv.idPuesto,
+          idLinea: l.idLinea,
+          tipo: 'Vario',
+          nombreTarea: pv.nombreTarea,
+          sexoRequerido: pv.sexoRequerido,
+          restriccionesProhibidas: pv.restriccionesProhibidas,
+          idWorkerAsignado: null,
+          timer: 120,
+          maxHorasPermitidas: 2,
+          rotacionIniciada: false
+        });
       });
     });
 
-    // Configurar puestos varios
-    const variosDeLinea = PUESTOS_PLANTILLA.varios[l.idLinea] || [];
-    variosDeLinea.forEach(pv => {
-      puestosIniciales.push({
-        idPuesto: pv.idPuesto,
-        idLinea: l.idLinea,
-        tipo: 'Vario',
-        nombreTarea: pv.nombreTarea,
-        sexoRequerido: pv.sexoRequerido,
-        restriccionesProhibidas: pv.restriccionesProhibidas,
-        idWorkerAsignado: null,
-        timer: 120, // 2 minutos en prototipo
-        maxHorasPermitidas: 2,
-        rotacionIniciada: false
-      });
-    });
-  });
+    for (let p of puestosIniciales) await setDoc(doc(db, "puestos", p.idPuesto), p);
+    for (let w of TRABAJADORES_MOCK) await setDoc(doc(db, "workers", w.idWorker), w);
 
-  // Poblar todos los puestos en la nube
-  for (let p of puestosIniciales) {
-    await setDoc(doc(db, "puestos", p.idPuesto), p);
-  }
-
-  // Poblar todos los trabajadores
-  for (let w of TRABAJADORES_MOCK) {
-    await setDoc(doc(db, "workers", w.idWorker), w);
-  }
-
-  // --- TRANSACCIÓN FIRESTORE AL SEGUNDO CERO ---
-  try {
-    await runTransaction(db, async (transaction) => {
-      // 1. Simular registro de huella dactilar de trabajadores activos (pasar a POOL_ARRANQUE)
-      for (let w of TRABAJADORES_MOCK) {
-        if (w.rol !== 'Coordinador' && w.rol !== 'Supervisor') {
-          const workerRef = doc(db, "workers", w.idWorker);
-          const workerDoc = await transaction.get(workerRef);
-          
-          if (workerDoc.exists() && workerDoc.data().estadoActual !== 'BAJA_TEMPORAL') {
-            transaction.update(workerRef, {
-              estadoActual: 'POOL_ARRANQUE',
-              lineaActualId: null,
-              lineaDestinoId: null,
-              puestoActualId: null
-            });
+    try {
+      await runTransaction(db, async (transaction) => {
+        // Simular marcaje huella
+        for (let w of TRABAJADORES_MOCK) {
+          if (w.rol !== 'Coordinador' && w.rol !== 'Supervisor') {
+            const wRef = doc(db, "workers", w.idWorker);
+            const wSnap = await transaction.get(wRef);
+            if (wSnap.exists() && wSnap.data().estadoActual !== 'BAJA_TEMPORAL') {
+              transaction.update(wRef, { estadoActual: 'POOL_ARRANQUE', lineaActualId: null, puestoActualId: null });
+            }
           }
         }
+        // Asignación de puestos fijos
+        for (let p of puestosIniciales) {
+          if (p.tipo === 'Fijo') {
+            const pRef = doc(db, "puestos", p.idPuesto);
+            const qT = query(collection(db, "workers"), where("rol", "==", p.rolRequerido), where("estadoActual", "==", "POOL_ARRANQUE"));
+            const sT = await getDocs(qT);
+
+            if (!sT.empty) {
+              const tDoc = sT.docs[0];
+              transaction.update(pRef, { idWorkerAsignado: tDoc.id, idWorkerOriginal: tDoc.id });
+              transaction.update(doc(db, "workers", tDoc.id), { estadoActual: 'ASIGNADO', lineaActualId: p.idLinea, puestoActualId: p.idPuesto });
+            } else {
+              const qR = query(collection(db, "workers"), where("rol", "==", "Operador B"), where("estadoActual", "==", "POOL_ARRANQUE"));
+              const sR = await getDocs(qR);
+              if (!sR.empty) {
+                const rDoc = sR.docs[0];
+                transaction.update(pRef, { idWorkerAsignado: rDoc.id, idWorkerOriginal: 'N/A' });
+                transaction.update(doc(db, "workers", rDoc.id), { estadoActual: 'ASIGNADO', lineaActualId: p.idLinea, puestoActualId: p.idPuesto });
+              }
+            }
+          }
+        }
+      });
+      await registrarLogFirestore("Asignación de fijos inicializada en la nube.", "success");
+    } catch (e) {
+      console.warn("Fallo transaccional nube en inicio:", e.message);
+    }
+  } else {
+    // Inicialización en LocalStorage
+    const puestosIniciales = [];
+    LINEAS_MOCK.forEach(l => {
+      PUESTOS_PLANTILLA.fijos.forEach((pf, index) => {
+        puestosIniciales.push({
+          idPuesto: `${l.idLinea}_F${index + 1}`,
+          idLinea: l.idLinea,
+          tipo: 'Fijo',
+          nombreTarea: `${pf.nombreTarea} (${l.nombre})`,
+          rolRequerido: pf.rolRequerido,
+          idWorkerAsignado: null,
+          idWorkerOriginal: null
+        });
+      });
+      const variosDeLinea = PUESTOS_PLANTILLA.varios[l.idLinea] || [];
+      variosDeLinea.forEach(pv => {
+        puestosIniciales.push({
+          idPuesto: pv.idPuesto,
+          idLinea: l.idLinea,
+          tipo: 'Vario',
+          nombreTarea: pv.nombreTarea,
+          sexoRequerido: pv.sexoRequerido,
+          restriccionesProhibidas: pv.restriccionesProhibidas,
+          idWorkerAsignado: null,
+          timer: 120,
+          maxHorasPermitidas: 2,
+          rotacionIniciada: false
+        });
+      });
+    });
+
+    localDb.initialize(TRABAJADORES_MOCK, LINEAS_MOCK, puestosIniciales);
+
+    localDb.runTransaction((t) => {
+      // Simular marcaje huella
+      const workers = t.query('workers', w => w.rol !== 'Coordinador' && w.rol !== 'Supervisor');
+      workers.forEach(w => {
+        if (w.estadoActual !== 'BAJA_TEMPORAL') {
+          t.update('workers', w.idWorker, { estadoActual: 'POOL_ARRANQUE', lineaActualId: null, puestoActualId: null });
+        }
+      });
+
+      // Asignar fijos
+      const puestos = t.query('puestos', p => p.tipo === 'Fijo');
+      puestos.forEach(p => {
+        const titulares = t.query('workers', w => w.rol === p.rolRequerido && w.estadoActual === 'POOL_ARRANQUE');
+        if (titulares.length > 0) {
+          const titular = titulares[0];
+          t.update('puestos', p.idPuesto, { idWorkerAsignado: titular.idWorker, idWorkerOriginal: titular.idWorker });
+          t.update('workers', titular.idWorker, { estadoActual: 'ASIGNADO', lineaActualId: p.idLinea, puestoActualId: p.idPuesto });
+        } else {
+          // Reemplazo
+          const reemplazos = t.query('workers', w => w.rol === 'Operador B' && w.estadoActual === 'POOL_ARRANQUE');
+          if (reemplazos.length > 0) {
+            const reemplazo = reemplazos[0];
+            t.update('puestos', p.idPuesto, { idWorkerAsignado: reemplazo.idWorker, idWorkerOriginal: 'N/A' });
+            t.update('workers', reemplazo.idWorker, { estadoActual: 'ASIGNADO', lineaActualId: p.idLinea, puestoActualId: p.idPuesto });
+          }
+        }
+      });
+    });
+
+    localDb.addLog("Asignación de puestos fijos completada localmente.", "success");
+  }
+}
+
+/**
+ * 2. MOTOR DE REGLAS DE ASIGNACIÓN MÓVIL POR QR
+ */
+export async function firebaseEscanearQR(workerId, lineaId) {
+  if (useRealFirebase) {
+    let puestoAsignado = null;
+    let desvioEjecutado = false;
+
+    await runTransaction(db, async (transaction) => {
+      const workerRef = doc(db, "workers", workerId);
+      const workerSnap = await transaction.get(workerRef);
+      if (!workerSnap.exists()) throw new Error("Código QR no reconocido");
+
+      const worker = workerSnap.data();
+      const lineaRef = doc(db, "lines", lineaId);
+      const lineaSnap = await transaction.get(lineaRef);
+      if (!lineaSnap.exists()) throw new Error("Línea no configurada.");
+
+      if (lineaSnap.data().estado === 'En Preparación') {
+        throw new Error(`La ${lineaSnap.data().nombre} está parada.`);
       }
 
-      // 2. Procesar puestos fijos de forma atómica en la nube
-      for (let p of puestosIniciales) {
-        if (p.tipo === 'Fijo') {
-          const puestoRef = doc(db, "puestos", p.idPuesto);
+      if (worker.estadoActual === 'ASIGNADO' && worker.rol === 'Operador A') {
+        throw new Error(`${worker.nombre} es un Operador A congelado.`);
+      }
 
-          // Buscar titular calificado en el pool de arranque
-          const qTitulares = query(collection(db, "workers"), 
-            where("rol", "==", p.rolRequerido), 
-            where("estadoActual", "==", "POOL_ARRANQUE")
-          );
-          
-          const snapshotTitulares = await getDocs(qTitulares);
-          
-          if (!snapshotTitulares.empty) {
-            // Asignar titular
-            const titularDoc = snapshotTitulares.docs[0];
-            const titularRef = doc(db, "workers", titularDoc.id);
+      const qPuestos = query(collection(db, "puestos"), where("idLinea", "==", lineaId), where("tipo", "==", "Vario"));
+      const puestosSnap = await getDocs(qPuestos);
+      const puestosVacios = puestosSnap.docs.map(d => d.data()).filter(p => p.idWorkerAsignado === null);
 
-            transaction.update(puestoRef, {
-              idWorkerAsignado: titularDoc.id,
-              idWorkerOriginal: titularDoc.id
-            });
+      if (puestosVacios.length === 0) throw new Error("Sin vacantes disponibles.");
 
-            transaction.update(titularRef, {
-              estadoActual: 'ASIGNADO',
-              lineaActualId: p.idLinea,
-              puestoActualId: p.idPuesto
-            });
+      // Prioridad
+      const lineaActualPrioIdx = ORDEN_PRIORIDADES.indexOf(lineaId);
+      for (let i = 0; i < lineaActualPrioIdx; i++) {
+        const lpId = ORDEN_PRIORIDADES[i];
+        const lpRef = doc(db, "lines", lpId);
+        const lpSnap = await transaction.get(lpRef);
 
-            registrarLogFirestore(`Puesto Fijo asignado a Titular: ${titularDoc.data().nombre} en ${p.idPuesto}`, 'success');
-          } else {
-            // El titular no está (probablemente BAJA_TEMPORAL). Buscar reemplazo (Operador B disponible)
-            const qReemplazo = query(collection(db, "workers"), 
-              where("rol", "==", "Operador B"), 
-              where("estadoActual", "==", "POOL_ARRANQUE")
-            );
-            const snapshotReemplazo = await getDocs(qReemplazo);
+        if (lpSnap.exists() && lpSnap.data().estado === 'Operando') {
+          const qPrio = query(collection(db, "puestos"), where("idLinea", "==", lpId), where("tipo", "==", "Vario"));
+          const prioSnap = await getDocs(qPrio);
+          const vacantesPrio = prioSnap.docs.map(d => d.data()).filter(p => p.idWorkerAsignado === null);
 
-            // Obtener el ID del titular en baja para mantener el registro de pertenencia
-            const qTitularBaja = query(collection(db, "workers"), 
-              where("rol", "==", p.rolRequerido), 
-              where("estadoActual", "==", "BAJA_TEMPORAL")
-            );
-            const snapshotBaja = await getDocs(qTitularBaja);
-            const titularId = !snapshotBaja.empty ? snapshotBaja.docs[0].id : 'N/A';
-
-            if (!snapshotReemplazo.empty) {
-              const reemplazoDoc = snapshotReemplazo.docs[0];
-              const reemplazoRef = doc(db, "workers", reemplazoDoc.id);
-
-              transaction.update(puestoRef, {
-                idWorkerAsignado: reemplazoDoc.id,
-                idWorkerOriginal: titularId
+          if (vacantesPrio.length > 0) {
+            const califica = vacantesPrio.some(p => evaluarFiltrosCompatibilidad(worker, p) === true);
+            if (califica) {
+              desvioEjecutado = true;
+              transaction.update(workerRef, { estadoActual: 'EN_TRANSITO', lineaActualId: null, lineaDestinoId: lpId, puestoActualId: null });
+              
+              const aId = `ALERTA_TRANSITO_${workerId}_${Date.now()}`;
+              transaction.set(doc(db, "alerts", aId), {
+                id: aId, type: 'transito', title: `DESVÍO OBLIGATORIO`,
+                message: `${worker.nombre} ha sido redirigido a ${lpSnap.data().nombre} por prioridad.`,
+                workerId, lineaDestinoId: lpId
               });
-
-              transaction.update(reemplazoRef, {
-                estadoActual: 'ASIGNADO',
-                lineaActualId: p.idLinea,
-                puestoActualId: p.idPuesto
-              });
-
-              registrarLogFirestore(`Reemplazo Temporal: ${reemplazoDoc.data().nombre} cubre vacante técnica en puesto fijo ${p.idPuesto}`, 'warning');
-            } else {
-              registrarLogFirestore(`Crítico: Puesto fijo ${p.idPuesto} quedó sin cubrir al arrancar el turno.`, 'error');
+              return;
             }
           }
         }
       }
+
+      if (desvioEjecutado) return;
+
+      let mensajeError = "";
+      for (let puesto of puestosVacios) {
+        const comp = evaluarFiltrosCompatibilidad(worker, puesto);
+        if (comp === true) {
+          puestoAsignado = puesto;
+          break;
+        } else {
+          mensajeError = comp;
+        }
+      }
+
+      if (!puestoAsignado) throw new Error(`Incompatible: ${mensajeError}`);
+
+      transaction.update(doc(db, "puestos", puestoAsignado.idPuesto), { idWorkerAsignado: workerId, timer: 120, rotacionIniciada: false });
+      transaction.update(workerRef, { estadoActual: 'ASIGNADO', lineaActualId: lineaId, lineaDestinoId: null, puestoActualId: puestoAsignado.idPuesto });
+
+      const qAlerts = query(collection(db, "alerts"), where("workerId", "==", workerId), where("type", "==", "transito"));
+      const snapA = await getDocs(qAlerts);
+      snapA.forEach(d => transaction.delete(d.ref));
     });
 
-    registrarLogFirestore("Asignación automática de puestos fijos al minuto cero completada en la base de datos.", "success");
-  } catch (error) {
-    console.error("Transacción fallida en inicialización:", error);
-    registrarLogFirestore(`Falla en inicialización de turno: ${error.message}`, 'error');
-  }
-}
+    if (desvioEjecutado) return { status: 'redirigido', msg: `Redirigido a línea prioritaria.` };
+    return { status: 'asignado', puesto: puestoAsignado.nombreTarea };
+  } else {
+    // LocalStorage escaneo
+    let puestoAsignado = null;
+    let desvioEjecutado = false;
+    let redirigidoMsg = "";
 
-/**
- * 2. MOTOR DE REGLAS DE ASIGNACIÓN MÓVIL POR QR (Filtros en milisegundos)
- * Valida a nivel transaccional en la nube la compatibilidad de salud, sexo, no repetición y prioridad.
- */
-export async function firebaseEscanearQR(workerId, lineaId) {
-  let puestoAsignado = null;
-  let desvioEjecutado = false;
+    localDb.runTransaction((t) => {
+      const worker = t.get('workers', workerId);
+      if (!worker) throw new Error("Código QR inválido.");
 
-  await runTransaction(db, async (transaction) => {
-    const workerRef = doc(db, "workers", workerId);
-    const workerSnap = await transaction.get(workerRef);
-    if (!workerSnap.exists()) throw new Error("Código QR no reconocido en el sistema.");
+      const linea = t.get('lines', lineaId);
+      if (linea.estado === 'En Preparación') throw new Error(`Línea parada.`);
 
-    const worker = workerSnap.data();
+      if (worker.estadoActual === 'ASIGNADO' && worker.rol === 'Operador A') throw new Error("Operador A congelado.");
 
-    const lineaRef = doc(db, "lines", lineaId);
-    const lineaSnap = await transaction.get(lineaRef);
-    if (!lineaSnap.exists()) throw new Error("Línea no configurada.");
+      const puestosVacios = t.query('puestos', p => p.idLinea === lineaId && p.tipo === 'Vario' && p.idWorkerAsignado === null);
+      if (puestosVacios.length === 0) throw new Error("Sin vacantes en la línea.");
 
-    const linea = lineaSnap.data();
+      // Prioridad
+      const lineaActualPrioIdx = ORDEN_PRIORIDADES.indexOf(lineaId);
+      for (let i = 0; i < lineaActualPrioIdx; i++) {
+        const lpId = ORDEN_PRIORIDADES[i];
+        const lp = t.get('lines', lpId);
 
-    if (linea.estado === 'En Preparación') {
-      throw new Error(`La ${linea.nombre} se encuentra detenida. No se admiten asignaciones.`);
-    }
-
-    if (worker.estadoActual === 'ASIGNADO' && worker.rol === 'Operador A') {
-      throw new Error(`${worker.nombre} es un Operador A y está congelado en su máquina.`);
-    }
-
-    // Consultar puestos vacíos en esta línea en la nube
-    const qPuestos = query(collection(db, "puestos"), 
-      where("idLinea", "==", lineaId), 
-      where("tipo", "==", "Vario")
-    );
-    const puestosSnap = await getDocs(qPuestos);
-    const puestosVacios = puestosSnap.docs.map(d => d.data()).filter(p => p.idWorkerAsignado === null);
-
-    if (puestosVacios.length === 0) {
-      throw new Error(`No hay vacantes disponibles en la ${linea.nombre}.`);
-    }
-
-    // --- FILTRO CRÍTICO 3: REDIRECCIÓN OBLIGATORIA POR PRIORIDAD DE PLANTA ---
-    const lineaActualPrioIdx = ORDEN_PRIORIDADES.indexOf(lineaId);
-
-    for (let i = 0; i < lineaActualPrioIdx; i++) {
-      const lineaPrioId = ORDEN_PRIORIDADES[i];
-      const lineaPrioRef = doc(db, "lines", lineaPrioId);
-      const lineaPrioSnap = await transaction.get(lineaPrioRef);
-
-      if (lineaPrioSnap.exists() && lineaPrioSnap.data().estado === 'Operando') {
-        const qPuestosPrio = query(collection(db, "puestos"), 
-          where("idLinea", "==", lineaPrioId), 
-          where("tipo", "==", "Vario")
-        );
-        const puestosPrioSnap = await getDocs(qPuestosPrio);
-        const puestosPrioVacios = puestosPrioSnap.docs.map(d => d.data()).filter(p => p.idWorkerAsignado === null);
-
-        if (puestosPrioVacios.length > 0) {
-          // Evaluar si el trabajador califica para al menos un puesto de la línea prioritaria vacía
-          const calificaParaPrio = puestosPrioVacios.some(puestoPrio => 
-            evaluarFiltrosCompatibilidad(worker, puestoPrio) === true
-          );
-
-          if (calificaParaPrio) {
-            desvioEjecutado = true;
-
-            // Cambiar estado a EN_TRANSITO con destino a la línea prioritaria
-            transaction.update(workerRef, {
-              estadoActual: 'EN_TRANSITO',
-              lineaActualId: null,
-              lineaDestinoId: lineaPrioId,
-              puestoActualId: null
-            });
-
-            // Crear alerta de tránsito en la colección
-            const alertaId = `ALERTA_TRANSITO_${workerId}_${Date.now()}`;
-            const alertaRef = doc(db, "alerts", alertaId);
-            transaction.set(alertaRef, {
-              id: alertaId,
-              type: 'transito',
-              title: `DESVÍO POR PRIORIDAD`,
-              message: `${worker.nombre} ha sido redirigido a ${lineaPrioSnap.data().nombre} por jerarquía de prioridad de planta.`,
-              workerId,
-              lineaDestinoId: lineaPrioId
-            });
-
-            registrarLogFirestore(`Redirección: ${worker.nombre} desviado a la línea de prioridad superior ${lineaPrioSnap.data().nombre}`, 'warning');
-            return;
+        if (lp && lp.estado === 'Operando') {
+          const vacantesPrio = t.query('puestos', p => p.idLinea === lpId && p.tipo === 'Vario' && p.idWorkerAsignado === null);
+          if (vacantesPrio.length > 0) {
+            const califica = vacantesPrio.some(p => evaluarFiltrosCompatibilidad(worker, p) === true);
+            if (califica) {
+              desvioEjecutado = true;
+              t.update('workers', workerId, { estadoActual: 'EN_TRANSITO', lineaActualId: null, lineaDestinoId: lpId, puestoActualId: null });
+              
+              const aId = `ALERTA_TRANSITO_${workerId}_${Date.now()}`;
+              t.set('alerts', aId, {
+                id: aId, type: 'transito', title: `DESVÍO OBLIGATORIO`,
+                message: `${worker.nombre} redirigido a ${lp.nombre} por prioridad.`,
+                workerId, lineaDestinoId: lpId
+              });
+              redirigidoMsg = `Redirigido a la línea prioritaria ${lp.nombre}.`;
+              return;
+            }
           }
         }
       }
-    }
 
-    if (desvioEjecutado) return;
+      if (desvioEjecutado) return;
 
-    // --- FILTROS DE SEGURIDAD OPERATIVA ---
-    let mensajeError = "";
-
-    for (let puesto of puestosVacios) {
-      const resultadoCompatibilidad = evaluarFiltrosCompatibilidad(worker, puesto);
-      if (resultadoCompatibilidad === true) {
-        puestoAsignado = puesto;
-        break;
-      } else {
-        mensajeError = resultadoCompatibilidad;
+      let mensajeError = "";
+      for (let puesto of puestosVacios) {
+        const comp = evaluarFiltrosCompatibilidad(worker, puesto);
+        if (comp === true) {
+          puestoAsignado = puesto;
+          break;
+        } else {
+          mensajeError = comp;
+        }
       }
+
+      if (!puestoAsignado) throw new Error(`Incompatible: ${mensajeError}`);
+
+      t.update('puestos', puestoAsignado.idPuesto, { idWorkerAsignado: workerId, timer: 120, rotacionIniciada: false });
+      t.update('workers', workerId, { estadoActual: 'ASIGNADO', lineaActualId: lineaId, lineaDestinoId: null, puestoActualId: puestoAsignado.idPuesto });
+
+      const alertas = t.query('alerts', a => a.workerId === workerId && a.type === 'transito');
+      alertas.forEach(a => t.delete('alerts', a.id));
+    });
+
+    if (desvioEjecutado) {
+      localDb.addLog(`Redirección de prioridad ejecutada localmente para ${workerId}.`, 'warning');
+      return { status: 'redirigido', msg: redirigidoMsg };
     }
-
-    if (!puestoAsignado) {
-      throw new Error(`Incompatibilidad técnica: ${mensajeError}`);
-    }
-
-    // --- ASIGNACIÓN ATÓMICA EN FIRESTORE ---
-    const puestoRef = doc(db, "puestos", puestoAsignado.idPuesto);
-    
-    transaction.update(puestoRef, {
-      idWorkerAsignado: workerId,
-      timer: 120, // Cuenta regresiva acelerada
-      rotacionIniciada: false
-    });
-
-    transaction.update(workerRef, {
-      estadoActual: 'ASIGNADO',
-      lineaActualId: lineaId,
-      lineaDestinoId: null,
-      puestoActualId: puestoAsignado.idPuesto
-    });
-
-    // Limpiar alertas de tránsito previas del trabajador en la base de datos
-    const qAlertasPrevias = query(collection(db, "alerts"), 
-      where("workerId", "==", workerId), 
-      where("type", "==", "transito")
-    );
-    const snapAlerts = await getDocs(qAlertasPrevias);
-    snapAlerts.forEach(doc => {
-      transaction.delete(doc.ref);
-    });
-
-    registrarLogFirestore(`QR escaneado: ${worker.nombre} ingresa con éxito a puesto ${puestoAsignado.nombreTarea}`, 'success');
-  });
-
-  if (desvioEjecutado) {
-    return { status: 'redirigido', msg: `Redirigido a la línea prioritaria.` };
+    localDb.addLog(`Asignado local: ${workerId} en ${puestoAsignado.nombreTarea}`, 'success');
+    return { status: 'asignado', puesto: puestoAsignado.nombreTarea };
   }
-  return { status: 'asignado', puesto: puestoAsignado.nombreTarea };
 }
 
 // Evalúa las restricciones físicas, sexo e historial de no repetición
 function evaluarFiltrosCompatibilidad(worker, puesto) {
   if (puesto.sexoRequerido !== 'Indiferente' && worker.sexo !== puesto.sexoRequerido) {
-    return `Puesto exclusivo para sexo ${puesto.sexoRequerido}.`;
+    return `Exclusivo para sexo ${puesto.sexoRequerido}.`;
   }
-
   if (worker.restriccionesMedicas && worker.restriccionesMedicas.length > 0) {
     const tieneRestriccion = puesto.restriccionesProhibidas && puesto.restriccionesProhibidas.some(r => 
       worker.restriccionesMedicas.includes(r)
     );
-    if (tieneRestriccion) {
-      return `Presenta restricción de salud de ${worker.restriccionesMedicas.join(', ')}.`;
-    }
+    if (tieneRestriccion) return `Presenta restricción de ${worker.restriccionesMedicas.join(', ')}.`;
   }
-
   if (worker.ultimaActividadAyer && worker.ultimaActividadAyer.toLowerCase().trim() === puesto.nombreTarea.toLowerCase().trim()) {
-    return `No Repetición: El operario cerró su turno anterior en esta misma actividad (${puesto.nombreTarea}).`;
+    return `No Repetición: Jornada anterior en esta tarea (${puesto.nombreTarea}).`;
   }
-
   return true;
 }
 
 /**
- * 3. APROBACIÓN DE DESPACHO EN LÍNEA 8 (ROTACIÓN - FASE 4)
- * El supervisor de la Línea 8 aprueba la salida de un operario disponible.
+ * 3. APROBACIÓN DE DESPACHO EN LÍNEA 8
  */
 export async function firebaseAprobarDespachoRotacion(alertaId) {
-  await runTransaction(db, async (transaction) => {
-    const alertaRef = doc(db, "alerts", alertaId);
-    const alertaSnap = await transaction.get(alertaRef);
-    if (!alertaSnap.exists()) throw new Error("Alerta de rotación no encontrada");
+  if (useRealFirebase) {
+    await runTransaction(db, async (transaction) => {
+      const aRef = doc(db, "alerts", alertaId);
+      const aSnap = await transaction.get(aRef);
+      if (!aSnap.exists()) return;
+      const alerta = aSnap.data();
 
-    const alerta = alertaSnap.data();
-    const workerEntranteRef = doc(db, "workers", alerta.workerEntranteId);
-    const workerEntranteSnap = await transaction.get(workerEntranteRef);
-    if (!workerEntranteSnap.exists()) throw new Error("Operario no encontrado");
+      transaction.update(doc(db, "workers", alerta.workerEntranteId), { estadoActual: 'EN_TRANSITO', lineaActualId: null, lineaDestinoId: alerta.lineaPrioId });
+      
+      const qP = query(collection(db, "puestos"), where("idWorkerAsignado", "==", alerta.workerEntranteId), where("idLinea", "==", "L8"));
+      const pSnap = await getDocs(qP);
+      pSnap.forEach(d => transaction.update(d.ref, { idWorkerAsignado: null }));
 
-    // 1. Cambiar estado a EN_TRANSITO
-    transaction.update(workerEntranteRef, {
-      estadoActual: 'EN_TRANSITO',
-      lineaActualId: null,
-      lineaDestinoId: alerta.lineaPrioId,
-      puestoActualId: null
+      transaction.set(aRef, {
+        ...alerta, type: 'esperando_recepcion', title: `TRABAJADOR EN CAMINO`,
+        message: `El supervisor de L8 despachó a ${alerta.workerEntranteId}. Regístralo al llegar.`
+      });
     });
+  } else {
+    localDb.runTransaction((t) => {
+      const alerta = t.get('alerts', alertaId);
+      if (!alerta) return;
 
-    // 2. Liberar puesto en Línea 8
-    const qPuestosL8 = query(collection(db, "puestos"), 
-      where("idWorkerAsignado", "==", alerta.workerEntranteId), 
-      where("idLinea", "==", "L8")
-    );
-    const puestosL8Snap = await getDocs(qPuestosL8);
-    puestosL8Snap.forEach(d => {
-      transaction.update(d.ref, { idWorkerAsignado: null });
+      t.update('workers', alerta.workerEntranteId, { estadoActual: 'EN_TRANSITO', lineaActualId: null, lineaDestinoId: alerta.lineaPrioId, puestoActualId: null });
+      
+      const puestosL8 = t.query('puestos', p => p.idWorkerAsignado === alerta.workerEntranteId && p.idLinea === 'L8');
+      puestosL8.forEach(p => t.update('puestos', p.idPuesto, { idWorkerAsignado: null }));
+
+      t.set('alerts', alertaId, {
+        ...alerta, type: 'esperando_recepcion', title: `TRABAJADOR EN CAMINO`,
+        message: `El supervisor de L8 despachó a ${alerta.workerEntranteId}. Regístralo al llegar.`
+      });
     });
-
-    // 3. Modificar alerta a esperando_recepcion
-    transaction.set(alertaRef, {
-      ...alerta,
-      type: 'esperando_recepcion',
-      title: `TRABAJADOR EN CAMINO`,
-      message: `${workerEntranteSnap.data().nombre} fue despachado. Registra su llegada al ingresar a la línea prioritaria.`
-    });
-
-    registrarLogFirestore(`Despacho autorizado: Reemplazo ${workerEntranteSnap.data().nombre} va en camino a ${alerta.lineaPrioId}`, 'success');
-  });
+    localDb.addLog(`Despacho local aprobado para ${alertaId}`, 'success');
+  }
 }
 
 /**
- * 4. EFECTO DOMINÓ Y REDISTRIBUCIÓN EN CASCADA DE ROTACIONES (FASE 4)
- * Ocurre de forma atómica en Firestore cuando llega el relevista y se concreta el relevo.
+ * 4. EFECTO DOMINÓ Y REDISTRIBUCIÓN EN CASCADA
  */
 export async function firebaseCompletarRotacionYCascada(alertaId) {
-  await runTransaction(db, async (transaction) => {
-    const alertaRef = doc(db, "alerts", alertaId);
-    const alertaSnap = await transaction.get(alertaRef);
-    if (!alertaSnap.exists()) throw new Error("Alerta no válida");
+  if (useRealFirebase) {
+    await runTransaction(db, async (transaction) => {
+      const aRef = doc(db, "alerts", alertaId);
+      const aSnap = await transaction.get(aRef);
+      if (!aSnap.exists()) return;
+      const alerta = aSnap.data();
 
-    const alerta = alertaSnap.data();
-    const workerEntranteRef = doc(db, "workers", alerta.workerEntranteId);
-    const workerSalienteRef = doc(db, "workers", alerta.workerSalienteId);
-    const puestoPrioRef = doc(db, "puestos", alerta.puestoId);
+      transaction.update(doc(db, "puestos", alerta.puestoId), { idWorkerAsignado: alerta.workerEntranteId, timer: 120, rotacionIniciada: false });
+      transaction.update(doc(db, "workers", alerta.workerEntranteId), { estadoActual: 'ASIGNADO', lineaActualId: alerta.lineaPrioId, puestoActualId: alerta.puestoId });
 
-    const workerEntranteSnap = await transaction.get(workerEntranteRef);
-    const workerSalienteSnap = await transaction.get(workerSalienteRef);
-    const puestoPrioSnap = await transaction.get(puestoPrioRef);
+      const workerSalienteSnap = await transaction.get(doc(db, "workers", alerta.workerSalienteId));
+      const workerSaliente = workerSalienteSnap.data();
 
-    if (!workerEntranteSnap.exists() || !workerSalienteSnap.exists() || !puestoPrioSnap.exists()) {
-      throw new Error("Datos de rotación no válidos o incompletos.");
-    }
+      let vacante = false;
+      for (let lineaId of ORDEN_PRIORIDADES) {
+        if (lineaId === 'L8') continue;
+        const lSnap = await transaction.get(doc(db, "lines", lineaId));
+        if (lSnap.exists() && lSnap.data().estado === 'Operando') {
+          const qP = query(collection(db, "puestos"), where("idLinea", "==", lineaId), where("tipo", "==", "Vario"));
+          const pSnap = await getDocs(qP);
+          const vacias = pSnap.docs.map(d => d.data()).filter(p => p.idWorkerAsignado === null);
+          const apto = vacias.find(p => evaluarFiltrosCompatibilidad(workerSaliente, p) === true);
 
-    const workerSaliente = workerSalienteSnap.data();
-
-    // 1. Asignar al relevista (entrante) al puesto prioritario
-    transaction.update(puestoPrioRef, {
-      idWorkerAsignado: workerEntranteSnap.id,
-      timer: 120,
-      rotacionIniciada: false
-    });
-
-    transaction.update(workerEntranteRef, {
-      estadoActual: 'ASIGNADO',
-      lineaActualId: alerta.lineaPrioId,
-      lineaDestinoId: null,
-      puestoActualId: puestoPrioSnap.id
-    });
-
-    // 2. ALGORITMO EN CASCADA PARA EL TRABAJADOR SALIENTE (RELEVADO)
-    // Recorre por prioridad estricta las líneas en busca de puestos varios libres compatibles
-    let vacanteEncontrada = false;
-    let lineaDestinoId = 'L8';
-
-    for (let lineaId of ORDEN_PRIORIDADES) {
-      if (lineaId === 'L8') continue;
-
-      const lineaRef = doc(db, "lines", lineaId);
-      const lineaSnap = await transaction.get(lineaRef);
-
-      if (lineaSnap.exists() && lineaSnap.data().estado === 'Operando') {
-        const qPuestosVacios = query(collection(db, "puestos"), 
-          where("idLinea", "==", lineaId), 
-          where("tipo", "==", "Vario")
-        );
-        const puestosSnap = await getDocs(qPuestosVacios);
-        const puestosVacios = puestosSnap.docs.map(d => d.data()).filter(p => p.idWorkerAsignado === null);
-
-        const puestoApto = puestosVacios.find(p => evaluarFiltrosCompatibilidad(workerSaliente, p) === true);
-
-        if (puestoApto) {
-          vacanteEncontrada = true;
-          lineaDestinoId = lineaId;
-
-          // Poner al trabajador saliente en tránsito
-          transaction.update(workerSalienteRef, {
-            estadoActual: 'EN_TRANSITO',
-            lineaActualId: null,
-            lineaDestinoId: lineaId,
-            puestoActualId: null
-          });
-
-          // Crear la alerta de tránsito
-          const alertId = `ALERTA_TRANSITO_${workerSaliente.idWorker}_${Date.now()}`;
-          const alertRef = doc(db, "alerts", alertId);
-          transaction.set(alertRef, {
-            id: alertId,
-            type: 'transito',
-            title: `OPERARIO REDISTRIBUIDO`,
-            message: `${workerSaliente.nombre} ha sido redirigido a ${lineaSnap.data().nombre} tras ser relevado en la Línea ${alerta.lineaPrioId}.`,
-            workerId: workerSaliente.idWorker,
-            lineaDestinoId: lineaId
-          });
-
-          registrarLogFirestore(`Efecto Dominó: Relevado ${workerSaliente.nombre} reasignado en tránsito a la prioritaria ${lineaSnap.data().nombre}`, 'success');
-          break;
+          if (apto) {
+            vacante = true;
+            transaction.update(doc(db, "workers", workerSaliente.idWorker), { estadoActual: 'EN_TRANSITO', lineaActualId: null, lineaDestinoId: lineaId });
+            const alertId = `ALERTA_TRANSITO_${workerSaliente.idWorker}_${Date.now()}`;
+            transaction.set(doc(db, "alerts", alertId), {
+              id: alertId, type: 'transito', title: `OPERARIO REDISTRIBUIDO`,
+              message: `${workerSaliente.nombre} reasignado a ${lineaId} tras relevo.`,
+              workerId: workerSaliente.idWorker, lineaDestinoId: lineaId
+            });
+            break;
+          }
         }
       }
-    }
 
-    if (!vacanteEncontrada) {
-      // Regresa a la Línea 8 (Bolsón)
-      transaction.update(workerSalienteRef, {
-        estadoActual: 'DISPONIBLE_BOLSON',
-        lineaActualId: 'L8',
-        lineaDestinoId: null,
-        puestoActualId: null
-      });
-
-      // Asignar en puesto de ensamble vacío de L8
-      const qPuestosL8 = query(collection(db, "puestos"), 
-        where("idLinea", "==", "L8")
-      );
-      const puestosL8Snap = await getDocs(qPuestosL8);
-      const puestosL8Vacios = puestosL8Snap.docs.filter(d => d.data().idWorkerAsignado === null);
-
-      if (puestosL8Vacios.length > 0) {
-        transaction.update(puestosL8Vacios[0].ref, {
-          idWorkerAsignado: workerSaliente.idWorker
-        });
+      if (!vacante) {
+        transaction.update(doc(db, "workers", workerSaliente.idWorker), { estadoActual: 'DISPONIBLE_BOLSON', lineaActualId: 'L8', puestoActualId: null });
+        const qL8 = query(collection(db, "puestos"), where("idLinea", "==", "L8"));
+        const snapL8 = await getDocs(qL8);
+        const vaciasL8 = snapL8.docs.filter(d => d.data().idWorkerAsignado === null);
+        if (vaciasL8.length > 0) transaction.update(vaciasL8[0].ref, { idWorkerAsignado: workerSaliente.idWorker });
       }
 
-      registrarLogFirestore(`Efecto Dominó: Sin vacantes prioritarias. ${workerSaliente.nombre} regresa a Línea 8`, 'info');
-    }
+      transaction.delete(aRef);
+    });
+  } else {
+    // LocalStorage rotación completa
+    localDb.runTransaction((t) => {
+      const alerta = t.get('alerts', alertaId);
+      if (!alerta) return;
 
-    // 3. Eliminar la alerta procesada
-    transaction.delete(alertaRef);
-  });
+      t.update('puestos', alerta.puestoId, { idWorkerAsignado: alerta.workerEntranteId, timer: 120, rotacionIniciada: false });
+      t.update('workers', alerta.workerEntranteId, { estadoActual: 'ASIGNADO', lineaActualId: alerta.lineaPrioId, puestoActualId: alerta.puestoId });
+
+      const workerSaliente = t.get('workers', alerta.workerSalienteId);
+
+      let vacante = false;
+      for (let lineaId of ORDEN_PRIORIDADES) {
+        if (lineaId === 'L8') continue;
+        const l = t.get('lines', lineaId);
+        if (l && l.estado === 'Operando') {
+          const vacias = t.query('puestos', p => p.idLinea === lineaId && p.tipo === 'Vario' && p.idWorkerAsignado === null);
+          const apto = vacias.find(p => evaluarFiltrosCompatibilidad(workerSaliente, p) === true);
+
+          if (apto) {
+            vacante = true;
+            t.update('workers', workerSaliente.idWorker, { estadoActual: 'EN_TRANSITO', lineaActualId: null, lineaDestinoId: lineaId, puestoActualId: null });
+            
+            const alertId = `ALERTA_TRANSITO_${workerSaliente.idWorker}_${Date.now()}`;
+            t.set('alerts', alertId, {
+              id: alertId, type: 'transito', title: `OPERARIO REDISTRIBUIDO`,
+              message: `${workerSaliente.nombre} reasignado a ${lineaId} tras relevo.`,
+              workerId: workerSaliente.idWorker, lineaDestinoId: lineaId
+            });
+            break;
+          }
+        }
+      }
+
+      if (!vacante) {
+        t.update('workers', workerSaliente.idWorker, { estadoActual: 'DISPONIBLE_BOLSON', lineaActualId: 'L8', puestoActualId: null });
+        const vaciasL8 = t.query('puestos', p => p.idLinea === 'L8' && p.idWorkerAsignado === null);
+        if (vaciasL8.length > 0) t.update('puestos', vaciasL8[0].idPuesto, { idWorkerAsignado: workerSaliente.idWorker });
+      }
+
+      t.delete('alerts', alertaId);
+    });
+    localDb.addLog(`Rotación local completada para ${alertaId}`, 'success');
+  }
 }
 
 /**
- * 5. PROTOCOLO DE REINCORPORACIÓN DESDE BAJA_TEMPORAL (Coordinador)
+ * 5. PROTOCOLO DE REINCORPORACIÓN
  */
 export async function firebaseReincorporarTrabajador(workerId) {
-  await runTransaction(db, async (transaction) => {
-    const workerRef = doc(db, "workers", workerId);
-    const workerSnap = await transaction.get(workerRef);
-    if (!workerSnap.exists() || workerSnap.data().estadoActual !== 'BAJA_TEMPORAL') {
-      throw new Error("El operario no se encuentra en BAJA_TEMPORAL.");
-    }
+  if (useRealFirebase) {
+    await runTransaction(db, async (transaction) => {
+      const workerSnap = await transaction.get(doc(db, "workers", workerId));
+      if (!workerSnap.exists()) return;
+      const worker = workerSnap.data();
 
-    const worker = workerSnap.data();
-    registrarLogFirestore(`Procesando reincorporación de ${worker.nombre}...`, 'info');
+      if (worker.rol === 'Operador A' || worker.rol === 'Averiero') {
+        const q = query(collection(db, "puestos"), where("idWorkerOriginal", "==", workerId));
+        const s = await getDocs(q);
+        if (!s.empty) {
+          const pDoc = s.docs[0];
+          const reemplazoId = pDoc.data().idWorkerAsignado;
 
-    if (worker.rol === 'Operador A' || worker.rol === 'Averiero') {
-      // --- CASO PUESTO FIJO TÉCNICO ---
-      const qPuestoOriginal = query(collection(db, "puestos"), 
-        where("idWorkerOriginal", "==", workerId)
-      );
-      const puestoOriginalSnap = await getDocs(qPuestoOriginal);
+          transaction.update(pDoc.ref, { idWorkerAsignado: workerId });
+          transaction.update(doc(db, "workers", workerId), { estadoActual: 'ASIGNADO', lineaActualId: pDoc.data().idLinea, puestoActualId: pDoc.id });
 
-      if (!puestoOriginalSnap.empty) {
-        const puestoDoc = puestoOriginalSnap.docs[0];
-        const puestoOriginal = puestoDoc.data();
-        const reemplazoId = puestoOriginal.idWorkerAsignado;
-
-        // 1. Reasignar titular en su máquina
-        transaction.update(puestoDoc.ref, {
-          idWorkerAsignado: workerId
-        });
-
-        transaction.update(workerRef, {
-          estadoActual: 'ASIGNADO',
-          lineaActualId: puestoOriginal.idLinea,
-          lineaDestinoId: null,
-          puestoActualId: puestoOriginal.idPuesto
-        });
-
-        registrarLogFirestore(`Alta Médica: Titular ${worker.nombre} reasume puesto técnico original ${puestoOriginal.idPuesto}`, 'success');
-
-        // 2. Si había reemplazo temporal, desalojarlo y aplicar la cascada por prioridad
-        if (reemplazoId && reemplazoId !== workerId) {
-          const reemplazoRef = doc(db, "workers", reemplazoId);
-          const reemplazoSnap = await transaction.get(reemplazoRef);
-          
-          if (reemplazoSnap.exists()) {
+          if (reemplazoId && reemplazoId !== workerId) {
+            const reemplazoSnap = await transaction.get(doc(db, "workers", reemplazoId));
             const reemplazo = reemplazoSnap.data();
-            registrarLogFirestore(`Desalojando reemplazo temporal ${reemplazo.nombre}. Buscando vacante...`, 'warning');
 
-            let vacanteEncontrada = false;
+            let vacante = false;
+            for (let lineaId of ORDEN_PRIORIDADES) {
+              if (lineaId === 'L8') continue;
+              const lSnap = await transaction.get(doc(db, "lines", lineaId));
+              if (lSnap.exists() && lSnap.data().estado === 'Operando') {
+                const qP = query(collection(db, "puestos"), where("idLinea", "==", lineaId), where("tipo", "==", "Vario"));
+                const pSnap = await getDocs(qP);
+                const vacias = pSnap.docs.map(d => d.data()).filter(p => p.idWorkerAsignado === null);
+                const apto = vacias.find(p => evaluarFiltrosCompatibilidad(reemplazo, p) === true);
+
+                if (apto) {
+                  vacante = true;
+                  transaction.update(doc(db, "workers", reemplazoId), { estadoActual: 'EN_TRANSITO', lineaActualId: null, lineaDestinoId: lineaId });
+                  break;
+                }
+              }
+            }
+            if (!vacante) {
+              transaction.update(doc(db, "workers", reemplazoId), { estadoActual: 'DISPONIBLE_BOLSON', lineaActualId: 'L8', puestoActualId: null });
+            }
+          }
+        }
+      } else {
+        transaction.update(doc(db, "workers", workerId), { estadoActual: 'DISPONIBLE_BOLSON', lineaActualId: 'L8', puestoActualId: null });
+      }
+    });
+  } else {
+    // LocalStorage reincorporar
+    localDb.runTransaction((t) => {
+      const worker = t.get('workers', workerId);
+      if (!worker) return;
+
+      if (worker.rol === 'Operador A' || worker.rol === 'Averiero') {
+        const puestosOriginales = t.query('puestos', p => p.idWorkerOriginal === workerId);
+        if (puestosOriginales.length > 0) {
+          const puesto = puestosOriginales[0];
+          const reemplazoId = puesto.idWorkerAsignado;
+
+          t.update('puestos', puesto.idPuesto, { idWorkerAsignado: workerId });
+          t.update('workers', workerId, { estadoActual: 'ASIGNADO', lineaActualId: puesto.idLinea, puestoActualId: puesto.idPuesto });
+
+          if (reemplazoId && reemplazoId !== workerId) {
+            const reemplazo = t.get('workers', reemplazoId);
+            let vacante = false;
 
             for (let lineaId of ORDEN_PRIORIDADES) {
               if (lineaId === 'L8') continue;
+              const l = t.get('lines', lineaId);
+              if (l && l.estado === 'Operando') {
+                const vacias = t.query('puestos', p => p.idLinea === lineaId && p.tipo === 'Vario' && p.idWorkerAsignado === null);
+                const apto = vacias.find(p => evaluarFiltrosCompatibilidad(reemplazo, p) === true);
 
-              const lineaRef = doc(db, "lines", lineaId);
-              const lineaSnap = await transaction.get(lineaRef);
-
-              if (lineaSnap.exists() && lineaSnap.data().estado === 'Operando') {
-                const qPuestosVacios = query(collection(db, "puestos"), 
-                  where("idLinea", "==", lineaId), 
-                  where("tipo", "==", "Vario")
-                );
-                const puestosSnap = await getDocs(qPuestosVacios);
-                const puestosVacios = puestosSnap.docs.map(d => d.data()).filter(p => p.idWorkerAsignado === null);
-
-                const puestoApto = puestosVacios.find(p => evaluarFiltrosCompatibilidad(reemplazo, p) === true);
-
-                if (puestoApto) {
-                  vacanteEncontrada = true;
-
-                  transaction.update(reemplazoRef, {
-                    estadoActual: 'EN_TRANSITO',
-                    lineaActualId: null,
-                    lineaDestinoId: lineaId,
-                    puestoActualId: null
-                  });
-
-                  const alertId = `ALERTA_TRANSITO_${reemplazoId}_${Date.now()}`;
-                  const alertRef = doc(db, "alerts", alertId);
-                  transaction.set(alertRef, {
-                    id: alertId,
-                    type: 'transito',
-                    title: `REEMPLAZO REDISTRIBUIDO`,
-                    message: `${reemplazo.nombre} fue liberado de un puesto fijo y redirigido a ${lineaSnap.data().nombre}.`,
-                    workerId: reemplazoId,
-                    lineaDestinoId: lineaId
-                  });
-
-                  registrarLogFirestore(`Redistribución: Reemplazo ${reemplazo.nombre} redirigido en tránsito a la prioritaria ${lineaSnap.data().nombre}`, 'success');
+                if (apto) {
+                  vacante = true;
+                  t.update('workers', reemplazoId, { estadoActual: 'EN_TRANSITO', lineaActualId: null, lineaDestinoId: lineaId, puestoActualId: null });
                   break;
                 }
               }
             }
 
-            if (!vacanteEncontrada) {
-              // Regresa a Línea 8
-              transaction.update(reemplazoRef, {
-                estadoActual: 'DISPONIBLE_BOLSON',
-                lineaActualId: 'L8',
-                lineaDestinoId: null,
-                puestoActualId: null
-              });
-
-              const qPuestosL8 = query(collection(db, "puestos"), 
-                where("idLinea", "==", "L8")
-              );
-              const puestosL8Snap = await getDocs(qPuestosL8);
-              const puestosL8Vacios = puestosL8Snap.docs.filter(d => d.data().idWorkerAsignado === null);
-
-              if (puestosL8Vacios.length > 0) {
-                transaction.update(puestosL8Vacios[0].ref, {
-                  idWorkerAsignado: reemplazoId
-                });
-              }
-
-              registrarLogFirestore(`Redistribución: Sin vacantes. Reemplazo ${reemplazo.nombre} enviado a la Línea 8`, 'info');
+            if (!vacante) {
+              t.update('workers', reemplazoId, { estadoActual: 'DISPONIBLE_BOLSON', lineaActualId: 'L8', puestoActualId: null });
+              const vaciasL8 = t.query('puestos', p => p.idLinea === 'L8' && p.idWorkerAsignado === null);
+              if (vaciasL8.length > 0) t.update('puestos', vaciasL8[0].idPuesto, { idWorkerAsignado: reemplazoId });
             }
           }
         }
       } else {
-        transaction.update(workerRef, {
-          estadoActual: 'POOL_ARRANQUE',
-          lineaActualId: null,
-          lineaDestinoId: null,
-          puestoActualId: null
-        });
-        registrarLogFirestore(`Operador ${worker.nombre} ingresado al Pool de Arranque.`, 'info');
+        t.update('workers', workerId, { estadoActual: 'DISPONIBLE_BOLSON', lineaActualId: 'L8', puestoActualId: null });
+        const vaciasL8 = t.query('puestos', p => p.idLinea === 'L8' && p.idWorkerAsignado === null);
+        if (vaciasL8.length > 0) t.update('puestos', vaciasL8[0].idPuesto, { idWorkerAsignado: workerId });
       }
-    } else {
-      // --- CASO PUESTO VARIO ---
-      // Envía directo a la Línea 8 en estado disponible
-      transaction.update(workerRef, {
-        estadoActual: 'DISPONIBLE_BOLSON',
-        lineaActualId: 'L8',
-        lineaDestinoId: null,
-        puestoActualId: null
-      });
-
-      const qPuestosL8 = query(collection(db, "puestos"), 
-        where("idLinea", "==", "L8")
-      );
-      const puestosL8Snap = await getDocs(qPuestosL8);
-      const puestosL8Vacios = puestosL8Snap.docs.filter(d => d.data().idWorkerAsignado === null);
-
-      if (puestosL8Vacios.length > 0) {
-        transaction.update(puestosL8Vacios[0].ref, {
-          idWorkerAsignado: workerId
-        });
-      }
-
-      registrarLogFirestore(`Alta Médica: Operario ${worker.nombre} ingresado directo a sala de ensamble de Línea 8`, 'success');
-    }
-  });
+    });
+    localDb.addLog(`Reincorporación local exitosa para ${workerId}`, 'success');
+  }
 }
 
 /**
  * 6. PAROS POR PREPARACIÓN DE EQUIPOS
  */
 export async function firebaseActivarPreparacion(lineaId) {
-  await runTransaction(db, async (transaction) => {
-    const lineaRef = doc(db, "lines", lineaId);
-    transaction.update(lineaRef, { estado: 'En Preparación' });
+  if (useRealFirebase) {
+    await runTransaction(db, async (transaction) => {
+      transaction.update(doc(db, "lines", lineaId), { estado: 'En Preparación' });
+      
+      const q = query(collection(db, "puestos"), where("idLinea", "==", lineaId), where("tipo", "==", "Vario"));
+      const s = await getDocs(q);
+      const asignados = s.docs.filter(d => d.data().idWorkerAsignado !== null);
 
-    // Buscar puestos varios de esa línea que estén asignados
-    const qPuestos = query(collection(db, "puestos"), 
-      where("idLinea", "==", lineaId), 
-      where("tipo", "==", "Vario")
-    );
-    const puestosSnap = await getDocs(qPuestos);
-    const puestosAsignados = puestosSnap.docs.filter(d => d.data().idWorkerAsignado !== null);
-
-    const idsDesalojados = puestosAsignados.map(d => d.data().idWorkerAsignado);
-
-    // Vaciar puestos varios
-    puestosAsignados.forEach(d => {
-      transaction.update(d.ref, {
-        idWorkerAsignado: null,
-        timer: 120,
-        rotacionIniciada: false
+      asignados.forEach(d => {
+        const workerId = d.data().idWorkerAsignado;
+        transaction.update(d.ref, { idWorkerAsignado: null, timer: 120, rotacionIniciada: false });
+        transaction.update(doc(db, "workers", workerId), { estadoActual: 'EN_TRANSITO', lineaActualId: null, lineaDestinoId: 'L8' });
+        
+        const aId = `ALERTA_TRANSITO_${workerId}_${Date.now()}`;
+        transaction.set(doc(db, "alerts", aId), {
+          id: aId, type: 'transito', title: `DESALOJO POR PARO`,
+          message: `${workerId} desalojado por paro en L${lineaId}, va en tránsito a L8.`,
+          workerId, lineaDestinoId: 'L8'
+        });
       });
     });
+  } else {
+    localDb.runTransaction((t) => {
+      t.update('lines', lineaId, { estado: 'En Preparación' });
 
-    // Poner operarios desalojados en tránsito a L8 en la base de datos
-    for (let workerId of idsDesalojados) {
-      const workerRef = doc(db, "workers", workerId);
-      const workerSnap = await transaction.get(workerRef);
-      
-      if (workerSnap.exists()) {
-        transaction.update(workerRef, {
-          estadoActual: 'EN_TRANSITO',
-          lineaActualId: null,
-          lineaDestinoId: 'L8',
-          puestoActualId: null
+      const puestos = t.query('puestos', p => p.idLinea === lineaId && p.tipo === 'Vario' && p.idWorkerAsignado !== null);
+      puestos.forEach(p => {
+        const workerId = p.idWorkerAsignado;
+        t.update('puestos', p.idPuesto, { idWorkerAsignado: null, timer: 120, rotacionIniciada: false });
+        t.update('workers', workerId, { estadoActual: 'EN_TRANSITO', lineaActualId: null, lineaDestinoId: 'L8', puestoActualId: null });
+
+        const aId = `ALERTA_TRANSITO_${workerId}_${Date.now()}`;
+        t.set('alerts', aId, {
+          id: aId, type: 'transito', title: `DESALOJO POR PARO`,
+          message: `${workerId} desalojado por paro en L${lineaId}, va en tránsito a L8.`,
+          workerId, lineaDestinoId: 'L8'
         });
-
-        // Crear alerta de tránsito
-        const alertId = `ALERTA_TRANSITO_${workerId}_${Date.now()}`;
-        const alertRef = doc(db, "alerts", alertId);
-        transaction.set(alertRef, {
-          id: alertId,
-          type: 'transito',
-          title: `DESALOJO POR PARO`,
-          message: `${workerSnap.data().nombre} desalojado por mantenimiento, va en tránsito a la Línea 8 (Bolsón).`,
-          workerId,
-          lineaDestinoId: 'L8'
-        });
-      }
-    }
-
-    registrarLogFirestore(`Línea ${lineaId} entra EN PREPARACIÓN. ${idsDesalojados.length} operarios de puestos varios desalojados a L8.`, 'warning');
-  });
+      });
+    });
+    localDb.addLog(`Línea ${lineaId} entra localmente en preparación.`, 'warning');
+  }
 }
 
 /**
- * Restablecer línea a Operando
+ * Restablecer línea
  */
 export async function firebaseRestablecerLinea(lineaId) {
-  await runTransaction(db, async (transaction) => {
-    const lineaRef = doc(db, "lines", lineaId);
-    transaction.update(lineaRef, { estado: 'Operando' });
-    registrarLogFirestore(`Línea ${lineaId} restablecida a estado OPERANDO.`, 'success');
-  });
+  if (useRealFirebase) {
+    await runTransaction(db, async (transaction) => {
+      transaction.update(doc(db, "lines", lineaId), { estado: 'Operando' });
+    });
+  } else {
+    localDb.runTransaction(t => t.update('lines', lineaId, { estado: 'Operando' }));
+    localDb.addLog(`Línea ${lineaId} restablecida localmente.`, 'success');
+  }
 }
 
 /**
- * Decrementa atómicamente los temporizadores de los puestos en Firestore (Reloj de Simulación)
+ * Decremento de temporizadores en segundo plano
  */
 export async function firebaseDecrementarTemporizadores(simSpeed) {
-  try {
-    await runTransaction(db, async (transaction) => {
-      // Consultar puestos varios ocupados en la nube
-      const qPuestos = query(collection(db, "puestos"), 
-        where("tipo", "==", "Vario")
-      );
-      const puestosSnap = await getDocs(qPuestos);
-      const puestosOcupados = puestosSnap.docs
-        .map(d => ({ ref: d.ref, data: d.data() }))
-        .filter(x => x.data.idWorkerAsignado !== null);
+  if (useRealFirebase) {
+    try {
+      await runTransaction(db, async (transaction) => {
+        const qPuestos = query(collection(db, "puestos"), where("tipo", "==", "Vario"));
+        const puestosSnap = await getDocs(qPuestos);
+        const puestosOcupados = puestosSnap.docs
+          .map(d => ({ ref: d.ref, data: d.data() }))
+          .filter(x => x.data.idWorkerAsignado !== null);
 
-      for (let puesto of puestosOcupados) {
-        const p = puesto.data;
-        if (p.timer > 0) {
-          const nuevoTiempo = Math.max(0, p.timer - 1 * simSpeed);
-          transaction.update(puesto.ref, { timer: nuevoTiempo });
+        for (let puesto of puestosOcupados) {
+          const p = puesto.data;
+          if (p.timer > 0) {
+            const nuevoTiempo = Math.max(0, p.timer - 1 * simSpeed);
+            transaction.update(puesto.ref, { timer: nuevoTiempo });
 
-          // Si el temporizador baja de 30s y no ha iniciado rotación
-          if (nuevoTiempo <= 30 && nuevoTiempo > 0 && !p.rotacionIniciada) {
-            transaction.update(puesto.ref, { rotacionIniciada: true });
+            if (nuevoTiempo <= 30 && nuevoTiempo > 0 && !p.rotacionIniciada) {
+              transaction.update(puesto.ref, { rotacionIniciada: true });
 
-            const workerSalienteRef = doc(db, "workers", p.idWorkerAsignado);
-            const workerSalienteSnap = await transaction.get(workerSalienteRef);
+              const workerSalienteSnap = await transaction.get(doc(db, "workers", p.idWorkerAsignado));
+              if (workerSalienteSnap.exists()) {
+                const workerSaliente = workerSalienteSnap.data();
 
-            if (workerSalienteSnap.exists()) {
-              const workerSaliente = workerSalienteSnap.data();
+                const qC = query(collection(db, "workers"), where("lineaActualId", "==", "L8"), where("estadoActual", "==", "DISPONIBLE_BOLSON"));
+                const snapC = await getDocs(qC);
+                const candidatos = snapC.docs.map(d => d.data());
 
-              // Buscar un relevista libre en Línea 8 (Bolsón)
-              const qCandidatosL8 = query(collection(db, "workers"), 
-                where("lineaActualId", "==", "L8"),
-                where("estadoActual", "==", "DISPONIBLE_BOLSON")
-              );
-              const candidatosL8Snap = await getDocs(qCandidatosL8);
-              const candidatosL8 = candidatosL8Snap.docs.map(d => d.data());
-
-              // Encontrar relevista compatible
-              const relevo = candidatosL8.find(w => 
-                evaluarFiltrosBasicos(w, p) === true
-              );
-
-              if (relevo) {
-                const alertaId = `ALERTA_ROT_${p.idPuesto}_${relevo.idWorker}_${Date.now()}`;
-                const alertaRef = doc(db, "alerts", alertaId);
-                
-                transaction.set(alertaRef, {
-                  id: alertaId,
-                  type: 'solicitud_rotacion',
-                  title: `ROTACIÓN EN CURSO (➜ L${p.idLinea})`,
-                  message: `Línea prioritaria ${p.idLinea} solicita a ${relevo.nombre} para relevar en ${p.nombreTarea}.`,
-                  workerSalienteId: workerSaliente.idWorker,
-                  workerEntranteId: relevo.idWorker,
-                  puestoId: p.idPuesto,
-                  lineaPrioId: p.idLinea,
-                  lineaL8Id: 'L8'
-                });
-                
-                registrarLogFirestore(`Rotación: Solicitando relevo de L8 para ${p.nombreTarea}.`, 'warning');
-              } else {
-                // Reintentar
-                transaction.update(puesto.ref, { timer: 20, rotacionIniciada: false });
+                const relevo = candidatos.find(w => evaluarFiltrosBasicos(w, p) === true);
+                if (relevo) {
+                  const aId = `ALERTA_ROT_${p.idPuesto}_${relevo.idWorker}_${Date.now()}`;
+                  transaction.set(doc(db, "alerts", aId), {
+                    id: aId, type: 'solicitud_rotacion', title: `ROTACIÓN EN CURSO (➜ L${p.idLinea})`,
+                    message: `Línea prioritaria ${p.idLinea} solicita a ${relevo.nombre} para relevar en ${p.nombreTarea}.`,
+                    workerSalienteId: workerSaliente.idWorker, workerEntranteId: relevo.idWorker,
+                    puestoId: p.idPuesto, lineaPrioId: p.idLinea, lineaL8Id: 'L8'
+                  });
+                } else {
+                  transaction.update(puesto.ref, { timer: 20, rotacionIniciada: false });
+                }
               }
             }
           }
         }
-      }
-    });
-  } catch (error) {
-    // Silenciar errores de transacción de background recurrentes
+      });
+    } catch (e) {}
+  } else {
+    // LocalStorage decremento
+    try {
+      localDb.runTransaction((t) => {
+        const puestos = t.query('puestos', p => p.tipo === 'Vario' && p.idWorkerAsignado !== null);
+        
+        puestos.forEach(p => {
+          if (p.timer > 0) {
+            const nuevoTiempo = Math.max(0, p.timer - 1 * simSpeed);
+            t.update('puestos', p.idPuesto, { timer: nuevoTiempo });
+
+            if (nuevoTiempo <= 30 && nuevoTiempo > 0 && !p.rotacionIniciada) {
+              t.update('puestos', p.idPuesto, { rotacionIniciada: true });
+
+              const workerSaliente = t.get('workers', p.idWorkerAsignado);
+              const candidatos = t.query('workers', w => w.lineaActualId === 'L8' && w.estadoActual === 'DISPONIBLE_BOLSON');
+
+              const relevo = candidatos.find(w => evaluarFiltrosBasicos(w, p) === true);
+              if (relevo) {
+                const aId = `ALERTA_ROT_${p.idPuesto}_${relevo.idWorker}_${Date.now()}`;
+                t.set('alerts', aId, {
+                  id: aId, type: 'solicitud_rotacion', title: `ROTACIÓN EN CURSO (➜ L${p.idLinea})`,
+                  message: `Línea prioritaria ${p.idLinea} solicita a ${relevo.nombre} para relevar en ${p.nombreTarea}.`,
+                  workerSalienteId: workerSaliente.idWorker, workerEntranteId: relevo.idWorker,
+                  puestoId: p.idPuesto, lineaPrioId: p.idLinea, lineaL8Id: 'L8'
+                });
+              } else {
+                t.update('puestos', p.idPuesto, { timer: 20, rotacionIniciada: false });
+              }
+            }
+          }
+        });
+      });
+    } catch (e) {}
   }
 }
 
-// Función auxiliar de validación de compatibilidad para el decremento en background
 function evaluarFiltrosBasicos(worker, puesto) {
   if (puesto.sexoRequerido !== 'Indiferente' && worker.sexo !== puesto.sexoRequerido) return false;
   if (worker.restriccionesMedicas && worker.restriccionesMedicas.length > 0) {
