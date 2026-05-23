@@ -1,13 +1,14 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { 
-  dbEmulator,
+  suscribirEstadoPlanta,
   firebaseInicializarTurno,
   firebaseEscanearQR,
   firebaseAprobarDespachoRotacion,
   firebaseCompletarRotacionYCascada,
   firebaseReincorporarTrabajador,
   firebaseActivarPreparacion,
-  firebaseRestablecerLinea
+  firebaseRestablecerLinea,
+  firebaseDecrementarTemporizadores
 } from './services/firebaseService';
 import { 
   QrCode, 
@@ -45,23 +46,29 @@ function App() {
   const [simSpeed, setSimSpeed] = useState(1); // 0: Pausado, 1: Normal, 20: Rápido
   const timerRef = useRef(null);
 
-  // 1. SUSCRIPCIÓN EN TIEMPO REAL A FIRESTORE
+  // 1. SUSCRIPCIÓN EN TIEMPO REAL A FIRESTORE REAL
   useEffect(() => {
-    // Inicializar el turno y la base de datos automáticamente al minuto cero por debajo
-    firebaseInicializarTurno();
+    // Inicializar el turno y la base de datos automáticamente en Firestore real al arrancar
+    firebaseInicializarTurno().catch(err => {
+      console.warn("Base de datos ya inicializada o sin conexión en la nube.");
+    });
 
-    const unsubscribe = dbEmulator.subscribe(state => {
-      setWorkers(state.workers);
-      setLines(state.lines);
-      setPuestos(state.puestos);
-      setAlerts(state.alerts);
-      setLogs(state.logs);
+    const unsubscribe = suscribirEstadoPlanta(state => {
+      if (state.workers.length > 0) setWorkers(state.workers);
+      if (state.lines.length > 0) setLines(state.lines);
+      if (state.puestos.length > 0) setPuestos(state.puestos);
+      setAlerts(state.alerts || []);
+      setLogs(state.logs || []);
+      
+      if (state.puestos.length > 0) {
+        setTurnoIniciado(true);
+      }
     });
 
     return () => unsubscribe();
   }, []);
 
-  // 2. CRON DE SIMULACIÓN ACELERADA EN FIRESTORE
+  // 2. CRON DE SIMULACIÓN EN FIRESTORE EN NUBE
   useEffect(() => {
     if (simSpeed === 0) {
       if (timerRef.current) clearInterval(timerRef.current);
@@ -86,59 +93,17 @@ function App() {
           newHour = 0;
         }
 
-        // Decremento atómico de temporizadores en base de datos
-        dbEmulator.runTransaction(async (transaction) => {
-          const puestosAsignados = transaction.query('puestos', p => p.tipo === 'Vario' && p.idWorkerAsignado !== null);
-          
-          puestosAsignados.forEach(p => {
-            if (p.timer > 0) {
-              const nuevoTiempo = Math.max(0, p.timer - 1 * simSpeed);
-              transaction.update('puestos', p.idPuesto, { timer: nuevoTiempo });
-
-              // Gatillar rotación si faltan menos de 30 segundos
-              if (nuevoTiempo <= 30 && nuevoTiempo > 0 && !p.rotacionIniciada) {
-                transaction.update('puestos', p.idPuesto, { rotacionIniciada: true });
-                
-                const workerSaliente = transaction.get('workers', p.idWorkerAsignado);
-                
-                // Buscar operario libre en la Línea 8 (Bolsón)
-                const candidatosL8 = transaction.query('workers', w => 
-                  w.lineaActualId === 'L8' && 
-                  w.estadoActual === 'DISPONIBLE_BOLSON' &&
-                  evaluarFiltrosBasicos(w, p) === true
-                );
-
-                if (candidatosL8.length > 0) {
-                  const relevo = candidatosL8[0];
-                  const alertaId = `ALERTA_ROT_${p.idPuesto}_${relevo.idWorker}_${Date.now()}`;
-                  
-                  transaction.set('alerts', alertaId, {
-                    id: alertaId,
-                    type: 'solicitud_rotacion',
-                    title: `ROTACIÓN EN CURSO (➜ L${p.idLinea})`,
-                    message: `Línea prioritaria ${p.idLinea} solicita a ${relevo.nombre} para relevar en ${p.nombreTarea}.`,
-                    workerSalienteId: workerSaliente.idWorker,
-                    workerEntranteId: relevo.idWorker,
-                    puestoId: p.idPuesto,
-                    lineaPrioId: p.idLinea,
-                    lineaL8Id: 'L8'
-                  });
-                  dbEmulator.addLog(`Rotación: Solicitando relevo de L8 para ${p.nombreTarea}.`, 'warning');
-                } else {
-                  // Reintentar en la próxima ventana
-                  transaction.update('puestos', p.idPuesto, { timer: 20, rotacionIniciada: false });
-                }
-              }
-            }
-          });
-        });
+        // Decremento atómico de temporizadores en Firestore real
+        if (turnoIniciado) {
+          firebaseDecrementarTemporizadores(simSpeed);
+        }
 
         return { hour: newHour, minute: newMin, second: newSec };
       });
     }, 1000);
 
     return () => clearInterval(timerRef.current);
-  }, [simSpeed, puestos.length]);
+  }, [simSpeed, turnoIniciado]);
 
   const evaluarFiltrosBasicos = (worker, puesto) => {
     if (puesto.sexoRequerido !== 'Indiferente' && worker.sexo !== puesto.sexoRequerido) return false;
