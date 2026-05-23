@@ -1,0 +1,222 @@
+================================================================================
+MANUAL DE LÓGICA DE NEGOCIO Y REGLAS OPERATIVAS - SMARTASSIGN
+================================================================================
+Este documento contiene la especificación completa, las reglas de negocio, los 
+filtros defensivos y el comportamiento del personal diseñado para la aplicación 
+móvil de piso de planta "SmartAssign". Sirve como la Biblia Operativa oficial 
+para el desarrollo del software, modelado de bases de datos en Firebase Firestore 
+y empaquetado nativo con Capacitor.
+
+--------------------------------------------------------------------------------
+1. ESTRUCTURA E INFRAESTRUCTURA DE LA PLANTA
+--------------------------------------------------------------------------------
+La aplicación gobierna un entorno industrial de alta cadencia compuesto por 10 
+líneas de producción activas y un pool móvil de 160 trabajadores. El sistema 
+opera bajo turnos variables (8 horas, 12 horas, turnos dobles o triples) según la 
+demanda cargada diariamente desde un archivo centralizador de Google Sheets.
+
+Jerarquía Estricta de Prioridad de Planta:
+El llenado de personal y las asignaciones no ocurren de forma aleatoria. Existe 
+una jerarquía corporativa absoluta e inamovible. Ninguna línea de menor prioridad 
+puede recibir o retener a un operario si una línea superior tiene una vacante 
+compatible desocupada. El orden estricto de precedencia es el siguiente:
+
+Línea 4 > Línea 1 > Línea 2 > Línea 6 > Línea 7 > Línea 5 > Línea 3 > Línea 8 (Bolsón) > Línea 9 > Línea 10
+
+Línea 8 (Línea Bolsón): Es una línea de ensamble manual que funciona como el 
+"pulmón" o amortiguador de recursos humanos de la planta. Siempre cuenta con 
+personal de soporte excedente que puede ser extraído de inmediato para cubrir las 
+necesidades de las líneas críticas.
+
+Categorización Técnica del Personal:
+1. Operadores A: Mano de obra de máxima calificación técnica. Son fijos, 
+   indispensables y se congelan estructuralmente en maquinaria crítica al inicio 
+   del turno.
+2. Averieros: Personal técnico de soporte fijo encargado de resguardar la 
+   continuidad mecánica y eléctrica de la línea.
+3. Operadores C (En entrenamiento): Personal técnico júnior bajo un programa de 
+   capacitación controlada que opera en puestos fijos bajo tutoría.
+4. Operadores B: Personal calificado de alta flexibilidad y versatilidad. Tienen 
+   la capacidad técnica de cubrir puestos mecánicos fijos (como reemplazos) o 
+   tareas varias estratégicas.
+5. Operarios: Personal general destinado a cubrir las actividades operativas y 
+   puestos varios rotativos de la planta.
+
+--------------------------------------------------------------------------------
+2. MÁQUINA DE ESTADOS DEL PERSONAL
+--------------------------------------------------------------------------------
+Para evitar asignaciones duplicadas, pérdida de rastro en los pasillos o que dos 
+supervisores intenten jalar al mismo trabajador simultáneamente, cada operario 
+debe transicionar estrictamente entre los siguientes estados en la base de datos:
+
+- INACTIVO: El trabajador está ausente de la planta, de permiso de día completo o 
+  su turno asignado ya finalizó.
+- POOL_ARRANQUE: El personal ha registrado su huella dactilar al ingresar a la 
+  planta y se encuentra físicamente en la sala de espera o pasillo general aguardando 
+  su asignación inicial del turno.
+- ASIGNADO: El operario se encuentra físicamente operando en un puesto de trabajo 
+  específico de una línea (ya sea en un Puesto Fijo Técnico o un Puesto Vario).
+- EN_TRANSITO: El trabajador ha sido despachado hacia una línea destino y va 
+  caminando por los pasillos. Su perfil está bloqueado en el sistema; ningún otro 
+  supervisor puede escanearlo o jalarlo mientras mantenga este estado. Registra 
+  obligatoriamente la variable 'lineaDestinoId'.
+- DISPONIBLE_BOLSON: El operario está asignado y trabajando activamente en las 
+  mesas de ensamble manual de la Línea 8, funcionando como reserva disponible para 
+  cualquier relevo en la planta.
+- BAJA_TEMPORAL: El trabajador ha sido retirado temporalmente de la operación por 
+  el Coordinador debido a una consulta médica interna, atención en enfermería o 
+  un permiso temporal de salida intermedia.
+
+--------------------------------------------------------------------------------
+3. LOS 5 MOTORES ALGORÍTMICOS DE DISTRIBUCIÓN (El Cerebro)
+--------------------------------------------------------------------------------
+
+Motor 1: Pre-llenado de Puestos Fijos (Minuto Cero del Turno)
+Al arrancar la jornada, el Coordinador pasa asistencia en su pantalla táctil. Al 
+confirmar el inicio del turno, el sistema analiza el producto (SKU) programado 
+para cada línea activa y ejecuta una congelación atómica de puestos mecánicos:
+- El algoritmo identifica y asigna automáticamente a los Operadores A, Averieros 
+  y Operadores C presentes en sus respectivas máquinas estructurales.
+- Excepción de Ausencia y Rastro Dual: Si el titular original de un puesto fijo 
+  está ausente o en BAJA_TEMPORAL, la lógica busca de inmediato un reemplazo calificado 
+  (un Operador B disponible en el pool). Al asignarlo, el puesto registra dos datos 
+  críticos de forma simultánea: el ID del operario actual que cubre el puesto (el 
+  reemplazo) y el ID del dueño original del puesto (el titular en baja). Esto es 
+  indispensable para el protocolo de retorno rápido. El resto de personal que no 
+  ocupa un puesto fijo pasa directamente al estado POOL_ARRANQUE en la sala de espera.
+
+Motor 2: Intercepción Defensiva por Prioridad Global (Escaneo QR / Ficha)
+Los puestos varios arrancan completamente vacíos. El supervisor va a la sala de 
+espera, selecciona a un grupo de operarios libres y se los lleva físicamente a su 
+línea. Al llegar a la estación de trabajo, abre la app en su teléfono y escanea 
+su código QR (o busca su número de nómina). Antes de permitir que el operario 
+ocupe la vacante local, el algoritmo ejecuta tres filtros estrictos en milisegundos:
+1. Filtro de Sexo y Salud: Valida que el operario cumpla con la restricción de género 
+   si la tarea es exclusiva (por diseño de ingeniería) y cruza sus restricciones 
+   médicas activas. Si el puesto exige una actividad física de la cual el operario 
+   está eximido por constancia de enfermería, la asignación se bloquea de inmediato.
+2. Filtro de Historial (No Repetición): Por salud ocupacional y ergonomía, si el 
+   trabajador cerró su jornada laboral del día anterior desempeñando una actividad 
+   desgastante (ej. Giro de Botellas), el sistema prohíbe terminantemente que inicie 
+   su jornada de hoy en esa misma tarea exacta.
+3. Filtro de Intercepción por Prioridad Global: Si el operario supera los filtros locales, 
+   el algoritmo abre un bucle y barre las líneas de MAYOR PRIORIDAD activas anteriores 
+   a la línea actual. Si una línea superior tiene una vacante de puesto vario vacía y 
+   compatible con el perfil del operario, la asignación local se aborta automáticamente. 
+   La aplicación emite una alerta sonora/visual y fuerza al operario al estado EN_TRANSITO 
+   con la 'lineaDestinoId' fija hacia la línea prioritaria, notificando al supervisor 
+   destino para que lo espere en su pantalla.
+
+Motor 3: El Relevo Ergonómico y el Efecto Dominó en Cascada
+Por normativas de salud en el trabajo, ningún operario puede pasar más de 2 horas 
+continuas expuesto a la misma tarea en un puesto vario. Para proteger el rendimiento 
+del procesador del teléfono móvil, los temporizadores no decrementan segundo a 
+segundo en la base de datos; se calculan al vuelo en la interfaz restando la hora 
+actual del dispositivo del timestamp fijo estampado al asignarlo (asignadoEnSegundoVirtual).
+- El Relevo Inteligente: Cuando el cálculo detecta que el puesto de una línea prioritaria 
+  (ej. Línea 4) está por vencer, el sistema identifica de forma automática al candidato 
+  más apto y compatible que esté trabajando actualmente en la Línea 8 (Bolsón) en 
+  estado DISPONIBLE_BOLSON.
+- Despacho y Recepción Manual: El supervisor de la Línea 8 recibe una alerta táctil 
+  crítica en su teléfono. Al presionar el botón [Aprobar Salida], el operario pasa a 
+  estado EN_TRANSITO. El supervisor de la línea prioritaria ve actualizarse su pantalla 
+  avisando que el relevo viene en camino. Al llegar el operario al piso de la línea, el 
+  supervisor escanea su QR, el entrante toma el puesto y se estampa su nueva marca de 
+  tiempo real (Date.now()).
+- El Efecto Dominó (La Cascada del Relevado): En ese mismo instante, el operario saliente 
+  (el relevado de la Línea 4) queda libre. El algoritmo NO lo manda ciegamente de regreso 
+  al Bolsón. El motor en caliente recorre toda la planta por estricto orden de prioridad 
+  buscando vacantes de puestos varios desocupados compatibles con su ficha médica y sexo. 
+  Si encuentra un hueco (ej. en la Línea 2), lo re-enruta de inmediato en estado EN_TRANSITO 
+  hacia allá, alertando al nuevo supervisor. Solo si todas las líneas activas de la planta 
+  están perfectamente llenas y balanceadas, el operario retorna a la Línea 8 en estado 
+  DISPONIBLE_BOLSON para reincorporarse al ensamble manual.
+
+Motor 4: Desalojo Atómico por Modo Preparación (Paros de Máquina)
+Cuando una línea de producción finaliza un lote, se detiene por falla mecánica o requiere 
+limpieza profunda entre formatos, el supervisor presiona el modo "En Preparación" desde su HUD:
+- Anclaje Técnico: Los puestos de tipo Fijo (Operadores A y Averieros) permanecen 
+  congelados y anclados a la máquina física para ejecutar las tareas de puesta a punto, 
+  mantenimiento preventivo o limpieza técnica.
+- Desalojo Masivo Productivo: Todos los puestos de tipo Vario de esa línea se limpian y 
+  quedan vacantes en un milisegundo. Los operarios generales que estaban en ellos cambian 
+  su estado de forma automática a EN_TRANSITO con destino directo e inmediato hacia la 
+  Línea 8 (Bolsón). El supervisor de la Línea 8 ve aparecer las notificaciones de llegada 
+  para absorberlos en las mesas de ensamble manual, garantizando que la planta no pierda 
+  un solo minuto de productividad por paros de máquina.
+
+Motor 5: Protocolo de Reincorporación Diferencial (Altas Médicas)
+Cuando un trabajador regresa de la enfermería o de una consulta externa de salud a mitad 
+del turno, el Coordinador registra su alta en la pestaña de administración, disparando 
+una bifurcación lógica según la especialización técnica del operario:
+- Caso Puesto Fijo (Especialistas): El algoritmo localiza el puesto técnico exacto de la 
+  planta donde este trabajador específico está registrado como el dueño original 
+  (idWorkerOriginal). De forma inmediata, el titular reasume su máquina de forma nativa y 
+  desaloja al reemplazo temporal (el Operador B) que lo estuvo cubriendo. Este reemplazo 
+  liberado no va a la sala de espera; se le inyecta directamente al Motor 3 (Efecto Dominó 
+  en Cascada) para que el algoritmo busque si hay vacantes prioritarias abiertas en la 
+  planta antes de mandarlo de regreso al Bolsón.
+- Caso Puesto Vario (Generales): Para evitar traslados innecesarios y flujos cruzados en 
+  los pasillos de producción, el operario de puesto vario que recibe el alta médica es 
+  enviado directamente a las mesas de la Línea 8 en estado DISPONIBLE_BOLSON para ser 
+  absorbido de manera natural en la siguiente ventana de rotación ergonómica.
+
+--------------------------------------------------------------------------------
+4. REGLAS DE INTERFAZ Y EXPERIENCIA DE USUARIO (UX) INDUSTRIAL
+--------------------------------------------------------------------------------
+Para garantizar que la aplicación se comporte como un software táctico de misión 
+crítica en el piso de manufactura y no como un prototipo interactivo de escritorio, 
+la interfaz gráfica responde a tres leyes estrictas de diseño Lean:
+
+1. Bloqueo Persistente de Terminal (Device Lockdown):
+   Al abrir la aplicación por primera vez en el teléfono, se despliega una pantalla 
+   única para configurar qué línea de producción tiene asignada ese terminal físico 
+   (ej. Línea 4). Esta selección se guarda de forma persistente en el almacenamiento 
+   local del dispositivo. A partir de ese instante, cada vez que el supervisor abra 
+   o recargue la app en su turno, el sistema se saltará cualquier menú e ingresará 
+   DIRECTO y en pantalla completa al HUD operativo de su línea. 
+   - Desbloqueo de Mantenimiento Oculto: Para evitar modificaciones accidentales, se 
+     elimina cualquier botón de "Cerrar Sesión" o "Cambiar Línea". Si el Coordinador 
+     necesita reconfigurar el teléfono, debe dar 3 toques rápidos consecutivos sobre 
+     el texto del "SKU" en el encabezado de la pantalla operativa. Esto levantará una 
+     confirmación de seguridad para limpiar la persistencia y liberar el dispositivo.
+
+2. Diseño HUD (Heads-Up Display) para una Sola Mano:
+   El supervisor camina entre máquinas, ruidos y carretillas; opera la app sosteniendo 
+   el teléfono con una mano mientras asiste o señala con la otra.
+   - Tercio Superior Dinámico (Alertas Activas): Reservado exclusivamente para acciones 
+     críticas de alta prioridad. Si hay un relevista en camino o una solicitud de salida 
+     pendiente (si es Línea 8), aparece una tarjeta masiva parpadeante en amarillo/naranja 
+     con un botón de acción gigante (ej. [REGISTRAR LLEGADA DE RELEVISTA]). Si la línea 
+     está estable, muestra una barra verde sólida de "LÍNEA BALANCEADA".
+   - Tarjetas de Puestos Rugged: Con una altura mínima de 80px, textos en negrita gigantes 
+     y alto contraste (fuentes brillantes sobre fondos oscuros texturizados) para permitir 
+     una lectura impecable bajo reflejos extremos o iluminación fluorescente severa.
+   - FAB QR para el Pulgar: El botón de escaneo es un control circular de tamaño maximizado 
+     ubicado en la esquina inferior derecha, al alcance natural del dedo pulgar.
+
+3. Buscador de Contingencia por Ficha / Número de Nómina:
+   En el piso de producción real, los gafetes impresos se rayan, se manchan con grasa de 
+   máquina o las cámaras de los teléfonos móviles sufren para enfocar debido a la baja 
+   iluminación. Por ello, el modal de escaneo integra un Buscador Manual Autocompletable 
+   justo debajo del visor láser animado. El supervisor puede escribir rápidamente el ID de 
+   nómina o el nombre del operario; el filtrado es instantáneo sobre el personal libre y, 
+   al tocarlo, la asignación y las validaciones del motor se ejecutan de inmediato en la 
+   base de datos, cerrando el modal automáticamente en milisegundos para devolver al 
+   supervisor a su pantalla operativa sin pasos intermedios.
+
+--------------------------------------------------------------------------------
+5. ARQUITECTURA TÉCNICA E INTEGRACIÓN CON CAPACITOR
+--------------------------------------------------------------------------------
+- Empaquetamiento Nativo: La aplicación está construida sobre React + Vite utilizando 
+  Tailwind CSS para los estilos de alta velocidad. Mediante Capacitor, los recursos 
+  web de la carpeta 'dist' se sincronizan y encapsulan dentro del andamio nativo de 
+  la carpeta '/android'.
+- Sincronización y Modo Offline: Al compilar el archivo 'app-debug.apk' a través de 
+  Android Studio e instalarlo en los teléfonos de piso, la SDK de Firebase Firestore 
+  asume el control de la persistencia interna. Si el supervisor entra en un área blindada 
+  o sin cobertura de red inalámbrica, las transacciones y asignaciones se guardan de 
+  forma segura en el almacenamiento interno del teléfono y se sincronizan de manera 
+  remota en el segundo exacto en que el terminal recupera la señal, evitando la pérdida 
+  de datos o el congelamiento de la aplicación móvil.
+================================================================================
