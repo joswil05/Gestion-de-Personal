@@ -1,9 +1,15 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { 
-  LINEAS_MOCK, 
-  TRABAJADORES_MOCK, 
-  PUESTOS_PLANTILLA 
-} from './mocks/mockData';
+  dbEmulator,
+  firebaseInicializarTurno,
+  firebaseEscanearQR,
+  firebaseAprobarDespachoRotacion,
+  firebaseCompletarRotacionYCascada,
+  firebaseReincorporarTrabajador,
+  firebaseActivarPreparacion,
+  firebaseRestablecerLinea,
+  ORDEN_PRIORIDADES
+} from './services/firebaseService';
 import { 
   Users, 
   Activity, 
@@ -15,32 +21,22 @@ import {
   Play, 
   Pause, 
   FastForward, 
-  Plus, 
-  ArrowRight,
-  UserCheck,
-  UserMinus,
-  Settings,
-  HelpCircle
+  Settings
 } from 'lucide-react';
 import './App.css';
 
 function App() {
-  // --- ESTADOS DE LA APLICACIÓN (Simulación de DB) ---
-  const [workers, setWorkers] = useState(TRABAJADORES_MOCK);
-  const [lines, setLines] = useState(LINEAS_MOCK);
+  // --- ESTADOS DE LA APLICACIÓN (Sincronizados en tiempo real con Firestore) ---
+  const [workers, setWorkers] = useState([]);
+  const [lines, setLines] = useState([]);
   const [puestos, setPuestos] = useState([]);
   const [alerts, setAlerts] = useState([]);
-  const [activeTab, setActiveTab] = useState('coordinador'); // coordinator o supervisor
-  const [selectedLineId, setSelectedLineId] = useState('L4'); // Línea por defecto en vista supervisor
-  const [turnoIniciado, setTurnoIniciado] = useState(false);
   const [logs, setLogs] = useState([]);
 
-  // --- ESTADO DEL SIMULADOR DE TIEMPO ---
-  const [simTime, setSimTime] = useState({ hour: 6, minute: 0, second: 0 });
-  const [simSpeed, setSimSpeed] = useState(1); // 0: Pausado, 1: Normal, 10: Rápido (para ver expirar temporizadores)
-  const timerRef = useRef(null);
-
-  // --- ESTADOS DE UI ---
+  // --- ESTADOS LOCALES DE INTERFAZ ---
+  const [activeTab, setActiveTab] = useState('coordinador');
+  const [selectedLineId, setSelectedLineId] = useState('L4');
+  const [turnoIniciado, setTurnoIniciado] = useState(false);
   const [selectedWorkerQR, setSelectedWorkerQR] = useState('');
   const [qrError, setQrError] = useState('');
   const [qrSuccess, setQrSuccess] = useState('');
@@ -48,7 +44,30 @@ function App() {
   const [showQrModal, setShowQrModal] = useState(false);
   const [showSheetsModal, setShowSheetsModal] = useState(false);
 
-  // --- LOGICA DEL RELOJ DE SIMULACIÓN Y TEMPORIZADORES ---
+  // --- ESTADO DEL SIMULADOR DE TIEMPO ---
+  const [simTime, setSimTime] = useState({ hour: 6, minute: 0, second: 0 });
+  const [simSpeed, setSimSpeed] = useState(1); // 0: Pausado, 1: Normal, 20: Rápido
+  const timerRef = useRef(null);
+
+  // 1. SUSCRIPCIÓN EN TIEMPO REAL A FIRESTORE (Patrón de diseño reactivo corporativo)
+  useEffect(() => {
+    const unsubscribe = dbEmulator.subscribe(state => {
+      setWorkers(state.workers);
+      setLines(state.lines);
+      setPuestos(state.puestos);
+      setAlerts(state.alerts);
+      setLogs(state.logs);
+      
+      // Activar flag de turno si hay puestos cargados en la base de datos
+      if (state.puestos.length > 0) {
+        setTurnoIniciado(true);
+      }
+    });
+
+    return () => unsubscribe();
+  }, []);
+
+  // 2. RELOJ DE SIMULACIÓN Y DECREMENTO DE TEMPORIZADORES EN FIRESTORE
   useEffect(() => {
     if (simSpeed === 0) {
       if (timerRef.current) clearInterval(timerRef.current);
@@ -73,20 +92,53 @@ function App() {
           newHour = 0;
         }
 
-        // Actualizar temporizadores de puestos asignados si el turno está activo
+        // Actualizar temporizadores de puestos directamente en la base de datos mediante transacciones
         if (turnoIniciado) {
-          setPuestos(currentPuestos => {
-            return currentPuestos.map(p => {
-              if (p.tipo === 'Vario' && p.idWorkerAsignado && p.timer > 0) {
-                const newTimer = Math.max(0, p.timer - 1 * simSpeed);
-                // Si el temporizador llega a cero (o está cerca, ej: menos de 20s) y no hay alerta activa
-                if (newTimer <= 30 && newTimer > 0 && !p.rotacionIniciada) {
-                  triggerRotacionAutomatica(p.idPuesto, p.idLinea);
-                  p.rotacionIniciada = true;
+          dbEmulator.runTransaction(async (transaction) => {
+            const todosLosPuestos = transaction.query('puestos', p => p.tipo === 'Vario' && p.idWorkerAsignado !== null);
+            
+            todosLosPuestos.forEach(p => {
+              if (p.timer > 0) {
+                const nuevoTiempo = Math.max(0, p.timer - 1 * simSpeed);
+                transaction.update('puestos', p.idPuesto, { timer: nuevoTiempo });
+
+                // Al llegar a menos de 30 segundos, el motor detecta la necesidad de rotación
+                if (nuevoTiempo <= 30 && nuevoTiempo > 0 && !p.rotacionIniciada) {
+                  transaction.update('puestos', p.idPuesto, { rotacionIniciada: true });
+                  
+                  // Lanzar rotación
+                  const workerSaliente = transaction.get('workers', p.idWorkerAsignado);
+                  
+                  // Buscar operario compatible en Línea 8
+                  const candidatosL8 = transaction.query('workers', w => 
+                    w.lineaActualId === 'L8' && 
+                    w.estadoActual === 'DISPONIBLE_BOLSON' &&
+                    evaluarFiltrosSimples(w, p) === true
+                  );
+
+                  if (candidatosL8.length > 0) {
+                    const relevo = candidatosL8[0];
+                    const alertaId = `ALERTA_ROT_${p.idPuesto}_${relevo.idWorker}_${Date.now()}`;
+                    
+                    transaction.set('alerts', alertaId, {
+                      id: alertaId,
+                      type: 'solicitud_rotacion',
+                      title: `ROTACIÓN REQUERIDA (L8 ➜ ${p.idLinea})`,
+                      message: `Línea prioritaria ${p.idLinea} solicita a ${relevo.nombre} para relevar a ${workerSaliente.nombre} en ${p.nombreTarea}.`,
+                      workerSalienteId: workerSaliente.idWorker,
+                      workerEntranteId: relevo.idWorker,
+                      puestoId: p.idPuesto,
+                      lineaPrioId: p.idLinea,
+                      lineaL8Id: 'L8'
+                    });
+                    
+                    dbEmulator.addLog(`Servicio Rotación: Alerta emitida. Solicitando relevo de L8 para ${p.nombreTarea}.`, 'warning');
+                  } else {
+                    // Si no hay candidatos, retrasamos levemente el timer para reintentar después
+                    transaction.update('puestos', p.idPuesto, { timer: 30, rotacionIniciada: false });
+                  }
                 }
-                return { ...p, timer: newTimer };
               }
-              return p;
             });
           });
         }
@@ -98,695 +150,92 @@ function App() {
     return () => clearInterval(timerRef.current);
   }, [simSpeed, turnoIniciado]);
 
-  // Agregar log al feed de eventos
-  const addLog = (message, type = 'info') => {
-    const timestamp = `${String(simTime.hour).padStart(2, '0')}:${String(simTime.minute).padStart(2, '0')}:${String(simTime.second).padStart(2, '0')}`;
-    setLogs(prev => [{ timestamp, message, type }, ...prev].slice(0, 100));
+  // Función de evaluación simple de filtros para el cron en background
+  const evaluarFiltrosSimples = (worker, puesto) => {
+    if (puesto.sexoRequerido !== 'Indiferente' && worker.sexo !== puesto.sexoRequerido) return false;
+    if (worker.restriccionesMedicas && worker.restriccionesMedicas.length > 0) {
+      const tieneRestriccion = puesto.restriccionesProhibidas && puesto.restriccionesProhibidas.some(r => 
+        worker.restriccionesMedicas.includes(r)
+      );
+      if (tieneRestriccion) return false;
+    }
+    if (worker.ultimaActividadAyer && worker.ultimaActividadAyer.toLowerCase().trim() === puesto.nombreTarea.toLowerCase().trim()) return false;
+    return true;
   };
 
-  // --- INGESTA DE PROGRAMA DEL DIA Y REGISTRO DE HUELLA (FASE 1 & 2) ---
-  const handleIniciarTurno = () => {
-    // 1. Simular registro de huella en bloque para trabajadores inactivos o en pool
-    setWorkers(prev => prev.map(w => {
-      if (w.rol !== 'Coordinador' && w.rol !== 'Supervisor' && w.estadoActual !== 'BAJA_TEMPORAL') {
-        return {
-          ...w,
-          estadoActual: 'POOL_ARRANQUE',
-          lineaActualId: null,
-          puestoActualId: null
-        };
-      }
-      return w;
-    }));
+  // --- INTERACCIONES DE INTERFAZ QUE LLAMAN AL CEREBRO DE FIREBASE ---
 
-    addLog("Ingesta de programa de producción desde Google Sheets completada.", "success");
-    addLog("Simulación de registro de huella dactilar: 20 operarios en Pool de Arranque.", "info");
-
-    // 2. Crear los puestos vacíos para cada línea en base a la plantilla
-    const nuevosPuestos = [];
-    lines.forEach(l => {
-      // Agregar puestos fijos
-      PUESTOS_PLANTILLA.fijos.forEach((pf, index) => {
-        nuevosPuestos.push({
-          idPuesto: `${l.idLinea}_F${index + 1}`,
-          idLinea: l.idLinea,
-          tipo: 'Fijo',
-          nombreTarea: `${pf.nombreTarea} (${l.nombre})`,
-          rolRequerido: pf.rolRequerido,
-          idWorkerAsignado: null,
-          idWorkerOriginal: null
-        });
-      });
-      // Agregar puestos varios
-      const variosDeLinea = PUESTOS_PLANTILLA.varios[l.idLinea] || [];
-      variosDeLinea.forEach(pv => {
-        nuevosPuestos.push({
-          idPuesto: pv.idPuesto,
-          idLinea: l.idLinea,
-          tipo: 'Vario',
-          nombreTarea: pv.nombreTarea,
-          sexoRequerido: pv.sexoRequerido,
-          restriccionesProhibidas: pv.restriccionesProhibidas,
-          idWorkerAsignado: null,
-          timer: 120, // 2 minutos para demostración rápida en lugar de 2 horas
-          maxHorasPermitidas: 2,
-          rotacionIniciada: false
-        });
-      });
-    });
-
-    // 3. Algoritmo al minuto cero: Congelar Puestos Fijos (Operadores A, Averieros, Operadores C en entrenamiento)
-    const puestosConAsignacion = [...nuevosPuestos];
-    const workersActualizados = [...TRABAJADORES_MOCK].map(w => {
-      if (w.rol === 'Coordinador' || w.rol === 'Supervisor') return w;
-      if (w.estadoActual === 'BAJA_TEMPORAL') return w;
-      return { ...w, estadoActual: 'POOL_ARRANQUE' };
-    });
-
-    puestosConAsignacion.forEach(puesto => {
-      if (puesto.tipo === 'Fijo') {
-        // Encontrar un trabajador apto para este puesto fijo en el pool
-        const indexApto = workersActualizados.findIndex(w => 
-          w.rol === puesto.rolRequerido && 
-          w.estadoActual === 'POOL_ARRANQUE'
-        );
-
-        if (indexApto !== -1) {
-          const workerSelected = workersActualizados[indexApto];
-          puesto.idWorkerAsignado = workerSelected.idWorker;
-          puesto.idWorkerOriginal = workerSelected.idWorker; // Titular
-          
-          workersActualizados[indexApto] = {
-            ...workerSelected,
-            estadoActual: 'ASIGNADO',
-            lineaActualId: puesto.idLinea,
-            puestoActualId: puesto.idPuesto
-          };
-        } else {
-          // Si el titular de este puesto fijo está en BAJA_TEMPORAL, buscar un reemplazo temporal calificado (Operador B u Operador C entrenado)
-          // Buscamos quién es el dueño original de este rol
-          const titularOriginal = workersActualizados.find(w => w.rol === puesto.rolRequerido && w.estadoActual === 'BAJA_TEMPORAL');
-          if (titularOriginal) {
-            puesto.idWorkerOriginal = titularOriginal.idWorker; // Guardamos quién debiera ser
-            
-            // Buscamos un reemplazo de nivel Operador B o C entrenado en el pool
-            const indexReemplazo = workersActualizados.findIndex(w => 
-              (w.rol === 'Operador B' || w.rol === 'Operador C (Entrenado)') && 
-              w.estadoActual === 'POOL_ARRANQUE'
-            );
-
-            if (indexReemplazo !== -1) {
-              const reemplazo = workersActualizados[indexReemplazo];
-              puesto.idWorkerAsignado = reemplazo.idWorker;
-              
-              workersActualizados[indexReemplazo] = {
-                ...reemplazo,
-                estadoActual: 'ASIGNADO',
-                lineaActualId: puesto.idLinea,
-                puestoActualId: puesto.idPuesto
-              };
-              addLog(`Reemplazo Temporal: ${reemplazo.nombre} cubre Puesto Fijo (${puesto.nombreTarea}) por baja de titular.`, 'warning');
-            }
-          }
-        }
-      }
-    });
-
-    setPuestos(puestosConAsignacion);
-    setWorkers(workersActualizados);
-    setTurnoIniciado(true);
-    addLog("Asignación Automática de Puestos Fijos al Minuto Cero ejecutada. Técnicos congelados.", "success");
+  const handleIniciarTurno = async () => {
+    try {
+      await firebaseInicializarTurno();
+    } catch (e) {
+      console.error(e);
+    }
   };
 
-  // --- DISTRIBUCIÓN POR ESCANEO QR CON FILTROS EN TIEMPO REAL (FASE 3) ---
-  const handleEscanearQR = (workerId, lineaId) => {
+  const handleEscanearQRSupervisor = async () => {
     setQrError('');
     setQrSuccess('');
     setQrWarning('');
 
-    const worker = workers.find(w => w.idWorker === workerId);
-    if (!worker) {
-      setQrError("Código QR no reconocido en el sistema.");
-      return;
-    }
-
-    if (worker.estadoActual === 'ASIGNADO' && worker.lineaActualId === lineaId) {
-      setQrError(`${worker.nombre} ya se encuentra asignado en esta línea.`);
-      return;
-    }
-
-    // Si el trabajador está en tránsito hacia esta línea, se permite asignarlo
-    // Si está asignado en otra línea fija, no se puede jalar así nada más (salvo rotación)
-    if (worker.estadoActual === 'ASIGNADO' && worker.rol === 'Operador A') {
-      setQrError(`${worker.nombre} es un Operador A congelado en su puesto técnico.`);
-      return;
-    }
-
-    // 1. OBTENER PUESTOS VARIOS VACÍOS DE LA LÍNEA
-    const puestosVariosVacios = puestos.filter(p => p.idLinea === lineaId && p.tipo === 'Vario' && !p.idWorkerAsignado);
-    if (puestosVariosVacios.length === 0) {
-      setQrError(`No hay puestos varios disponibles en la ${lines.find(l => l.idLinea === lineaId).nombre}.`);
-      return;
-    }
-
-    // 2. COMPROBAR FILTRO CRÍTICO 3: PRIORIDAD DE LA PLANTA
-    // Si hay una línea con mayor prioridad que requiere personal y tiene puestos vacíos, 
-    // y el trabajador califica, alertar al supervisor que lo mande para allá.
-    const ordenPrio = ['L4', 'L1', 'L2', 'L6', 'L7', 'L5', 'L3', 'L8', 'L9', 'L10'];
-    const lineaActualPrioIdx = ordenPrio.indexOf(lineaId);
-
-    for (let i = 0; i < lineaActualPrioIdx; i++) {
-      const lineaPrioId = ordenPrio[i];
-      const lineaPrio = lines.find(l => l.idLinea === lineaPrioId);
-      
-      if (lineaPrio && lineaPrio.estado === 'Operando') {
-        const puestosPrioVacios = puestos.filter(p => p.idLinea === lineaPrioId && p.tipo === 'Vario' && !p.idWorkerAsignado);
-        
-        if (puestosPrioVacios.length > 0) {
-          // Verificar si el trabajador califica para al menos uno de esos puestos en la línea de mayor prioridad
-          const calificaParaPrio = puestosPrioVacios.some(p => evaluarCompatibilidadPuesto(worker, p) === true);
-          
-          if (calificaParaPrio) {
-            setQrWarning(`DESVÍO POR PRIORIDAD: La línea ${lineaPrio.nombre} es de mayor prioridad y tiene puestos vacantes compatibles. Por favor, despache a ${worker.nombre} hacia allá.`);
-            addLog(`Filtro Prioridad: Redirección sugerida de ${worker.nombre} hacia ${lineaPrio.nombre} (Prioridad superior)`, 'warning');
-            
-            // Opcionalmente podemos forzar el desvío poniéndolo en tránsito hacia la prioritaria
-            setWorkers(prev => prev.map(w => {
-              if (w.idWorker === worker.idWorker) {
-                return {
-                  ...w,
-                  estadoActual: 'EN_TRANSITO',
-                  lineaActualId: null,
-                  lineaDestinoId: lineaPrioId,
-                  puestoActualId: null
-                };
-              }
-              return w;
-            }));
-            
-            // Crear alerta para el supervisor de destino
-            crearAlertaEnTransito(worker.idWorker, lineaPrioId);
-            return;
-          }
-        }
-      }
-    }
-
-    // 3. INTENTAR ASIGNAR AL PRIMER PUESTO COMPATIBLE EN LA LÍNEA SOLICITADA
-    for (let puesto of puestosVariosVacios) {
-      const compatibilidad = evaluarCompatibilidadPuesto(worker, puesto);
-      if (compatibilidad === true) {
-        // Asignación Exitosa!
-        setPuestos(prev => prev.map(p => {
-          if (p.idPuesto === puesto.idPuesto) {
-            return {
-              ...p,
-              idWorkerAsignado: worker.idWorker,
-              timer: 120, // Reset temporizador
-              rotacionIniciada: false
-            };
-          }
-          return p;
-        }));
-
-        setWorkers(prev => prev.map(w => {
-          if (w.idWorker === worker.idWorker) {
-            return {
-              ...w,
-              estadoActual: 'ASIGNADO',
-              lineaActualId: lineaId,
-              lineaDestinoId: null,
-              puestoActualId: puesto.idPuesto
-            };
-          }
-          return w;
-        }));
-
-        // Limpiar alertas de tránsito antiguas si las hay
-        setAlerts(prev => prev.filter(a => !(a.workerId === worker.idWorker && a.type === 'transito')));
-
-        setQrSuccess(`Asignación EXITOSA: ${worker.nombre} asignado a ${puesto.nombreTarea}.`);
-        addLog(`QR Escaneo: ${worker.nombre} asignado con éxito a ${puesto.nombreTarea} en la Línea ${lineaId}.`, 'success');
-        return;
+    try {
+      const result = await firebaseEscanearQR(selectedWorkerQR, selectedLineId);
+      if (result.status === 'redirigido') {
+        setQrWarning(result.msg);
       } else {
-        // Guardar el último error de compatibilidad por si no encuentra ningún puesto
-        setQrError(`Incompatibilidad técnica: ${compatibilidad}`);
+        setQrSuccess(`Asignación Exitosa: Trabajador asignado a ${result.puesto}.`);
+        // Ocultar modal tras éxito
+        setTimeout(() => {
+          setShowQrModal(false);
+          setSelectedWorkerQR('');
+          setQrSuccess('');
+        }, 1500);
       }
+    } catch (error) {
+      setQrError(error.message);
     }
   };
 
-  // Evalúa sexo, restricciones y regla de no repetición de ayer
-  const evaluarCompatibilidadPuesto = (worker, puesto) => {
-    // Filtro de Sexo
-    if (puesto.sexoRequerido !== 'Indiferente' && worker.sexo !== puesto.sexoRequerido) {
-      return `Puesto exclusivo para personal de sexo ${puesto.sexoRequerido}.`;
-    }
-
-    // Filtro de Restricciones Médicas
-    if (worker.restriccionesMedicas && worker.restriccionesMedicas.length > 0) {
-      const tieneRestriccion = puesto.restriccionesProhibidas.some(r => 
-        worker.restriccionesMedicas.includes(r)
-      );
-      if (tieneRestriccion) {
-        return `Restricción médica activa: El trabajador presenta constancia de ${worker.restriccionesMedicas.join(', ')}.`;
-      }
-    }
-
-    // Filtro de Historial de No Repetición (última actividad del día anterior)
-    if (worker.ultimaActividadAyer && worker.ultimaActividadAyer.toLowerCase().trim() === puesto.nombreTarea.toLowerCase().trim()) {
-      return `Historial de No Repetición: El trabajador finalizó su jornada anterior en esta misma actividad (${puesto.nombreTarea}).`;
-    }
-
-    return true;
-  };
-
-  // Crear alerta de tránsito para un supervisor
-  const crearAlertaEnTransito = (workerId, destinoLineaId) => {
-    const worker = workers.find(w => w.idWorker === workerId);
-    const linea = lines.find(l => l.idLinea === destinoLineaId);
-    
-    const nuevaAlerta = {
-      id: `ALERTA_TRANSITO_${workerId}_${Date.now()}`,
-      type: 'transito',
-      title: `TRABAJADOR EN TRÁNSITO`,
-      message: `${worker.nombre} (${worker.rol}) ha sido redirigido a ${linea.nombre}. Por favor, escanee su QR al llegar.`,
-      workerId,
-      lineaDestinoId: destinoLineaId
-    };
-
-    setAlerts(prev => [nuevaAlerta, ...prev]);
-  };
-
-  // --- MOTOR DE ROTACIÓN AUTOMÁTICA Y APROBACIÓN DE L8 (FASE 4) ---
-  const triggerRotacionAutomatica = (puestoId, lineaId) => {
-    const puesto = puestos.find(p => p.idPuesto === puestoId);
-    const workerSaliente = workers.find(w => w.idWorker === puesto.idWorkerAsignado);
-    if (!workerSaliente) return;
-
-    addLog(`Temporizador vencido en ${puesto.nombreTarea} (Línea ${lineaId}). Iniciando búsqueda de relevo.`, 'warning');
-
-    // 1. BUSCAR EN LÍNEA 8 (BOLSON) UN REEMPLAZO CALIFICADO Y DISPONIBLE
-    // Reemplazos de L8 que estén DISPONIBLE_BOLSON y sean compatibles con las restricciones del puesto
-    const candidatosL8 = workers.filter(w => 
-      w.lineaActualId === 'L8' && 
-      w.estadoActual === 'DISPONIBLE_BOLSON' &&
-      evaluarCompatibilidadPuesto(w, puesto) === true
-    );
-
-    if (candidatosL8.length === 0) {
-      addLog(`Alerta de Rotación fallida: No se encontraron operarios compatibles disponibles en la Línea 8 para relevar ${puesto.nombreTarea}.`, 'error');
-      // Extendemos un poco el tiempo para volver a intentar
-      setPuestos(prev => prev.map(p => {
-        if (p.idPuesto === puestoId) {
-          return { ...p, timer: 30, rotacionIniciada: false };
-        }
-        return p;
-      }));
-      return;
-    }
-
-    // Seleccionamos al primer candidato idóneo
-    const relevo = candidatosL8[0];
-
-    // 2. GENERAR ALERTA DE APROBACIÓN PARA EL SUPERVISOR DE LA LÍNEA 8
-    const alertaRotacion = {
-      id: `ALERTA_ROT_${puestoId}_${relevo.idWorker}_${Date.now()}`,
-      type: 'solicitud_rotacion',
-      title: `SOLICITUD DE RELEVO (L8 -> ${lineaId})`,
-      message: `La línea prioritaria ${lines.find(l => l.idLinea === lineaId).nombre} solicita a ${relevo.nombre} para cubrir el puesto ${puesto.nombreTarea}.`,
-      workerSalienteId: workerSaliente.idWorker,
-      workerEntranteId: relevo.idWorker,
-      puestoId,
-      lineaPrioId: lineaId,
-      lineaL8Id: 'L8'
-    };
-
-    setAlerts(prev => [alertaRotacion, ...prev]);
-    addLog(`Solicitud de despacho enviada al Supervisor de la Línea 8 para el operario ${relevo.nombre}.`, 'info');
-  };
-
-  // Supervisor de L8 aprueba el despacho del operario
-  const handleAprobarDespachoL8 = (alerta) => {
-    // 1. Cambiar estado del trabajador entrante a "EN_TRANSITO"
-    setWorkers(prev => prev.map(w => {
-      if (w.idWorker === alerta.workerEntranteId) {
-        return {
-          ...w,
-          estadoActual: 'EN_TRANSITO',
-          lineaActualId: null,
-          lineaDestinoId: alerta.lineaPrioId,
-          puestoActualId: null
-        };
-      }
-      return w;
-    }));
-
-    // 2. Remover al trabajador entrante de su puesto en la Línea 8 (Bolsón)
-    setPuestos(prev => prev.map(p => {
-      if (p.idWorkerAsignado === alerta.workerEntranteId && p.idLinea === 'L8') {
-        return { ...p, idWorkerAsignado: null };
-      }
-      return p;
-    }));
-
-    // 3. Modificar la alerta para el supervisor de la línea prioritaria esperando su llegada
-    const workerEntrante = workers.find(w => w.idWorker === alerta.workerEntranteId);
-    const lineaPrio = lines.find(l => l.idLinea === alerta.lineaPrioId);
-
-    const alertaDestino = {
-      id: `ALERTA_RECEPCION_${alerta.puestoId}_${Date.now()}`,
-      type: 'esperando_recepcion',
-      title: `ESPERANDO RELEVISTA`,
-      message: `El supervisor de L8 despachó a ${workerEntrante.nombre}. Escanee su QR al llegar para concretar la rotación e intercambiar con el saliente.`,
-      workerSalienteId: alerta.workerSalienteId,
-      workerEntranteId: alerta.workerEntranteId,
-      puestoId: alerta.puestoId,
-      lineaPrioId: alerta.lineaPrioId
-    };
-
-    // Eliminar la alerta de aprobación de L8 y añadir la de recepción de la prioritaria
-    setAlerts(prev => prev.filter(a => a.id !== alerta.id).concat(alertaDestino));
-    addLog(`Supervisor de L8 APROBÓ despacho. ${workerEntrante.nombre} está EN TRÁNSITO hacia ${lineaPrio.nombre}.`, 'success');
-  };
-
-  // Simular la llegada y escaneo QR del relevista en la línea prioritaria
-  const handleCompletarRotacion = (alerta) => {
-    const workerEntrante = workers.find(w => w.idWorker === alerta.workerEntranteId);
-    const workerSaliente = workers.find(w => w.idWorker === alerta.workerSalienteId);
-    const puestoPrio = puestos.find(p => p.idPuesto === alerta.puestoId);
-
-    if (!workerEntrante || !workerSaliente || !puestoPrio) return;
-
-    // 1. Asignar al nuevo operario en el puesto prioritario
-    setPuestos(prev => prev.map(p => {
-      if (p.idPuesto === alerta.puestoId) {
-        return {
-          ...p,
-          idWorkerAsignado: workerEntrante.idWorker,
-          timer: 120, // Reiniciar temporizador
-          rotacionIniciada: false
-        };
-      }
-      return p;
-    }));
-
-    // Actualizar estado del entrante
-    setWorkers(prev => prev.map(w => {
-      if (w.idWorker === workerEntrante.idWorker) {
-        return {
-          ...w,
-          estadoActual: 'ASIGNADO',
-          lineaActualId: alerta.lineaPrioId,
-          lineaDestinoId: null,
-          puestoActualId: alerta.puestoId
-        };
-      }
-      return w;
-    }));
-
-    // 2. ALGORITMO DE REDISTRIBUCIÓN EN CASCADA PARA EL TRABAJADOR SALIENTE (RELEVADO)
-    // El operario relevado no va directo a la Línea 8, busca vacantes por orden de prioridad estricta
-    const ordenPrio = ['L4', 'L1', 'L2', 'L6', 'L7', 'L5', 'L3', 'L8', 'L9', 'L10'];
-    let vacanteEncontrada = false;
-    let lineaDestinoId = 'L8'; // Fallback a Línea 8 (Bolsón)
-
-    // Buscar en todas las líneas (menos la Línea 8 que siempre recibe) por prioridad vacantes de puestos varios
-    for (let lineaId of ordenPrio) {
-      if (lineaId === 'L8') continue; // L8 se trata al final si no hay de prioridad superior
-
-      const linea = lines.find(l => l.idLinea === lineaId);
-      if (linea && linea.estado === 'Operando') {
-        const puestosVacios = puestos.filter(p => p.idLinea === lineaId && p.tipo === 'Vario' && !p.idWorkerAsignado);
-        
-        // Buscar un puesto vacío en esta línea donde el operario saliente califique
-        const puestoApto = puestosVacios.find(p => evaluarCompatibilidadPuesto(workerSaliente, p) === true);
-
-        if (puestoApto) {
-          // ¡Encontró vacante en línea prioritaria!
-          vacanteEncontrada = true;
-          lineaDestinoId = lineaId;
-          
-          // Poner al trabajador saliente en tránsito hacia esa línea prioritaria
-          setWorkers(prev => prev.map(w => {
-            if (w.idWorker === workerSaliente.idWorker) {
-              return {
-                ...w,
-                estadoActual: 'EN_TRANSITO',
-                lineaActualId: null,
-                lineaDestinoId: lineaId,
-                puestoActualId: null
-              };
-            }
-            return w;
-          }));
-
-          // Crear alerta de tránsito para el supervisor de esa línea
-          crearAlertaEnTransito(workerSaliente.idWorker, lineaId);
-          addLog(`Redistribución en Cascada: Relevado ${workerSaliente.nombre} redirigido a ${linea.nombre} (Vacante disponible).`, 'success');
-          break;
-        }
-      }
-    }
-
-    if (!vacanteEncontrada) {
-      // Si no hay vacantes en ninguna línea, regresa a Línea 8
-      setWorkers(prev => prev.map(w => {
-        if (w.idWorker === workerSaliente.idWorker) {
-          return {
-            ...w,
-            estadoActual: 'DISPONIBLE_BOLSON',
-            lineaActualId: 'L8',
-            lineaDestinoId: null,
-            puestoActualId: null
-          };
-        }
-        return w;
-      }));
-
-      // Asignarlo a un puesto de ensamble vacío en la Línea 8
-      setPuestos(prev => {
-        const puestosL8Vacios = prev.filter(p => p.idLinea === 'L8' && !p.idWorkerAsignado);
-        if (puestosL8Vacios.length > 0) {
-          return prev.map(p => {
-            if (p.idPuesto === puestosL8Vacios[0].idPuesto) {
-              return { ...p, idWorkerAsignado: workerSaliente.idWorker };
-            }
-            return p;
-          });
-        }
-        return prev;
-      });
-
-      addLog(`Redistribución en Cascada: Relevado ${workerSaliente.nombre} regresa a Línea 8 (Bolsón) al no haber vacantes en planta.`, 'info');
-    }
-
-    // Remover la alerta de recepción
-    setAlerts(prev => prev.filter(a => a.id !== alerta.id));
-    addLog(`Rotación COMPLETADA: ${workerEntrante.nombre} ya opera en ${puestoPrio.nombreTarea}.`, 'success');
-  };
-
-  // --- PROTOCOLO DE REINCORPORACIÓN DESDE BAJA_TEMPORAL (FASE 6) ---
-  const handleReincorporarTrabajador = (workerId) => {
-    const worker = workers.find(w => w.idWorker === workerId);
-    if (!worker || worker.estadoActual !== 'BAJA_TEMPORAL') return;
-
-    addLog(`Iniciando reincorporación de ${worker.nombre} (${worker.rol}).`, 'info');
-
-    if (worker.rol === 'Operador A' || worker.rol === 'Averiero') {
-      // --- CASO PUESTO FIJO ---
-      // 1. Encontrar su puesto original (donde puesto.idWorkerOriginal === workerId)
-      const puestoOriginal = puestos.find(p => p.idWorkerOriginal === workerId);
-      
-      if (puestoOriginal) {
-        const reemplazoId = puestoOriginal.idWorkerAsignado;
-        
-        // Reasignar al titular en su puesto
-        setPuestos(prev => prev.map(p => {
-          if (p.idPuesto === puestoOriginal.idPuesto) {
-            return { ...p, idWorkerAsignado: workerId };
-          }
-          return p;
-        }));
-
-        setWorkers(prev => prev.map(w => {
-          if (w.idWorker === workerId) {
-            return {
-              ...w,
-              estadoActual: 'ASIGNADO',
-              lineaActualId: puestoOriginal.idLinea,
-              puestoActualId: puestoOriginal.idPuesto
-            };
-          }
-          return w;
-        }));
-
-        addLog(`Puesto Fijo: Titular ${worker.nombre} reasume su puesto original en ${puestoOriginal.nombreTarea}.`, 'success');
-
-        // 2. Si había un reemplazo, liberarlo y ejecutar la redistribución en cascada por prioridad
-        if (reemplazoId && reemplazoId !== workerId) {
-          const reemplazo = workers.find(w => w.idWorker === reemplazoId);
-          addLog(`Desalojando reemplazo temporal ${reemplazo.nombre}. Buscando vacante en planta...`, 'warning');
-
-          const ordenPrio = ['L4', 'L1', 'L2', 'L6', 'L7', 'L5', 'L3', 'L8', 'L9', 'L10'];
-          let vacanteEncontrada = false;
-          
-          for (let lineaId of ordenPrio) {
-            if (lineaId === 'L8') continue;
-            
-            const linea = lines.find(l => l.idLinea === lineaId);
-            if (linea && linea.estado === 'Operando') {
-              const puestosVacios = puestos.filter(p => p.idLinea === lineaId && p.tipo === 'Vario' && !p.idWorkerAsignado);
-              const puestoApto = puestosVacios.find(p => evaluarCompatibilidadPuesto(reemplazo, p) === true);
-
-              if (puestoApto) {
-                vacanteEncontrada = true;
-                
-                // Redirigir reemplazo en tránsito a esa línea
-                setWorkers(prev => prev.map(w => {
-                  if (w.idWorker === reemplazoId) {
-                    return {
-                      ...w,
-                      estadoActual: 'EN_TRANSITO',
-                      lineaActualId: null,
-                      lineaDestinoId: lineaId,
-                      puestoActualId: null
-                    };
-                  }
-                  return w;
-                }));
-
-                crearAlertaEnTransito(reemplazoId, lineaId);
-                addLog(`Redistribución: Reemplazo ${reemplazo.nombre} redirigido en tránsito a ${linea.nombre} (Vacante disponible).`, 'success');
-                break;
-              }
-            }
-          }
-
-          if (!vacanteEncontrada) {
-            // Regresa a la Línea 8
-            setWorkers(prev => prev.map(w => {
-              if (w.idWorker === reemplazoId) {
-                return {
-                  ...w,
-                  estadoActual: 'DISPONIBLE_BOLSON',
-                  lineaActualId: 'L8',
-                  lineaDestinoId: null,
-                  puestoActualId: null
-                };
-              }
-              return w;
-            }));
-
-            setPuestos(prev => {
-              const puestosL8Vacios = prev.filter(p => p.idLinea === 'L8' && !p.idWorkerAsignado);
-              if (puestosL8Vacios.length > 0) {
-                return prev.map(p => {
-                  if (p.idPuesto === puestosL8Vacios[0].idPuesto) {
-                    return { ...p, idWorkerAsignado: reemplazoId };
-                  }
-                  return p;
-                });
-              }
-              return prev;
-            });
-            addLog(`Redistribución: Reemplazo ${reemplazo.nombre} enviado a la Línea 8 (Bolsón) por falta de vacantes prioritarias.`, 'info');
-          }
-        }
-      } else {
-        // Fallback si no tiene asignación original guardada
-        setWorkers(prev => prev.map(w => {
-          if (w.idWorker === workerId) return { ...w, estadoActual: 'POOL_ARRANQUE' };
-          return w;
-        }));
-        addLog(`Trabajador técnico ${worker.nombre} ingresado al Pool de Arranque.`, 'info');
-      }
-
-    } else {
-      // --- CASO PUESTO VARIO ---
-      // Envía directamente a la Línea 8 en estado DISPONIBLE_BOLSON
-      setWorkers(prev => prev.map(w => {
-        if (w.idWorker === workerId) {
-          return {
-            ...w,
-            estadoActual: 'DISPONIBLE_BOLSON',
-            lineaActualId: 'L8',
-            puestoActualId: null
-          };
-        }
-        return w;
-      }));
-
-      setPuestos(prev => {
-        const puestosL8Vacios = prev.filter(p => p.idLinea === 'L8' && !p.idWorkerAsignado);
-        if (puestosL8Vacios.length > 0) {
-          return prev.map(p => {
-            if (p.idPuesto === puestosL8Vacios[0].idPuesto) {
-              return { ...p, idWorkerAsignado: workerId };
-            }
-            return p;
-          });
-        }
-        return prev;
-      });
-
-      addLog(`Puesto Vario: ${worker.nombre} enviado directamente a Línea 8 (Bolsón) en estado DISPONIBLE.`, 'success');
+  const handleAprobarDespacho = async (alerta) => {
+    try {
+      await firebaseAprobarDespachoRotacion(alerta.id);
+    } catch (error) {
+      dbEmulator.addLog(`Error en despacho: ${error.message}`, 'error');
     }
   };
 
-  // --- PAROS POR PREPARACIÓN DE EQUIPOS (FASE 5) ---
-  const handleActivarPreparacion = (lineaId) => {
-    // 1. Cambiar estado de la línea a "En Preparación"
-    setLines(prev => prev.map(l => {
-      if (l.idLinea === lineaId) return { ...l, estado: 'En Preparación' };
-      return l;
-    }));
-
-    // 2. Liberar puestos varios de esa línea y mandarlos en tránsito a la Línea 8 (Bolsón)
-    const puestosDeLinea = puestos.filter(p => p.idLinea === lineaId);
-    
-    // Los Operadores A se quedan en la máquina (puestos fijos se mantienen asignados)
-    // Los puestos varios se desalojan
-    const idsDesalojados = [];
-    setPuestos(prev => prev.map(p => {
-      if (p.idLinea === lineaId && p.tipo === 'Vario' && p.idWorkerAsignado) {
-        idsDesalojados.push(p.idWorkerAsignado);
-        return { ...p, idWorkerAsignado: null, timer: 120, rotacionIniciada: false };
-      }
-      return p;
-    }));
-
-    // Actualizar estado de operarios desalojados
-    setWorkers(prev => prev.map(w => {
-      if (idsDesalojados.includes(w.idWorker)) {
-        return {
-          ...w,
-          estadoActual: 'EN_TRANSITO',
-          lineaActualId: null,
-          lineaDestinoId: 'L8',
-          puestoActualId: null
-        };
-      }
-      return w;
-    }));
-
-    // Generar alertas de tránsito hacia la Línea 8 para que su supervisor los reciba
-    idsDesalojados.forEach(id => {
-      crearAlertaEnTransito(id, 'L8');
-    });
-
-    addLog(`Línea ${lineaId} entra EN PREPARACIÓN. Operadores A se quedan a punto. Puestos Varios desalojados en tránsito a L8.`, 'warning');
+  const handleCompletarRotacion = async (alerta) => {
+    try {
+      await firebaseCompletarRotacionYCascada(alerta.id);
+    } catch (error) {
+      dbEmulator.addLog(`Error al rotar: ${error.message}`, 'error');
+    }
   };
 
-  // Restablecer la línea a Operando
-  const handleRestablecerLinea = (lineaId) => {
-    setLines(prev => prev.map(l => {
-      if (l.idLinea === lineaId) return { ...l, estado: 'Operando' };
-      return l;
-    }));
-    addLog(`Línea ${lineaId} restablecida a OPERANDO. Puestos Varios listos para asignación.`, 'success');
+  const handleReincorporar = async (workerId) => {
+    try {
+      await firebaseReincorporarTrabajador(workerId);
+    } catch (error) {
+      dbEmulator.addLog(`Error en reincorporación: ${error.message}`, 'error');
+    }
   };
 
-  // --- MOCK DE INGESTA DE GOOGLE SHEETS DESDE LA UI ---
+  const handleActivarParo = async (lineaId) => {
+    try {
+      await firebaseActivarPreparacion(lineaId);
+    } catch (error) {
+      dbEmulator.addLog(`Error en paro: ${error.message}`, 'error');
+    }
+  };
+
+  const handleRestablecerOperacion = async (lineaId) => {
+    try {
+      await firebaseRestablecerLinea(lineaId);
+    } catch (error) {
+      dbEmulator.addLog(`Error al restablecer: ${error.message}`, 'error');
+    }
+  };
+
   const simularCargaGoogleSheets = () => {
     handleIniciarTurno();
     setShowSheetsModal(false);
@@ -800,7 +249,7 @@ function App() {
           <Activity className="brand-icon" size={28} />
           <h1 className="brand-title">SmartAssign</h1>
           <span style={{ fontSize: '0.75rem', padding: '2px 8px', borderRadius: '4px', backgroundColor: 'rgba(255,255,255,0.05)', color: 'var(--text-secondary)' }}>
-            v1.0 (Planta de Producción)
+            v2.0 (Firestore Engine)
           </span>
         </div>
 
@@ -828,7 +277,7 @@ function App() {
               <span className="stat-val" style={{ color: 'var(--color-error)' }}>
                 {workers.filter(w => w.estadoActual === 'BAJA_TEMPORAL').length}
               </span>
-              <span className="stat-label">Bajas Medicas</span>
+              <span className="stat-label">Bajas Médicas</span>
             </div>
           </div>
         )}
@@ -896,7 +345,7 @@ function App() {
             </div>
             {turnoIniciado && (
               <div style={{ fontSize: '0.65rem', color: 'var(--text-secondary)', marginTop: '8px', textAlign: 'center' }}>
-                Temporizadores acelerados para pruebas (2 min / puesto)
+                Simulando transacciones atómicas a 20x en Firestore
               </div>
             )}
           </div>
@@ -911,7 +360,7 @@ function App() {
               <Activity size={64} style={{ color: 'var(--color-primary)', marginBottom: '1.5rem', opacity: 0.8 }} />
               <h2 style={{ fontSize: '2rem', marginBottom: '1rem', fontFamily: 'var(--font-display)' }}>SmartAssign Real-Time</h2>
               <p style={{ color: 'var(--text-secondary)', maxWidth: '480px', marginBottom: '2rem' }}>
-                Sistema reactivo de gestión de personal, asignación de puestos y rotaciones automáticas en tiempo real para plantas industriales de alta cadencia.
+                Motor transaccional de Firebase. Valida la compatibilidad técnica, restricciones médicas, regla de no repetición y cascada de prioridades a nivel de base de datos.
               </p>
               <div style={{ display: 'flex', gap: '1rem' }}>
                 <button className="btn btn-secondary" onClick={() => setShowSheetsModal(true)}>
@@ -924,12 +373,12 @@ function App() {
             </div>
           ) : (
             
-            /* TABS PRINCIPALES (COORDINADOR / SUPERVISOR) */
+            /* TABS PRINCIPALES */
             <>
               {activeTab === 'coordinador' && (
                 <div className="coordinator-grid">
                   
-                  {/* COLUMNA IZQUIERDA: LINEAS DE PRODUCCION Y MONITOREO */}
+                  {/* COLUMNA IZQUIERDA: LINEAS DE PRODUCCION */}
                   <div>
                     <h2 style={{ fontSize: '1.25rem', marginBottom: '1.25rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                       <Activity size={20} style={{ color: 'var(--color-primary)' }} />
@@ -942,7 +391,7 @@ function App() {
                         const cubiertos = puestosDeLinea.filter(p => p.idWorkerAsignado).length;
                         const requeridos = puestosDeLinea.length;
                         const pct = requeridos > 0 ? (cubiertos / requeridos) * 100 : 0;
-                        const esPrio = l.prioridad <= 3; // L4, L1, L2 son prioritarias
+                        const esPrio = l.prioridad <= 3;
 
                         return (
                           <div 
@@ -980,14 +429,14 @@ function App() {
                       })}
                     </div>
 
-                    {/* EVENT FEED (LOG EN VIVO) */}
+                    {/* EVENT FEED DE FIRESTORE */}
                     <div className="glass-panel" style={{ padding: '1.25rem', marginTop: '2rem' }}>
                       <h3 style={{ fontSize: '0.95rem', marginBottom: '0.75rem', borderBottom: '1px solid var(--border-color)', paddingBottom: '0.5rem' }}>
-                        Bitácora de Eventos en Tiempo Real
+                        Servidor de Transacciones de Firestore (En vivo)
                       </h3>
                       <div style={{ height: '180px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '0.5rem', fontFamily: 'monospace', fontSize: '0.75rem' }}>
                         {logs.length === 0 ? (
-                          <div style={{ color: 'var(--text-muted)', textAlign: 'center', marginTop: '3rem' }}>Esperando eventos del sistema...</div>
+                          <div style={{ color: 'var(--text-muted)', textAlign: 'center', marginTop: '3rem' }}>Esperando transacciones de base de datos...</div>
                         ) : (
                           logs.map((log, index) => (
                             <div key={index} style={{ color: log.type === 'success' ? 'var(--color-success)' : log.type === 'warning' ? 'var(--color-warning)' : log.type === 'error' ? 'var(--color-error)' : 'var(--text-secondary)' }}>
@@ -999,10 +448,10 @@ function App() {
                     </div>
                   </div>
 
-                  {/* COLUMNA DERECHA: BAJAS, REINCORPORACIONES Y POOL */}
+                  {/* COLUMNA DERECHA: ALERTAS Y ACCIONES DE COORDINADOR */}
                   <div className="side-panel">
                     
-                    {/* ALERTAS ACTIVAS DEL SISTEMA */}
+                    {/* VISOR DE NOTIFICACIONES */}
                     <div className="glass-panel" style={{ padding: '1.25rem' }}>
                       <div className="panel-header">
                         <span className="panel-title">Notificaciones de Planta</span>
@@ -1015,7 +464,7 @@ function App() {
                         {alerts.length === 0 ? (
                           <div style={{ textAlign: 'center', padding: '1.5rem', color: 'var(--text-muted)', fontSize: '0.8rem' }}>
                             <CheckCircle size={24} style={{ color: 'var(--color-success)', marginBottom: '0.5rem', opacity: 0.5 }} />
-                            <div>Planta balanceada. Sin alertas de rotación.</div>
+                            <div>Base de datos consistente. Sin rotaciones pendientes.</div>
                           </div>
                         ) : (
                           alerts.map(a => (
@@ -1029,10 +478,10 @@ function App() {
                               <div className="alert-actions">
                                 {a.type === 'solicitud_rotacion' ? (
                                   <>
-                                    <button className="action-btn approve" onClick={() => handleAprobarDespachoL8(a)}>
+                                    <button className="action-btn approve" onClick={() => handleAprobarDespacho(a)}>
                                       Aprobar Despacho
                                     </button>
-                                    <button className="action-btn reject" onClick={() => setAlerts(prev => prev.filter(x => x.id !== a.id))}>
+                                    <button className="action-btn reject" onClick={() => dbEmulator.runTransaction(async t => t.delete('alerts', a.id))}>
                                       Rechazar
                                     </button>
                                   </>
@@ -1050,7 +499,7 @@ function App() {
                       </div>
                     </div>
 
-                    {/* REINCORPORACIONES (BAJA TEMPORAL) */}
+                    {/* CONTROL DE LICENCIAS / REINCORPORACIONES */}
                     <div className="glass-panel" style={{ padding: '1.25rem' }}>
                       <div className="panel-header">
                         <span className="panel-title">Altas / Bajas Médicas</span>
@@ -1059,19 +508,19 @@ function App() {
                       <div className="worker-list">
                         {workers.filter(w => w.estadoActual === 'BAJA_TEMPORAL').length === 0 ? (
                           <div style={{ textAlign: 'center', padding: '1rem', color: 'var(--text-muted)', fontSize: '0.8rem' }}>
-                            Sin personal con licencia médica hoy.
+                            Sin personal en BAJA_TEMPORAL hoy.
                           </div>
                         ) : (
                           workers.filter(w => w.estadoActual === 'BAJA_TEMPORAL').map(w => (
                             <div key={w.idWorker} className="worker-item">
                               <div className="worker-info">
                                 <span className="worker-name">{w.nombre}</span>
-                                <span className="worker-sub" style={{ color: 'var(--color-error)' }}>{w.rol} ({w.restriccionesMedicas.join(', ') || 'Licencia'})</span>
+                                <span className="worker-sub" style={{ color: 'var(--color-error)' }}>{w.rol} • {w.restriccionesMedicas.join(', ') || 'Licencia'}</span>
                               </div>
                               <button 
                                 className="btn btn-secondary" 
                                 style={{ padding: '4px 8px', fontSize: '0.75rem', color: 'var(--color-success)', borderColor: 'rgba(16, 185, 129, 0.2)' }}
-                                onClick={() => handleReincorporarTrabajador(w.idWorker)}
+                                onClick={() => handleReincorporar(w.idWorker)}
                               >
                                 Reincorporar
                               </button>
@@ -1081,7 +530,7 @@ function App() {
                       </div>
                     </div>
 
-                    {/* POOL DE ARRANQUE (SALA DE ESPERA) */}
+                    {/* POOL DE ARRANQUE */}
                     <div className="glass-panel" style={{ padding: '1.25rem' }}>
                       <div className="panel-header">
                         <span className="panel-title">Pool de Arranque ({workers.filter(w => w.estadoActual === 'POOL_ARRANQUE').length})</span>
@@ -1090,7 +539,7 @@ function App() {
                       <div className="worker-list" style={{ maxHeight: '200px' }}>
                         {workers.filter(w => w.estadoActual === 'POOL_ARRANQUE').length === 0 ? (
                           <div style={{ textAlign: 'center', padding: '1rem', color: 'var(--text-muted)', fontSize: '0.8rem' }}>
-                            Pool de arranque vacío. Todo el personal distribuido.
+                            Pool de arranque vacío. Personal asignado.
                           </div>
                         ) : (
                           workers.filter(w => w.estadoActual === 'POOL_ARRANQUE').map(w => (
@@ -1113,7 +562,7 @@ function App() {
               {activeTab === 'supervisor' && (
                 <div className="supervisor-view">
                   
-                  {/* SELECTOR DE LINEAS (PARA EL PROTOTIPO SIMULADO) */}
+                  {/* SELECTOR DE LINEAS */}
                   <div className="lines-selector">
                     <h3 style={{ fontSize: '0.85rem', textTransform: 'uppercase', color: 'var(--text-secondary)', marginBottom: '0.75rem', paddingLeft: '0.5rem' }}>
                       Vista de Supervisor
@@ -1143,10 +592,9 @@ function App() {
                     })}
                   </div>
 
-                  {/* VISTA EN DETALLE DE LA LÍNEA SELECCIONADA */}
+                  {/* VISTA EN DETALLE DE LINEA */}
                   <div className="line-detail-panel">
                     
-                    {/* BARRA DE ESTADO DE LÍNEA */}
                     {lines.filter(l => l.idLinea === selectedLineId).map(linea => (
                       <div key={linea.idLinea} className="line-summary-bar glass-panel">
                         <div>
@@ -1163,11 +611,11 @@ function App() {
 
                         <div style={{ display: 'flex', gap: '1rem' }}>
                           {linea.estado === 'Operando' ? (
-                            <button className="btn btn-danger" style={{ padding: '0.5rem 1rem' }} onClick={() => handleActivarPreparacion(linea.idLinea)}>
+                            <button className="btn btn-danger" style={{ padding: '0.5rem 1rem' }} onClick={() => handleActivarParo(linea.idLinea)}>
                               Modo "En Preparación" (Paro)
                             </button>
                           ) : (
-                            <button className="btn btn-primary" style={{ padding: '0.5rem 1rem', backgroundColor: 'var(--color-success)' }} onClick={() => handleRestablecerLinea(linea.idLinea)}>
+                            <button className="btn btn-primary" style={{ padding: '0.5rem 1rem', backgroundColor: 'var(--color-success)' }} onClick={() => handleRestablecerOperacion(linea.idLinea)}>
                               Restablecer Operación
                             </button>
                           )}
@@ -1178,7 +626,7 @@ function App() {
                       </div>
                     ))}
 
-                    {/* ALERTAS ESPECÍFICAS DE ESTA LÍNEA */}
+                    {/* ALERTAS EN LA VISTA DE SUPERVISOR */}
                     {alerts.filter(a => a.lineaDestinoId === selectedLineId || a.lineaPrioId === selectedLineId || (selectedLineId === 'L8' && a.type === 'solicitud_rotacion')).map(alerta => (
                       <div key={alerta.id} className="alert-card warning glass-panel" style={{ padding: '1rem' }}>
                         <div className="alert-header">
@@ -1189,10 +637,10 @@ function App() {
                         <div className="alert-actions">
                           {alerta.type === 'solicitud_rotacion' && selectedLineId === 'L8' && (
                             <>
-                              <button className="action-btn approve" onClick={() => handleAprobarDespachoL8(alerta)}>
+                              <button className="action-btn approve" onClick={() => handleAprobarDespacho(alerta)}>
                                 Aprobar y Despachar a {workers.find(w => w.idWorker === alerta.workerEntranteId).nombre}
                               </button>
-                              <button className="action-btn reject" onClick={() => setAlerts(prev => prev.filter(a => a.id !== alerta.id))}>
+                              <button className="action-btn reject" onClick={() => dbEmulator.runTransaction(async t => t.delete('alerts', alerta.id))}>
                                 Rechazar
                               </button>
                             </>
@@ -1203,7 +651,10 @@ function App() {
                             </button>
                           )}
                           {alerta.type === 'transito' && selectedLineId === alerta.lineaDestinoId && (
-                            <button className="action-btn approve" onClick={() => handleEscanearQR(alerta.workerId, selectedLineId)}>
+                            <button className="action-btn approve" onClick={() => {
+                              setSelectedWorkerQR(alerta.workerId);
+                              setShowQrModal(true);
+                            }}>
                               Registrar Entrada del Trabajador
                             </button>
                           )}
@@ -1279,7 +730,7 @@ function App() {
               Escáner QR del Supervisor
             </h3>
             <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginBottom: '1.25rem' }}>
-              Simula el escaneo del código QR de un trabajador que ha llegado a la <strong>{lines.find(l => l.idLinea === selectedLineId).nombre}</strong>.
+              Simula el escaneo de un código QR en la <strong>{lines.find(l => l.idLinea === selectedLineId).nombre}</strong>.
             </p>
 
             <div style={{ marginBottom: '1rem' }}>
@@ -1307,7 +758,7 @@ function App() {
                     <option key={w.idWorker} value={w.idWorker}>{w.nombre} ({w.rol})</option>
                   ))}
                 </optgroup>
-                <optgroup label="Otros en Tránsito General / Sala de Espera">
+                <optgroup label="Otros en Tránsito General">
                   {workers.filter(w => w.estadoActual === 'EN_TRANSITO' && w.lineaDestinoId !== selectedLineId).map(w => (
                     <option key={w.idWorker} value={w.idWorker}>{`${w.nombre} (${w.rol}) ➜ Dir. a L${w.lineaDestinoId}`}</option>
                   ))}
@@ -1354,7 +805,7 @@ function App() {
               <button 
                 className="btn btn-primary" 
                 disabled={!selectedWorkerQR}
-                onClick={() => handleEscanearQR(selectedWorkerQR, selectedLineId)}
+                onClick={handleEscanearQRSupervisor}
               >
                 Escanear QR
               </button>
