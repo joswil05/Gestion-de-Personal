@@ -1,34 +1,37 @@
 {
   "name": "gestion-de-personal",
-  "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
+  "description": "SmartAssign MVP V1.0",
   "type": "module",
+  "main": "index.js",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "lint": "eslint .",
     "preview": "vite preview"
   },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/joswil05/Gestion-de-Personal.git"
+  },
+  "keywords": [],
+  "author": "Joswill",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/joswil05/Gestion-de-Personal.issues"
+  },
+  "homepage": "https://github.com/joswil05/Gestion-de-Personal#readme",
   "dependencies": {
-    "@capacitor-mlkit/barcode-scanning": "^8.1.0",
-    "@capacitor/android": "^8.3.4",
-    "@capacitor/core": "^8.3.4",
+    "@capacitor/barcode-scanner": "^3.0.2",
+    "@stitches/react": "^1.2.8",
     "firebase": "^12.13.0",
-    "html5-qrcode": "^2.3.8",
-    "lucide-react": "^1.16.0",
     "react": "^19.2.6",
     "react-dom": "^19.2.6"
   },
   "devDependencies": {
+    "@capacitor/android": "^8.3.4",
     "@capacitor/cli": "^8.3.4",
-    "@eslint/js": "^10.0.1",
-    "@types/react": "^19.2.14",
-    "@types/react-dom": "^19.2.3",
-    "@vitejs/plugin-react": "^6.0.1",
-    "eslint": "^10.3.0",
-    "eslint-plugin-react-hooks": "^7.1.1",
-    "eslint-plugin-react-refresh": "^0.5.2",
-    "globals": "^17.6.0",
-    "vite": "^8.0.12"
+    "@capacitor/core": "^8.3.4",
+    "@vitejs/plugin-react": "^6.0.2",
+    "vite": "^8.0.14"
   }
 }

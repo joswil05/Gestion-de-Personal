@@ -1,0 +1,70 @@
+{
+  "project": "SmartAssign MVP V1.0",
+  "version": "1.0.0",
+  "skills": {
+    "ui-saas-master": {
+      "name": "Diseñador Experto de Aplicaciones Móviles",
+      "description": "Responsable de garantizar una interfaz SaaS Light Mode ejecutiva, limpia y profesional con controles optimizados para uso con una sola mano y micro-copia explicativa.",
+      "file": "src/skills/ui-saas-master.js",
+      "constraints": {
+        "theme": "SaaS Light Mode",
+        "backgroundColor": "#F8FAFC",
+        "cardColor": "#FFFFFF",
+        "borderColor": "#E2E8F0",
+        "accentColor": "#2563EB",
+        "navbarHeight": "64px",
+        "slotHeight": "80px",
+        "interactionMode": "Thumb Zone / Single-Hand"
+      }
+    },
+    "firebase-firestore-specialist": {
+      "name": "Arquitecto de Transacciones y Datos NoSQL",
+      "description": "Responsable de blindar la consistencia y reactividad en tiempo real de Firestore, evitando condiciones de carrera mediante runTransaction y asegurando rastro dual.",
+      "file": "src/skills/firebase-firestore-specialist.js",
+      "constraints": {
+        "concurrencyControl": "runTransaction",
+        "timestampStrategy": "serverTimestamp() only",
+        "absenceTracking": "Dual Tracking (idWorkerCurrent & idWorkerOriginal)"
+      }
+    },
+    "qa-harness-engineer": {
+      "name": "Orquestador de Simulación y Test de Estrés",
+      "description": "Responsable del Test Harness en /dev-console para simular y estresar de forma determinista y secuencial los motores lógicos y concurrencia de la app.",
+      "file": "src/skills/qa-harness-engineer.js",
+      "constraints": {
+        "route": "/dev-console",
+        "features": [
+          "Reset DB to zero",
+          "Simulate variable attendance (100%, 90%, 70%)",
+          "Simulate concurrency via Promise.all",
+          "Capacitor offline toggle simulation"
+        ]
+      }
+    },
+    "state-connectivity-guard": {
+      "name": "Gobernador de Estado Local y Resiliencia Offline",
+      "description": "Responsable de controlar la UI Defensiva Offline mediante Capacitor Network, congelando flujos inter-líneas y aplicando texturas visuales de advertencia.",
+      "file": "src/skills/state-connectivity-guard.js",
+      "constraints": {
+        "networkListener": "Capacitor Network Plugin",
+        "offlineBehavior": "Freeze all line transfers",
+        "visualStyle": "Diagonal striped background patterns and sync warnings"
+      }
+    },
+    "capacitor-android-bridge": {
+      "name": "Especialista en Compilación y Puentes Nativos",
+      "description": "Responsable de la compilación asíncrona de Gradle y Capacitor, integración del escáner de cámara QR trasero y confirmaciones de vibración háptica.",
+      "file": "src/skills/capacitor-android-bridge.js",
+      "constraints": {
+        "buildPipelines": [
+          "npx cap sync android",
+          "./android/gradlew assembleDebug"
+        ],
+        "hardwareIntegrations": [
+          "Camera QR scan (rear only)",
+          "Haptic Feedback API (short vibration on assign)"
+        ]
+      }
+    }
+  }
+}

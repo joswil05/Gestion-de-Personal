@@ -1,0 +1,282 @@
+================================================================================
+MANUAL DE ESPECIFICACIÓN TÉCNICA REVISADA: ARQUITECTURA, LOGÍSITICA Y ENTORNOS
+                               SMARTASSIGN (MVP V1.0)
+================================================================================
+Este documento constituye la especificación de ingeniería y reglas operativas 
+absolutas para el sistema "SmartAssign". Esta versión integra las correcciones de 
+seguridad ante estrés operativo, mitiga el riesgo de caos en pasillos, implementa 
+diseño de UI defensivo offline y delimita el alcance real hacia un enfoque MVP 
+(Fases A y B), adoptando una interfaz profesional, moderna y simple (SaaS Light).
+
+--------------------------------------------------------------------------------
+1. INFRAESTRUCTURA OPERATIVA Y JERARQUÍA DINÁMICA DE PLANTA
+--------------------------------------------------------------------------------
+El sistema gobierna la asignación y el control de personal en un entorno de alta 
+cadencia compuesto por 10 líneas de producción y un pool de 160 trabajadores. El 
+sistema opera bajo turnos variables (8h, 12h, turnos dobles o triples) leídos 
+diariamente desde un archivo centralizador de Google Sheets.
+
+Regla de Activación Selectiva de Líneas:
+Al inicio de la jornada, el sistema discrimina qué líneas carecen de producto (SKU) 
+planificado para el día y las coloca en suspensión lógica, reduciendo sus vacantes 
+a cero de forma automática. El personal pre-asignado a estas líneas inactivas que 
+sí registre asistencia es absorbido de inmediato por la Línea 8 (Bolsón) en estado 
+disponible, optimizando el volumen de reserva para las líneas que operan.
+
+Regla de Supervisor Único Dedicado:
+Cada línea de producción activa cuenta con un único supervisor a cargo. Su terminal 
+móvil opera de forma hermética y aislada; el sistema bloquea cualquier cruce de 
+datos o manipulación sobre estaciones de trabajo de líneas ajenas, garantizando 
+privacidad en datos médicos y control estricto de responsabilidades.
+
+Jerarquía Dinámica de Prioridad de Planta (Flexible/Configurable):
+La prioridad de llenado de la planta no está fija en el código ("hardcoded"). Se 
+lee en tiempo real desde un documento centralizador en la base de datos de Firebase 
+('config/global_priority'). Desde su pestaña de administración, el Coordinador 
+General puede reordenar la jerarquía de las líneas (ej. mediante Drag-and-Drop) 
+para responder de forma inmediata a pedidos de clientes VIP, averías mecánicas o 
+alertas de calidad. El orden base predeterminado es:
+L4 > L1 > L2 > L6 > L7 > L5 > L3 > L8 (Bolsón) > L9 > L10
+
+La Línea 8 (Bolsón) funciona como el pulmón o amortiguador central de recursos de 
+la planta (Modelo Hub-and-Spoke), albergando al personal de ensamble manual listo 
+para ser extraído o inyectado según las necesidades prioritarias globales.
+
+Categorización Técnica del Personal:
+1. Operadores A: Mano de obra de máxima habilitación técnica. Son fijos, 
+   indispensables y se anclan automáticamente a su máquina crítica al iniciar el turno.
+2. Averieros: Personal técnico fijo de soporte encargado del resguardo mecánico.
+3. Operadores C (En entrenamiento): Personal técnico júnior fijo bajo tutoría.
+4. Operadores B: Personal calificado de alta versatilidad con capacidad técnica 
+   de cubrir puestos fijos (reemplazos temporales) o tareas varias.
+5. Operarios: Personal general destinado a cubrir puestos varios rotativos.
+
+--------------------------------------------------------------------------------
+2. MÁQUINA DE ESTADOS DEL PERSONAL (Ciclo de Vida de los Datos)
+--------------------------------------------------------------------------------
+Para evitar registros duplicados, colisiones de red o pérdidas de rastro en los 
+pasillos, cada operario transiciona estrictamente entre los siguientes 6 estados:
+
+- INACTIVO: El trabajador está ausente de la planta, de permiso o fuera de turno.
+- POOL_ARRANQUE: Estado inicial tras marcar su asistencia física. Significa que el 
+  operario está en la sala de espera general aguardando el inicio del turno.
+- ASIGNADO: El operario está vinculado formalmente y laborando en un puesto de 
+  trabajo específico dentro de una línea (Puesto Fijo Técnico o Puesto Vario).
+- EN_TRANSITO: Estado de bloqueo itinerante. Ocurre cuando un trabajador es despachado 
+  hacia una línea destino. Su perfil queda blindado de forma que ningún supervisor 
+  ajeno puede interceptarlo o registrarlo en el trayecto. Registra la variable 
+  'lineaDestinoId'.
+- DISPONIBLE_BOLSON: El operario está asignado y trabajando en las mesas de ensamble 
+  manual de la Línea 8, actuando como reserva de relevo disponible.
+- BAJA_TEMPORAL: El trabajador es retirado provisionalmente de la operación por el 
+  Coordinador debido a consulta médica, enfermería o permisos intermedios.
+
+--------------------------------------------------------------------------------
+3. FLUJO LOGÍSTICO CRONOLÓGICO Y ESTRATEGIA MVP (Fases A y B)
+--------------------------------------------------------------------------------
+Para asegurar la estabilidad en producción y la correcta adopción del software por 
+parte de los supervisores, el alcance se divide estrictamente en dos etapas de 
+desarrollo:
+
+================================================================================
+ALCANCE MVP V1.0 EN PRODUCCIÓN: FASES A Y B
+================================================================================
+
+FASE A: Entrada de Personal e Inyección del Turno (Minuto Cero del Turno)
+1. Registro de Ingreso: Los trabajadores marcan asistencia mediante huella dactilar. 
+   Sus perfiles pasan al estado POOL_ARRANQUE en la sala de espera general.
+2. Inyección del Turno (Motor 1 - Pre-llenado de Puestos Fijos): El Coordinador 
+   confirma la asistencia global e inyecta la jornada. El sistema analiza el SKU de 
+   Google Sheets y ejecuta una congelación de puestos mecánicos esenciales, vinculando 
+   automáticamente a los Operadores A, Averieros y Operadores C presentes a sus 
+   máquinas en estado ASIGNADO.
+   - Lógica de Rastro Dual por Ausencias: Si el sistema detecta que el titular original 
+     de un puesto fijo está ausente, el motor busca un reemplazo calificado (un 
+     Operador B disponible). Al asignarlo, el puesto registra de forma dual el ID 
+     del reemplante actual y el ID del dueño original titular. El personal restante 
+     es enviado al estado POOL_ARRANQUE.
+
+FASE B: Arranque de Línea (Distribución Local y Llenado Interno Aislado)
+1. Traslado Inicial: Cada supervisor se dirige físicamente a la sala de espera, 
+   toma al grupo de operarios que le corresponden en sus puestos y se los lleva a 
+   su respectiva línea de producción.
+2. Registro de Puestos Varios: Los puestos varios (tareas generales rotativas) 
+   inician el turno vacíos. El supervisor realiza el registro de los trabajadores 
+   a pie de línea para cubrir estas vacantes.
+3. Restricción Crítica de Arranque: Durante esta fase de arranque (primeros 10 minutos), 
+   los operarios ÚNICAMENTE pueden ser asignados a la línea en la que se encuentran 
+   físicamente. El proceso de llenado es estrictamente interno y aislado por área. 
+   En este momento de inicio, las intercepciones automáticas o desvíos cruzados entre 
+   líneas por prioridad global están completamente desactivados o bloqueados en el 
+   backend. Esto evita flujos cruzados confusos en los pasillos mientras se estabilizan 
+   las estaciones de la planta.
+4. Procesamiento de Reglas Restrictivas Locales: Al registrar al trabajador mediante QR 
+   o número de nómina (Ficha ID) en el buscador manual, el algoritmo procesa dos 
+   filtros de validación locales en milisegundos:
+   - Filtro de Sexo y Salud: Valida restricciones de género técnico y cruza las 
+     restricciones médicas activas del operario. Si la tarea exige un esfuerzo físico 
+     prohibido por enfermería, la asignación se deniega.
+   - Filtro de Historial (Regla de No Repetición): Si el trabajador finalizó su jornada 
+     laboral del día anterior desempeñando una actividad desgastante idéntica a la del 
+     puesto actual (ej. Giro de Botellas), el sistema prohíbe que inicie hoy en ella.
+5. Estampado de Timestamp: Al superar los filtros, el operario queda vinculado al 
+   puesto e inyecta la marca de tiempo exacta en la variable 'asignadoEnSegundoVirtual'.
+
+================================================================================
+ALCANCE CONGELADO PARA V2.0: FASES C Y D AUTOMATIZADAS
+================================================================================
+Nota Operativa MVP V1.0: Durante las primeras 2 semanas de prueba en planta, los 
+motores automáticos de rotación y cascadeo quedan desactivados en el backend. Si un 
+operario necesita rotar por fatiga, el supervisor lo libera manualmente mediante su 
+menú contextual enviándolo al Bolsón, y el nuevo supervisor lo escanea localmente. Las 
+reglas automatizadas lógicas diseñadas para el backend de la V2.0 son:
+
+FASE C: Fase de Marcha (Aplanamiento de Cascada y Relevos Ergonómicos Hub-and-Spoke)
+Una vez estabilizado el arranque, la maquinaria inicia su marcha normal y las 
+intercepciones se activan leyendo el documento 'config/global_priority'. Los cambios 
+dinámicos de personal ocurren exclusivamente de forma reactiva tras expirar el límite 
+ergonómico de 2 horas continuas en puestos varios.
+1. Motor 3 (Relevo Aplanado a Línea 8): A la 1 hora con 45 minutos de exposición, el 
+   sistema identifica automáticamente al candidato compatible más apto en la Línea 8 
+   (Bolsón) en estado DISPONIBLE_BOLSON. El supervisor de la L8 recibe la alerta de 
+   extracción y aprueba la salida física, pasando al operario a estado EN_TRANSITO. 
+   Al llegar a la línea crítica, el supervisor confirma recepción física y el entrante 
+   asume la vacante stamping Date.now().
+2. Prohibición de Efecto Dominó Inter-Líneas: Para evitar el caos de pasillo y la 
+   saturación de notificaciones simultáneas, queda prohibido encadenar rebotes de 
+   personal entre múltiples líneas críticas. El operario saliente (el relevado) es 
+   enviado DIRECTA E INMEDIATAMENTE de regreso a las mesas de la Línea 8 en estado 
+   DISPONIBLE_BOLSON (flujo limpio Hub-and-Spoke). Si otra línea de prioridad media 
+   tiene un hueco vacío, el sistema extraerá un recurso fresco desde el Bolsón, en 
+   lugar de cruzar trabajadores entre estaciones operativas activas.
+3. Intercepción Tardía en Caliente (Motor 2): Si en la Fase de Marcha un supervisor 
+   intenta registrar a un operario libre en pasillo, el algoritmo validará la jerarquía 
+   dinámica; si detecta una vacante desocupada compatible en una línea de jerarquía 
+   superior activa, abortará la asignación local y forzará el desvío en estado EN_TRANSITO.
+
+FASE D: Gestión de Contingencias a Mitad del Turno
+1. Motor 4 (Paros - Modo En Preparación): Al activar el paro en una línea, los técnicos 
+   fijos permanecen anclados y congelados ejecutando el ajuste mecánico. Todos los 
+   puestos varios se limpian de forma atómica y sus operarios generales pasan de forma 
+   masiva a estado EN_TRANSITO con destino directo hacia la Línea 8 para incorporarse 
+   a las mesas de ensamble manual, eliminando los tiempos muertos.
+2. Motor 5 (Protocolo de Altas Médicas): Al reincorporar un operario general, este va 
+   directo al Bolsón en estado DISPONIBLE_BOLSON. Si reingresa un especialista de puesto 
+   fijo, el algoritmo localiza su máquina original ('idWorkerOriginal') y el titular 
+   reasume su puesto en el acto. El reemplazo temporal (Operador B) es desalojado de 
+   forma automática e inyectado al Bolsón, buscando vacantes libres en su trayecto.
+
+--------------------------------------------------------------------------------
+4. CONTROL DE ESCENARIOS DE ESTRÉS OPERATIVO EN PLANTA
+--------------------------------------------------------------------------------
+
+A. Piso de Canibalización ante el "Bolsón Vacío"
+Si el pool de la Línea 8 llega a cero registros disponibles, el sistema activa el 
+Mecanismo de Extracción Inversa por Jerarquía buscando candidatos en la línea activa 
+de menor prioridad. Sin embargo, para evitar desmantelar por completo un área baja, se 
+establece un piso de seguridad numérico: 'MIN_OPERARIOS_LINEA = 2'. Si una línea de baja 
+prioridad llega a ese límite mínimo de operarios generales, el algoritmo la declarará 
+automáticamente "Inmune a Extracción". Si toda la planta está al límite mínimo, el 
+sistema detiene las rotaciones automáticas y envía una alerta roja al Coordinador: 
+"Capacidad crítica de planta agotada. Requiere intervención humana".
+
+B. UI Defensiva Offline ante el Movimiento Físico Real
+ Firestore rechaza transacciones offline si el estado del operario cambió previamente 
+en la nube, pero el rechazo digital no deshace el traslado físico si el supervisor ya 
+le dio la orden de moverse al trabajador. Para solucionar esto:
+- Si la app detecta que el dispositivo perdió conexión inalámbrica, la interfaz se 
+  vuelve estrictamente defensiva y bloquea por completo cualquier movimiento o 
+  transferencia inter-líneas.
+- Las tarjetas de puestos fijos o nuevos escaneos procesados en modo offline se pintarán 
+  con un patrón texturizado de líneas diagonales tenues y desplegarán la advertencia: 
+  "Asignación Local Pendiente de Sincronización ── No mover al personal hasta recuperar red".
+
+C. Escaneos Concurrentes de Operarios (Condición de Carrera)
+Las asignaciones de puestos se ejecutan obligatoriamente encapsuladas en una Transacción 
+Atómica de Firestore ('runTransaction'). Si dos supervisores escanean al mismo operario 
+libre en el pasillo simultáneamente, el primer dispositivo que golpee el servidor 
+consolida la lectura y bloquea el perfil; el segundo dispositivo es rechazado por las 
+reglas del servidor y muestra una notificación controlada: "Operario ya asignado a Línea X".
+
+D. Error Humano por Gafete Confundido o Prestado
+Al leer un QR o ingresar una ficha, el sistema abre una pantalla intermedia de 
+confirmación que jala desde Firebase Storage la fotografía del operario en alta 
+resolución y muestra su nombre en grande. El supervisor debe validar visualmente la 
+identidad del trabajador que tiene enfrente y realizar un segundo toque obligatorio 
+en el botón [Confirmar Asignación] para asentar el dato.
+
+E. Desincronización de Relojes de Hardware
+Queda prohibido usar 'Date.now()' para registrar marcas de tiempo en el servidor. Todas 
+las asignaciones inyectan variables temporales mediante 'serverTimestamp()'. Para los 
+cronómetros pasivos de la interfaz, el frontend calcula la diferencia en milisegundos 
+(offset) con el servidor de la nube en el arranque y corrige las cuentas regresivas locales.
+
+--------------------------------------------------------------------------------
+5. FILOSOFÍA DE INTERFAZ: PROFESIONAL, MODERNA Y SIMPLE (SaaS Light Mode)
+--------------------------------------------------------------------------------
+La interfaz de usuario adopta una estética SaaS de administración limpia, corporativa 
+y moderna (Modo Claro), caracterizada por fondos claros neutros ('#F8FAFC'), celdas blanco 
+puro ('#FFFFFF') con bordes finos grises ('#E2E8F0') y acentos exclusivos en Azul Cobalto 
+Profesional ('#2563EB'). Los estados se manejan con una paleta semáforo atenuada y 
+desaturada para evitar contaminación visual bajo luz industrial.
+
+Para erradicar el efecto de "caja negra", la UI implementa Micro-copia Contextual Explicativa 
+en lenguaje humano de planta directamente en las celdas de control:
+- Celdas de Arranque (Motor 1): Rotulan: "Asignado automáticamente por asistencia" o 
+  "Reemplazo automático - Titular ausente".
+- Celdas Interceptadas (Motor 2): Despliegan una alerta clara: "Asignación redirigida a 
+  Línea X por vacante crítica de mayor prioridad abierta".
+- Banners de Relevo (Motor 3): Especifican: "Rotación Ergonómica (2h cumplidas) - 
+  Relevista en tránsito desde L8" o "Extracción por Rotación - Despachar operario".
+- Celdas Desalojadas (Motor 4): Ante un paro técnico, las celdas vaciadas muestran: 
+  "Puesto liberado - Operario en ensamble manual L8 por modo preparación".
+- Retornos de Salud (Motor 5): Muestran de forma automatizada: "Titular reincorporado 
+  por alta médica".
+
+--------------------------------------------------------------------------------
+6. ANATOMÍA DE PANTALLAS Y ENTORNO DE ORQUESTACIÓN DE PRUEBAS (Test Harness)
+--------------------------------------------------------------------------------
+La aplicación reduce la interacción a una barra de navegación inferior fija (64px de 
+altura) al alcance natural del pulgar (Thumb Zone):
+- Pestaña "HUD": Matriz de puestos de 80px de alto, notificaciones de tránsito superiores 
+  con botón interactivo integrado [Confirmar Recepción] y el Botón Flotante circular (FAB QR) 
+  de 64px en la esquina inferior derecho para abrir el lector o buscador de contingencia.
+- Pestaña "Mi Personal": Directorio con formato de libreta de contactos que despliega las 
+  fichas de los operarios trabajando en la línea en ese instante, mostrando de forma directa 
+  sus Restricciones Médicas de enfermería de forma explícita para auditar la seguridad.
+- Pestaña "Línea y SKU": Panel limpio del estado del lote que aloja de forma exclusiva la 
+  fila interactiva de acción: [ACTIVAR MODO PREPARACIÓN / PARO TÉCNICO]. El texto del SKU 
+  posee un detector de 3 toques rápidos consecutivos para borrar el localStorage (Reset).
+
+================================================================================
+ENTORNO DE SIMULACIÓN Y PRUEBAS EN VIVO: LA CONSOLE DE INYECCIÓN (/dev-console)
+================================================================================
+Para validar el 100% de los algoritmos y la sincronización cronológica desde el instante 
+inicial sin depender de datos falsos manuales, se diseña un Panel de Orquestación 
+independiente montado en la ruta de desarrollo '/dev-console'. Consiste en un tablero 
+web remoto que manipula directamente las colecciones de Firebase mediante controles 
+deterministas secuenciales:
+
+1. Botón [RESETEAR BASE DE DATOS]: Borra por completo los documentos activos de la 
+   colección 'puestos', limpia el historial de logs y actualiza masivamente a los 
+   160 trabajadores en Firestore al estado INACTIVO, dejando el sistema en el "Minuto Cero".
+2. Botón [SIMULAR ENTRADA DE PERSONAL]: Permite configurar un selector de porcentaje de 
+   asistencia (ej. Asistencia Perfecta, 90%, 70%). Toma de forma aleatoria a los operarios 
+   de prueba y muta sus estados atómicamente en Firestore a POOL_ARRANQUE. Permite auditar 
+   si el Motor 1 inyecta correctamente los reemplazos duales (Operadores B) ante faltas.
+3. Botón [INYECTAR PLANIFICACIÓN DE DEMANDA]: Consiste en interruptores individuales para 
+   encender o apagar las 10 líneas de producción y un selector de SKUs. Escribe en el 
+   documento 'config/global_priority' cuáles áreas corren hoy, validando si el personal de 
+   las líneas apagadas es absorbido de inmediato por las mesas de la Línea 8.
+4. Botón [INYECTAR JORNADA Y ARRANQUE DE TURNO]: Gatilla la función central que congela 
+   los puestos fijos. Permite ver en vivo cómo el listen de 'onSnapshot' muta la pantalla 
+   del teléfono del supervisor, activando el HUD y completando las celdas mecánicas.
+5. Gatillo [SIMULAR CONDICIÓN DE CARRERA]: Ejecuta una llamada de promesas asíncronas 
+   concurrentes ('Promise.all') inyectando dos peticiones de asignación simultáneas sobre 
+   un mismo operario libre hacia dos líneas distintas, validando la resistencia del 
+   bloque 'runTransaction' en el backend.
+6. Interruptor [FORZAR ESTADO OFFLINE]: Simula la pérdida de conectividad en el andamio de 
+   Capactor, permitiendo auditar si la interfaz del supervisor bloquea correctamente las 
+   transferencias y sombrea localmente las celdas con el patrón de líneas diagonales 
+   defensivas antes de restablecer el enlace con la nube.
+================================================================================

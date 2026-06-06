@@ -1,0 +1,228 @@
+Pages: 6
+
+--- PAGE 1 ---
+PLAN MAESTRO DE LÓGICA Y ARQUITECTURA
+Sistema Omnicanal de Gestión de Planta: “Coordinación”
+1. Arquitectura de Software y Estrategia de Datos
+Para soportar la alta concurrencia en el piso de producción (múltiples supervisores operando en paralelo de
+forma  simultánea)  y  asegurar  que  la  información  en  tiempo  real  sea  exacta,  el  sistema  adoptará  una
+arquitectura API-First con desacoplamiento absoluto de capas y un diseño dirigido por eventos.
+A. Modelo de Base de Datos y Entidades Críticas
+El backend utilizará una base de datos relacional (e.g., PostgreSQL) para mantener la integridad referencial
+de los históricos, catálogos y programas, combinada con una capa de almacenamiento en caché en memoria
+(e.g., Redis) para gestionar los estados dinámicos del personal, las transiciones de las líneas, los cierres de
+turno y los cronómetros en tiempo real.
+Entidad
+Principal Atributos Críticos y Relaciones lógicasUso en el Sistema
+Tabla
+Programa
+ID_Programa (PK), Fecha, Líneas_Activas (Lista/
+Array). Relación 1:N con Orden de Producción.
+Planificación del día siguiente
+($T+1$). Entrada base del algoritmo.
+Orden de
+Producción
+ID_Orden (PK), ID_Programa (FK), Código_Ítem
+(Producto), TipoBot ("R" / "M"), Turno, Estatus.
+Contexto activo de manufactura. Liga
+los paros, averías e informes.
+Registro de
+Paros
+ID_Paro (PK), ID_Orden (FK), Código_General,
+Subcódigo_Equipo, Hora_Inicio, Hora_Fin,
+Descripción.
+Almacena los tiempos muertos
+justificados asociados a un producto
+específico.
+Registro de
+Averías
+ID_Avería (PK), ID_Orden (FK), Tipo_Material
+(Botellas, Tapones, Etiquetas, etc.), Descripción.
+Control cualitativo y cuantitativo de
+mermas de insumos por lote de
+producción.
+B. Matriz de Variables de Personal y Restricciones
+Roles  Jerárquicos  Estrictos: Coordinador,  Supervisor,  Operador  (Subcategorías  fijas:  A,  B,  F
+[Formándose]), Averiero, Soporte (Limpieza, Oficina, Nuevos Ingresos).
+Estados Dinámicos de Disponibilidad:Ausente (Tipificado), Presente (Marcado en reloj), Asignado
+(En puesto), En Tránsito (Movimiento interlínea), Bolsón (Línea 8).
+2. Comportamiento Lógico del Motor de Asignación ($T+1$)
+Este componente procesa los requerimientos logísticos del día siguiente basándose en el Programa de
+Producción y las interacciones del Coordinador de la planta.
+• 
+• 
+Plan Maestro - Aplicación Coordinación 1
+--- PAGE 2 ---
+A. Inicialización y Lectura de Restricciones Duras
+El sistema lee la tabla Programa para identificar cuáles de las 11 líneas de producción estarán activas
+(habitualmente entre 6 y 7 simultáneamente).
+Evalúa cada ítem de producto contra la tabla  PuestosItem y la bandera  TipoBot == "R". Esto
+determina la estructura exacta y la cantidad de puestos de trabajo que se activarán para el día siguiente.
+El  algoritmo  genera  una  Sugerencia  Automatizada para  los  puestos  fijos  de  la  línea:  Supervisor,
+Operadores  (A/B/F)  y  Averieros.  El  sistema  reconoce  que  los  supervisores  tienen  asignaciones
+preferenciales sugeridas, pero no están atados estrictamente a una línea fija.
+B. Interacción del Coordinador y Cierre de Matriz
+Revisión Manual: El Coordinador valida uno a uno las sugerencias del nivel fijo. Puede aceptar o
+modificar a su discreción. Al confirmar un puesto, el sistema genera un Lock (bloqueo) lógico sobre esos
+registros aceptados.
+Cálculo Automático de Cobertura: El motor evalúa al personal restante aplicando estrictamente dos
+Restricciones Duras: 
+1. Sexo: Correspondencia obligatoria con el sexo preferente definido para el puesto de trabajo. 
+2. Constancia Médica: Exclusión automática si el empleado cuenta con una restricción de salud activa. 
+C. Algoritmo de Reprogramación Parcial por Infracobertura
+Si tras el cruce inicial el mosaico de la línea cae en estatus de infracobertura, el Coordinador inyecta
+personal de soporte (Limpieza, Oficina, Nuevos Ingresos). Al dar clic en "Reprogramar", la aplicación ejecuta
+una heurística eficiente de protección de datos:
+Puestos a Calcular = Puestos Activos Totales − Asignaciones ya Aceptadas por el Coordinador 
+El  sistema  reasigna  únicamente  al  nuevo  personal  en  puestos  con  requerimientos  de  habilidades
+"Indistinto" o generales, respetando de forma estricta las decisiones previas que el Coordinador ya había
+fijado.
+3. Ejecución en Tiempo Real ($T$) y Flujos Operativos
+A. Control de Presencia Automatizado (Ingreso)
+Filtro de Asistencia Real: Un proceso automatizado lee la hoja de cálculo del reloj checador (huella digital)
+a primera hora. Sincroniza la lista y cambia el estado global del empleado a  Presente. Aquellos que no
+marcaron asistencia o tienen incidencias programadas quedan tipificados bajo las 5 categorías oficiales:
+Vacaciones, Permisos, Consultas Médicas, Subsidios o Accidente Laboral.
+B. Asignación Ágil en Cascada vía QR
+Al ingresar a la planta, el personal se dirige a la línea asignada. El Supervisor escanea su código QR. El
+backend procesa la petición y ejecuta una búsqueda algorítmica en cascada de 3 niveles de prioridad:
+[Supervisor escanea QR de Empleado]
+           │
+           ▼
+1. 
+2. 
+3. 
+• 
+• 
+Plan Maestro - Aplicación Coordinación 2
+--- PAGE 3 ---
+¿Tiene Puesto Vencido o por Vencer en su PROPIA LÍNEA?
+ ├── SÍ ──► [Asignar Puesto Fijo o Variable en Línea] -> FIN
+ └── NO ──► ¿Tiene Puesto Vencido o por Vencer en OTRA LÍNEA activa?
+             ├── SÍ ──► [Asignar Puesto en Línea Externa / Estatus: En Tránsito] -> 
+FIN
+             └── NO ──► [Asignar Automáticamente a LÍNEA 8 (BOLSÓN)] -> FIN
+C. Retorno de Permisos en el Día Actual
+Operarios Generales: Al regresar de un permiso dentro del turno, se dirigen a la Línea 8. El supervisor
+escanea su QR para activarlo en estado Presente / Disponible para cambios.
+Puestos Fijos: Buscan a su supervisor directo. Este los activa mediante QR y realiza una reasignación
+manual para enviarlos a su puesto original o derivar al relevo hacia la Línea 8 o a un puesto específico.
+4. Sistema de Relevos y Notificaciones (Event-Driven)
+Para cumplir con la ventana crítica de  5 minutos de anticipación sin saturar el servidor con peticiones
+repetitivas, se implementará una arquitectura bidireccional mediante WebSockets.
+Flujo Lógico de Relevo Automático sin Fricción:
+Disparo (T-5 Minutos): El sistema detecta que un puesto de trabajo manual está por vencerse o requiere
+un cambio en 5 minutos.
+Notificación  de  Salida  (Línea  8): Envía  una  alerta  reactiva  al  Supervisor  de  la  Línea  8  (Bolsón)
+indicando la persona sugerida para cubrir el espacio. Al aceptar el movimiento, el estado del empleado
+cambia a En Tránsito.
+Aceptación en Línea de Destino (Línea 8 "Bolsón"):** Debido a que la Línea 8 es de trabajo manual
+y no hay paro de línea, el supervisor de destino simplemente recibe la notificación proactiva en su
+pantalla y da clic en "Aceptar Cambio".
+Reubicación  Automatizada  del  Personal  Saliente  (El  Relevado): Al  confirmarse  el  cambio,  la
+persona recién llegada toma directamente el puesto físico. En ese instante, el empleado que se va
+(el relevado) queda sin puesto y es a quien la aplicación debe reasignar automáticamente. El Motor
+de Matching evalúa el perfil de esta persona que se va y le busca un nuevo puesto bajo la regla de
+cascada (Propia Línea → Otra Línea → Línea 8). El supervisor le indica visualmente a qué puesto ir
+y el empleado pasa a estatus En Tránsito.
+5. Módulo Integrado de Paros y Averías en Piso
+A. Registro de Paros de Línea en Dos Niveles
+Este flujo captura los eventos de inactividad  ligándose obligatoriamente a la Orden de Producción
+activa de la línea y heredando automáticamente el Ítem del Producto.
+Nivel  1  (Código  General): El  supervisor  selecciona  la  causa  macro  (Ajuste  Operacional,
+Preparación de Equipos, Mantenimiento Correctivo, etc.). La app completa automáticamente la
+descripción general.
+• 
+• 
+1. 
+2. 
+3. 
+4. 
+• 
+Plan Maestro - Aplicación Coordinación 3
+--- PAGE 4 ---
+Nivel 2 (Subcódigo de Equipo - "¿En dónde?"): La interfaz se filtra en tiempo real mostrando
+únicamente los equipos o componentes asociados al código general elegido. La app completa la
+descripción del subcódigo.
+Capa de Detalle: Habilita un campo de texto abierto para observaciones específicas del evento.
+B. Lógica del Cronómetro Persistente Global
+Al presionar "Iniciar Paro", el sistema graba el Timestamp inicial. El cronómetro se mantiene visible a
+través de un componente de UI flotante de alta jerarquía. Si el supervisor navega a otras secciones
+(escaneo QR, layout), el cronómetro  permanece visible en pantalla y contando en tiempo real. Al
+pulsar el widget, se redirige al supervisor al formulario para presionar "Detener", capturando el
+tiempo final.
+C. Registro de Averías de Materiales
+Sección independiente diseñada para el reporte rápido de mermas de insumos críticos (Botellas,
+Tapones, Etiquetas, etc.). Cada registro de avería  se liga directamente a la Orden de Producción
+activa y al Ítem del Producto de forma transparente.
+6. Gestión Flexible de Transición y Desactivación de Línea
+Esta funcionalidad otorga al Supervisor el control absoluto sobre el destino de los puestos no fijos
+(operarios generales) cuando la línea detiene su marcha ordinaria antes del fin del turno general.
+A. Escenarios de Activación
+La  interfaz  del  Supervisor  habilitará  este  módulo  especial  cuando  la  línea  cambie  su  estado  a:
+Preparación de Equipo (Ajuste operacional / Cambio de formato) o Finalización de Jornada Temprana.
+B. Modos de Ejecución Lógica
+Gestión Uno a Uno (Estrategia Táctica en Preparación): El supervisor desasigna a los operarios
+individualmente. La lógica del sistema le permite  retener temporalmente a ciertos trabajadores
+seleccionados que posean habilidades técnicas específicas para que colaboren activamente con
+los puestos fijos en las tareas de preparación o set-up de equipos para el nuevo ítem, mientras
+que los operarios liberados se envían quirúrgicamente a la Línea 8.
+Gestión Masiva (Desborde en Finalización Temprana): Diseñado para cierres rápidos. Al accionar
+este  comando,  la  aplicación  libera  a  todos  los  puestos  no  fijos  de  la  línea  y  los  reasigna
+directamente a la Línea 8 (Bolsón) en estatus En Tránsito.
+Regla de Exclusión: En ninguna modalidad el algoritmo afectará la asignación de los puestos fijos
+(Supervisor, Operador A/B/F, Averiero), resguardando la estructura central de la línea.
+7. Módulo de Cierre de Turno e Informe Ejecutivo Directo
+Este módulo representa la clausura formal de la jornada del Supervisor, permitiendo una transición
+ordenada y la entrega de información clave al Coordinador de la planta.
+• 
+• 
+• 
+• 
+• 
+Plan Maestro - Aplicación Coordinación 4
+--- PAGE 5 ---
+A. Independencia del Periodo Productivo
+La aplicación permite al Supervisor dar por finalizada su jornada y registrar la salida o liberación de
+sus trabajadores, independientemente de que la línea de producción continúe activa con el personal
+del siguiente turno (Cambio de turno fluido).
+B. Generación Automatizada del Informe de Turno
+Al ejecutar el cierre de turno, el backend realiza un proceso de agregación de datos en tiempo real
+sobre la Orden de Producción e ítem correspondientes, estructurando un informe con los siguientes
+bloques:
+Resumen de Rendimiento: Cantidad total producida y cálculo automatizado de eficiencia del turno.
+Consolidado de Tiempos Muertos: Listado de paros registrados, clasificados por código general,
+subcódigo de equipo y el tiempo total transcurrido extraído del cronómetro persistente.
+Consolidado de Mermas de Insumos: Resumen de las averías de materiales (Botellas, Tapones,
+Etiquetas) reportadas en el periodo.
+Despacho Directo: Una vez confirmado, el sistema compila el informe y lo envía de forma directa e
+inmediata al panel de control del Coordinador como una notificación de alta jerarquía, cerrando el
+periodo productivo del turno de manera digital.
+8. Experiencia de Usuario (UI/UX) por Roles
+A. Portal Web del Coordinador
+Pantalla de bienvenida con cuatro accesos masivos:  Historial,  Ejecución Actual,  Cobertura
+del Día Siguiente y Personal Ausente. Despliega un Dashboard de mosaicos reactivos (Líneas
+activas): Mosaico Verde (Cubierto) y Mosaico Rojo (Infracobertura) detallando el déficit por sexo y
+habilidad.
+B. Aplicación Móvil del Supervisor
+Interfaz de alta legibilidad con 5 accesos exclusivos en su pantalla de bienvenida: Escaneo QR,
+Layout de Puestos interactivo, Bandeja de Notificaciones de Relevos, Registro de Paros/Averías con
+cronómetro global, y el menú contextual de Transición/Cierre de Turno.
+9. Estándares de Calidad, Seguridad y QA Global
+Seguridad de Acceso (OWASP Top 10):** Autenticación mediante tokens JWT cifrados con tiempos
+de expiración cortos (15 minutos) y almacenamiento en contenedores seguros nativos (Keychain/
+Secure Shared Preferences).
+Control de Acceso (RBAC): Validación estricta en el Backend. Si un Supervisor intenta acceder a
+rutas exclusivas del Coordinador, el servidor responderá con un código 403 Forbidden.
+Estrategia de Pruebas (QA): Cobertura del 100% en pruebas unitarias automatizadas sobre el
+Motor de Matching, simulando flujos de desborde masivos y retornos con restricciones médicas
+para asegurar que el sistema actúe siempre de manera predictiva y segura.
+1. 
+2. 
+3. 
+• 
+• 
+• 
+Plan Maestro - Aplicación Coordinación 5
+--- PAGE 6 ---
+Plan Maestro - Aplicación Coordinación 6
