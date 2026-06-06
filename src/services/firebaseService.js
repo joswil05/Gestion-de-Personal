@@ -28,12 +28,12 @@ import {
 
 // 1. Configuración Oficial de Firebase (Producción)
 const firebaseConfig = {
-  apiKey: "AIzaSyDpWDghWDwzvxwqC_rsMpyg9R4cVu9N6FU",
-  authDomain: "gestion-de-personal-9041a.firebaseapp.com",
-  projectId: "gestion-de-personal-9041a",
-  storageBucket: "gestion-de-personal-9041a.firebasestorage.app",
-  messagingSenderId: "961928077384",
-  appId: "1:961928077384:web:f2258c0cbb6cd0b35e387d"
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
+  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+  appId: import.meta.env.VITE_FIREBASE_APP_ID
 };
 
 // Inicialización de la Aplicación y Firestore con Caché Persistente Multitab (Capacitor)

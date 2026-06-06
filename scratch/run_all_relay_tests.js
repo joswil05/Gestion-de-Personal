@@ -13,13 +13,36 @@ import {
   acceptReturnToBolson
 } from "../src/services/firebaseService.js";
 
+import fs from "fs";
+import path from "path";
+
+// If process.env.VITE_FIREBASE_API_KEY is not defined, read .env manually
+if (!process.env.VITE_FIREBASE_API_KEY) {
+  try {
+    const envPath = path.resolve(process.cwd(), ".env");
+    if (fs.existsSync(envPath)) {
+      const envContent = fs.readFileSync(envPath, "utf8");
+      envContent.split("\n").forEach(line => {
+        const parts = line.split("=");
+        if (parts.length === 2) {
+          const key = parts[0].trim();
+          const val = parts[1].trim();
+          process.env[key] = val;
+        }
+      });
+    }
+  } catch (e) {
+    console.warn("Could not read .env file:", e.message);
+  }
+}
+
 const firebaseConfig = {
-  apiKey: "AIzaSyDpWDghWDwzvxwqC_rsMpyg9R4cVu9N6FU",
-  authDomain: "gestion-de-personal-9041a.firebaseapp.com",
-  projectId: "gestion-de-personal-9041a",
-  storageBucket: "gestion-de-personal-9041a.firebasestorage.app",
-  messagingSenderId: "961928077384",
-  appId: "1:961928077384:web:f2258c0cbb6cd0b35e387d"
+  apiKey: process.env.VITE_FIREBASE_API_KEY,
+  authDomain: process.env.VITE_FIREBASE_AUTH_DOMAIN,
+  projectId: process.env.VITE_FIREBASE_PROJECT_ID,
+  storageBucket: process.env.VITE_FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: process.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+  appId: process.env.VITE_FIREBASE_APP_ID
 };
 
 const app = initializeApp(firebaseConfig);
