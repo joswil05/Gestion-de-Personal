@@ -1,4 +1,5 @@
-import { initializeApp } from "firebase/app";
+import "./loadEnv.js";
+import { initializeApp, getApp, getApps } from "firebase/app";
 import { getFirestore, doc, setDoc, getDoc, getDocs, updateDoc, collection, writeBatch, deleteDoc } from "firebase/firestore";
 import { REAL_PUESTOS, REAL_TRABAJADORES, REAL_PROGRAMA } from "../src/dev/realDataSeed.js";
 import { 
@@ -10,31 +11,10 @@ import {
   assignWorkerTransaction,
   canWorkerOccupiedSlot,
   clearSlotBlacklist,
-  acceptReturnToBolson
+  acceptReturnToBolson,
+  startLineParoTransaction,
+  endLineParoTransaction
 } from "../src/services/firebaseService.js";
-
-import fs from "fs";
-import path from "path";
-
-// If process.env.VITE_FIREBASE_API_KEY is not defined, read .env manually
-if (!process.env.VITE_FIREBASE_API_KEY) {
-  try {
-    const envPath = path.resolve(process.cwd(), ".env");
-    if (fs.existsSync(envPath)) {
-      const envContent = fs.readFileSync(envPath, "utf8");
-      envContent.split("\n").forEach(line => {
-        const parts = line.split("=");
-        if (parts.length === 2) {
-          const key = parts[0].trim();
-          const val = parts[1].trim();
-          process.env[key] = val;
-        }
-      });
-    }
-  } catch (e) {
-    console.warn("Could not read .env file:", e.message);
-  }
-}
 
 const firebaseConfig = {
   apiKey: process.env.VITE_FIREBASE_API_KEY,
@@ -45,7 +25,7 @@ const firebaseConfig = {
   appId: process.env.VITE_FIREBASE_APP_ID
 };
 
-const app = initializeApp(firebaseConfig);
+const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
 const db = getFirestore(app);
 
 const trabajadoresColl = collection(db, "trabajadores");
@@ -675,6 +655,103 @@ async function runScenario5() {
   console.log(`Filtro ergonómico no repetición (${isErgoCompatible === false ? "PASÓ" : "FALLÓ"}): isErgoCompatible=${isErgoCompatible}`);
 }
 
+async function runScenario6() {
+  console.log("\n=======================================================");
+  console.log("ESCENARIO 6: Registro de Paros y Evacuación de Personal a L8");
+  console.log("=======================================================");
+
+  await resetDB();
+
+  const skuPlan = {
+    L1: "850EC0832L35",
+    L2: "850EC0832L35",
+    L3: "INACTIVO",
+    L4: "850EC0832L35",
+    L5: "INACTIVO",
+    L6: "850EC0832L35",
+    L7: "INACTIVO",
+    L8: "850EC0832L35",
+    L9: "INACTIVO",
+    L10: "INACTIVO"
+  };
+
+  // Inicializar Jornada en producción
+  await setDoc(doc(db, "config", "shift_status"), {
+    status: "EN_PRODUCCION",
+    shiftStartTimestamp: new Date()
+  });
+  await initializeTurnoWithSheets(skuPlan);
+  await assignPuestosLive(skuPlan);
+
+  // 1. Identificar Puestos Varios ocupados en L4 y quiénes los ocupan
+  const slotsSnap = await getDocs(puestosColl);
+  const slots = [];
+  slotsSnap.forEach(d => slots.push({ id: d.id, ...d.data() }));
+
+  const slotsL4Varios = slots.filter(s => s.lineId === "L4" && s.tipoPuesto === "Puesto Vario" && s.status === "ASIGNADO");
+  console.log(`Puestos varios ocupados en L4 antes del Paro: ${slotsL4Varios.length}`);
+  const originalWorkerIds = slotsL4Varios.map(s => s.idWorkerCurrent);
+  console.log("Operarios asignados a puestos varios en L4:", originalWorkerIds);
+
+  if (slotsL4Varios.length === 0) {
+    throw new Error("No hay puestos varios asignados en L4. Sembrado incorrecto.");
+  }
+
+  // 2. Registrar Paro Técnico llamando a la transacción centralizada del servicio
+  console.log("Registrando Paro Técnico en L4...");
+  const symptomsMock = "Fallo de sensor en banda transportadora principal.";
+  const paroResult = await startLineParoTransaction("L4", "MECÁNICO", "FALLO_DE_SENSOR", symptomsMock);
+  console.log("Resultado inicio Paro:", JSON.stringify(paroResult));
+
+  // 3. Validar evacuación de puestos
+  const updatedSlotsSnap = await getDocs(puestosColl);
+  const updatedSlots = [];
+  updatedSlotsSnap.forEach(d => updatedSlots.push({ id: d.id, ...d.data() }));
+
+  let allSlotsVacated = true;
+  slotsL4Varios.forEach(orig => {
+    const fresh = updatedSlots.find(s => s.id === orig.id);
+    if (fresh.status !== "VACANTE" || fresh.idWorkerCurrent !== null) {
+      allSlotsVacated = false;
+      console.log(`  ❌ Puesto ${fresh.id} no fue desalojado: status=${fresh.status}, worker=${fresh.idWorkerCurrent}`);
+    }
+  });
+
+  // 4. Validar estado de operarios en L8 (DISPONIBLE_BOLSON)
+  const workersSnap = await getDocs(trabajadoresColl);
+  const workers = {};
+  workersSnap.forEach(d => { workers[d.id] = d.data(); });
+
+  let allWorkersReturned = true;
+  originalWorkerIds.forEach(wId => {
+    const w = workers[wId];
+    if (w.status !== "DISPONIBLE_BOLSON" || w.currentSlotId !== null || w.physicalLineLocation !== "L8") {
+      allWorkersReturned = false;
+      console.log(`  ❌ Ficha operario ${wId} incorrecta: status=${w.status}, slot=${w.currentSlotId}, location=${w.physicalLineLocation}`);
+    }
+  });
+
+  // 5. Validar estado de la línea
+  const lineConfigDoc = await getDoc(doc(db, "config", "line_L4"));
+  const lineConfig = lineConfigDoc.data();
+  const hasActiveParo = lineConfig.status === "PREPARACION" && lineConfig.activeParo !== null && lineConfig.activeParo.cause === "FALLO_DE_SENSOR";
+
+  // 6. Finalizar el Paro Técnico
+  console.log("Finalizando Paro Técnico y reanudando producción en L4...");
+  const endResult = await endLineParoTransaction("L4");
+  console.log("Resultado finalización Paro:", JSON.stringify(endResult));
+
+  const postLineConfigDoc = await getDoc(doc(db, "config", "line_L4"));
+  const postLineConfig = postLineConfigDoc.data();
+  const isBackToProduction = postLineConfig.status === "PRODUCCION" && postLineConfig.activeParo === null && postLineConfig.paros && postLineConfig.paros.length > 0;
+
+  console.log(`\n--- RESULTADOS ESCENARIO 6 ---`);
+  console.log(`Evacuación de celdas varias (${allSlotsVacated ? "PASÓ" : "FALLÓ"}): todas vacías`);
+  console.log(`Operarios devueltos a L8 Bolsa (${allWorkersReturned ? "PASÓ" : "FALLÓ"}): todos DISPONIBLE_BOLSON en L8`);
+  console.log(`Línea entra en Preparación (${hasActiveParo ? "PASÓ" : "FALLÓ"}): status=${lineConfig.status}`);
+  console.log(`Paro registrado e historial persistido (${isBackToProduction ? "PASÓ" : "FALLÓ"}): status=${postLineConfig.status}, paros en historial=${postLineConfig.paros?.length}`);
+}
+
 // Helper to calculate minutes from dynamic/timestamp format
 function getElapsedMinutes(timeValue) {
   if (!timeValue) return 0;
@@ -691,6 +768,7 @@ async function main() {
     await runScenario3();
     await runScenario4();
     await runScenario5();
+    await runScenario6();
     console.log("\n=======================================================");
     console.log("¡TODOS LOS ESCENARIOS HAN SIDO EVALUADOS Y VERIFICADOS!");
     console.log("=======================================================");

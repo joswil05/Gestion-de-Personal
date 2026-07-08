@@ -1,26 +1,28 @@
 import React from 'react';
 import { styled } from '../styles/theme';
 
-// Contenedor principal de la Tab Bar (rígido a 64px + safe area bottom, fondo blanco y borde superior)
+// Contenedor principal de la Tab Bar (Aspecto traslúcido glassmorphism de alta gama)
 const NavContainer = styled('nav', {
   position: 'fixed',
   bottom: 0,
   left: 0,
   right: 0,
   height: 'calc($navbarHeight + env(safe-area-inset-bottom, 0px))',
-  backgroundColor: '$card',
-  borderTop: '1px solid $border',
+  backgroundColor: 'rgba(255, 255, 255, 0.9)', // Glassmorphism
+  backdropFilter: 'blur(20px)',
+  WebkitBackdropFilter: 'blur(20px)',
+  borderTop: '1px solid rgba(226, 232, 240, 0.8)',
   display: 'flex',
   alignItems: 'flex-start',
   justifyContent: 'space-around',
-  boxShadow: '0 -4px 16px rgba(15, 23, 42, 0.04), 0 -1px 2px rgba(15, 23, 42, 0.02)',
+  boxShadow: '0 -6px 20px rgba(15, 23, 42, 0.03), 0 -1px 3px rgba(15, 23, 42, 0.01)',
   zIndex: 1000,
   boxSizing: 'border-box',
-  padding: '0 24px',
+  padding: '0 16px',
   paddingBottom: 'env(safe-area-inset-bottom, 0px)'
 });
 
-// Botón individual de navegación
+// Botón individual de navegación (Optimizado para toques accidentales)
 const NavItem = styled('button', {
   background: 'none',
   border: 'none',
@@ -35,16 +37,16 @@ const NavItem = styled('button', {
   cursor: 'pointer',
   fontFamily: '$sans',
   fontSize: '10px',
-  letterSpacing: '0.01em',
+  letterSpacing: '0.015em',
   fontWeight: 600,
   position: 'relative',
-  transition: 'all 0.25s cubic-bezier(0.4, 0, 0.2, 1)',
-  gap: '3px',
+  transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
+  gap: '4px',
   minWidth: 0,
   overflow: 'hidden',
 
   '&:active': {
-    transform: 'scale(0.95)'
+    transform: 'scale(0.93)' // Efecto de clic nativo
   },
 
   variants: {
@@ -57,21 +59,21 @@ const NavItem = styled('button', {
   }
 });
 
+// Pastilla activa al estilo Android MD3
 const IconWrapper = styled('div', {
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'center',
-  height: '32px',
-  width: '56px',
-  borderRadius: '16px',
-  transition: 'all 0.25s cubic-bezier(0.4, 0, 0.2, 1)',
+  height: '24px',
+  width: '24px',
   color: '$textSecondary',
+  transition: 'color 0.2s ease, transform 0.2s ease',
 
   variants: {
     active: {
       true: {
-        backgroundColor: '#DBEAFE',
-        color: '$accent'
+        color: '$accent',
+        transform: 'scale(1.05)'
       }
     }
   }
@@ -83,7 +85,7 @@ const IconWrapper = styled('div', {
  * TabBar Component - Barra de navegación inferior rígida (64px) optimizada para el pulgar (Thumb Zone)
  * Estética: Vectorial Premium SaaS Light. Prohibido el uso de emojis.
  * 
- * @param {string} currentTab Tab actualmente activa ('HUD' | 'PERSONAL' | 'PERSONAL_SKU')
+ * @param {string} currentTab Tab actualmente activa ('HUD' | 'PERSONAL_SKU' | 'RELEVOS')
  * @param {function} onTabChange Callback gatillado al cambiar de pestaña
  */
 export default function TabBar({ currentTab, onTabChange }) {
@@ -104,23 +106,6 @@ export default function TabBar({ currentTab, onTabChange }) {
           </svg>
         </IconWrapper>
         <span>HUD Planta</span>
-      </NavItem>
-      
-      <NavItem 
-        id="tab-personal-button"
-        active={currentTab === 'PERSONAL'} 
-        onClick={() => onTabChange && onTabChange('PERSONAL')}
-      >
-        <IconWrapper active={currentTab === 'PERSONAL'}>
-          {/* Users Vectorial SVG */}
-          <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
-            <circle cx="9" cy="7" r="4" />
-            <path d="M22 21v-2a4 4 0 0 0-3-3.87" />
-            <circle cx="19" cy="8" r="3" />
-          </svg>
-        </IconWrapper>
-        <span>Mi Personal</span>
       </NavItem>
       
       <NavItem 

@@ -1,12 +1,13 @@
 import React, { useState, useEffect } from 'react';
-import { injectGlobalStyles, styled } from './styles/theme';
+import { injectGlobalStyles, styled, keyframes } from './styles/theme';
 import TabBar from './components/TabBar';
 import HudPlanta from './components/HudPlanta';
-import MiPersonal from './components/MiPersonal';
 import LineaSku from './components/LineaSku';
 import DevConsole from './dev/DevConsole';
 import { initializeConnectivityGuard } from './skills/state-connectivity-guard';
 import { triggerNativeHapticFeedback } from './skills/capacitor-android-bridge';
+import { doc, getDoc, updateDoc } from 'firebase/firestore';
+import { db, endLineParoTransaction, syncServerTimeOffset } from './services/firebaseService';
 
 import LoginScreen from './components/LoginScreen';
 import PanelCoordinador from './components/PanelCoordinador';
@@ -42,6 +43,164 @@ const StickyBannerContainer = styled('div', {
   display: 'flex',
   flexDirection: 'column',
   width: '100%'
+});
+
+// Keyframes y componentes para la UX e indicadores de estado
+const pulseDotGreen = keyframes({
+  '0%, 100%': { transform: 'scale(1)', opacity: 1 },
+  '50%': { transform: 'scale(1.25)', opacity: 0.6 }
+});
+
+const pulseDotRed = keyframes({
+  '0%, 100%': { transform: 'scale(1)', opacity: 1 },
+  '50%': { transform: 'scale(1.3)', opacity: 0.5 }
+});
+
+const pulseBlinkRed = keyframes({
+  '0%, 100%': { backgroundColor: '#DC2626' },
+  '50%': { backgroundColor: '#EF4444' }
+});
+
+const ConnectivityIndicator = styled('div', {
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: '5px',
+  fontSize: '10px',
+  fontWeight: 600,
+  padding: '2px 8px',
+  borderRadius: '6px',
+  fontFamily: '$sans',
+  border: '1px solid',
+  transition: 'all 0.25s ease',
+  
+  variants: {
+    offline: {
+      true: {
+        color: '#EF4444',
+        backgroundColor: '#FEE2E2',
+        borderColor: '#FCA5A5'
+      },
+      false: {
+        color: '#16A34A',
+        backgroundColor: '#DCFCE7',
+        borderColor: '#86EFAC'
+      }
+    }
+  }
+});
+
+const StatusDot = styled('span', {
+  width: '6px',
+  height: '6px',
+  borderRadius: '50%',
+  display: 'inline-block',
+  flexShrink: 0,
+  
+  variants: {
+    offline: {
+      true: {
+        backgroundColor: '#EF4444'
+      },
+      false: {
+        backgroundColor: '#16A34A'
+      }
+    }
+  }
+});
+
+const ConfirmationOverlay = styled('div', {
+  position: 'fixed',
+  top: 0,
+  left: 0,
+  right: 0,
+  bottom: 0,
+  backgroundColor: 'rgba(15, 23, 42, 0.6)',
+  backdropFilter: 'blur(6px)',
+  zIndex: 2000, // Por encima de todo
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  padding: '20px'
+});
+
+const ConfirmationContent = styled('div', {
+  width: '100%',
+  maxWidth: '360px',
+  backgroundColor: '$card',
+  borderRadius: '16px',
+  boxShadow: '0 12px 48px rgba(15, 23, 42, 0.2)',
+  padding: '24px',
+  display: 'flex',
+  flexDirection: 'column',
+  alignItems: 'center',
+  textAlign: 'center',
+  gap: '16px',
+  boxSizing: 'border-box',
+  fontFamily: '$sans'
+});
+
+const AlertTitle = styled('h3', {
+  fontSize: '16px',
+  fontWeight: 700,
+  color: '$textPrimary',
+  marginTop: '2px'
+});
+
+const AlertMessage = styled('p', {
+  fontSize: '13px',
+  color: '$textSecondary',
+  lineHeight: 1.5
+});
+
+const ButtonGroup = styled('div', {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: '8px',
+  width: '100%'
+});
+
+const ActionButton = styled('button', {
+  width: '100%',
+  padding: '12px 14px',
+  border: 'none',
+  borderRadius: '8px',
+  fontSize: '13px',
+  fontWeight: 700,
+  cursor: 'pointer',
+  transition: 'all 0.15s ease',
+  boxSizing: 'border-box',
+  display: 'flex',
+  justifyContent: 'center',
+  alignItems: 'center',
+  gap: '6px',
+  fontFamily: '$sans',
+  
+  variants: {
+    variant: {
+      primary: {
+        backgroundColor: '$accent',
+        color: '#FFFFFF',
+        '&:hover': {
+          backgroundColor: '#1D4ED8'
+        }
+      },
+      danger: {
+        backgroundColor: '#EF4444',
+        color: '#FFFFFF',
+        '&:hover': {
+          backgroundColor: '#DC2626'
+        }
+      },
+      secondary: {
+        backgroundColor: '#F1F5F9',
+        color: '$textPrimary',
+        border: '1px solid #CBD5E1',
+        '&:hover': {
+          backgroundColor: '#E2E8F0'
+        }
+      }
+    }
+  }
 });
 
 // Banner superior informativo del estado sin red con padding regular
@@ -81,7 +240,8 @@ const PortalHeader = styled('header', {
   width: '100%',
   maxWidth: '800px',
   margin: '0 auto',
-  padding: '12px 20px',
+  height: '52px', // Altura fija de alta densidad
+  padding: '0 16px',
   backgroundColor: '$card',
   borderBottom: '1px solid $border',
   display: 'flex',
@@ -90,7 +250,8 @@ const PortalHeader = styled('header', {
   fontFamily: '$sans',
   boxSizing: 'border-box',
   zIndex: 1100,
-  position: 'relative'
+  position: 'sticky',
+  top: 0
 });
 
 const SupervisorProfile = styled('div', {
@@ -100,51 +261,55 @@ const SupervisorProfile = styled('div', {
 });
 
 const SupervisorAvatar = styled('img', {
-  width: '32px',
-  height: '32px',
+  width: '28px',
+  height: '28px',
   borderRadius: '50%',
-  border: '2px solid $accent',
+  border: '1px solid $border',
   backgroundColor: '$background'
 });
 
 const SupervisorInfo = styled('div', {
   display: 'flex',
-  flexDirection: 'column'
+  flexDirection: 'column',
+  gap: '0px'
 });
 
 const SupervisorName = styled('span', {
-  fontSize: '12px',
-  fontWeight: 700,
-  color: '$textPrimary'
+  fontSize: '$fonts$sizeSecondary',
+  fontWeight: 600,
+  color: '$textPrimary',
+  lineHeight: 1.2
 });
 
 const LineTag = styled('span', {
-  fontSize: '10px',
-  fontWeight: 600,
-  color: '$textSecondary'
+  fontSize: '$fonts$sizeMeta',
+  fontWeight: 500,
+  color: '$textSecondary',
+  lineHeight: 1.2
 });
 
 const LogoutButton = styled('button', {
   background: 'none',
   border: 'none',
   outline: 'none',
-  padding: '6px',
-  borderRadius: '8px',
+  padding: '0',
+  borderRadius: '6px',
   color: '$textSecondary',
   cursor: 'pointer',
-  display: 'flex',
+  display: 'inline-flex',
   alignItems: 'center',
   justifyContent: 'center',
-  minWidth: '44px',
-  minHeight: '44px',
-  transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
+  width: '28px',
+  height: '28px',
+  transition: 'all 0.2s',
+  boxSizing: 'border-box',
 
   '&:hover': {
-    color: '#EF4444',
-    backgroundColor: '$dangerBg'
+    color: '$textPrimary',
+    backgroundColor: '$surfaceHover'
   },
   '&:active': {
-    transform: 'scale(0.92)'
+    transform: 'scale(0.95)'
   }
 });
 
@@ -158,7 +323,7 @@ export default function App() {
   const [supervisorName, setSupervisorName] = useState(localStorage.getItem("supervisorName") || "");
   const [supervisorLineId, setSupervisorLineId] = useState(localStorage.getItem("supervisorLineId") || "");
   const [userRole, setUserRole] = useState(localStorage.getItem("userRole") || "SUPERVISOR");
-  const [currentTab, setCurrentTab] = useState('HUD'); // 'HUD' | 'PERSONAL' | 'PERSONAL_SKU'
+  const [currentTab, setCurrentTab] = useState('HUD'); // 'HUD' | 'PERSONAL_SKU' | 'RELEVOS'
   const [isOffline, setIsOffline] = useState(false);
   const [pathname, setPathname] = useState(window.location.pathname);
 
@@ -187,6 +352,8 @@ export default function App() {
     initializeConnectivityGuard((onlineStatus) => {
       setIsOffline(!onlineStatus);
     });
+    // Sincronizar offset del reloj de servidor al arrancar
+    syncServerTimeOffset();
   }, []);
 
   // 4. Salida / Cierre de sesión de Terminal
@@ -276,7 +443,41 @@ function SupervisorPortalWrapper({ supervisorName, supervisorLineId, isOffline, 
 }
 
 function SupervisorPortal({ supervisorName, supervisorLineId, isOffline, handleLogout, currentTab, setCurrentTab }) {
-  const { activeParo, formattedTime } = useStopTimer();
+  const { activeParo, elapsedSeconds, formattedTime } = useStopTimer();
+  const [showParoReminder, setShowParoReminder] = useState(false);
+  const [lastConfirmedPeriod, setLastConfirmedPeriod] = useState(0);
+
+  const currentPeriod = Math.floor(elapsedSeconds / 1800); // 30 minutos = 1800s
+
+  useEffect(() => {
+    if (!activeParo) {
+      setShowParoReminder(false);
+      setLastConfirmedPeriod(0);
+      return;
+    }
+    // Si pasaron 30 min y no hemos confirmado este periodo, mostramos el aviso
+    if (currentPeriod > 0 && currentPeriod > lastConfirmedPeriod) {
+      setShowParoReminder(true);
+      triggerNativeHapticFeedback('warning');
+    }
+  }, [elapsedSeconds, activeParo, currentPeriod, lastConfirmedPeriod]);
+
+  const handleEndParoGlobal = async () => {
+    if (!activeParo || !supervisorLineId) return;
+    try {
+      await endLineParoTransaction(supervisorLineId);
+      setShowParoReminder(false);
+      triggerNativeHapticFeedback('confirm');
+    } catch (err) {
+      console.error("Error al finalizar el paro desde banner global:", err);
+    }
+  };
+
+  const handleKeepParo = () => {
+    setLastConfirmedPeriod(currentPeriod);
+    setShowParoReminder(false);
+    triggerNativeHapticFeedback('short');
+  };
 
   return (
     <AppViewport id="supervisor-portal-viewport">
@@ -295,14 +496,21 @@ function SupervisorPortal({ supervisorName, supervisorLineId, isOffline, handleL
 
         {/* Banner flotante global de Paro Técnico persistente */}
         {activeParo && (
-          <StickyTimerBanner id="active-paro-global-banner">
+          <StickyTimerBanner 
+            id="active-paro-global-banner"
+            style={elapsedSeconds >= 1800 ? {
+              animation: `${pulseBlinkRed} 2s infinite ease-in-out`,
+              backgroundColor: '#EF4444'
+            } : {}}
+          >
             <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" style={{ marginRight: '4px' }}>
               <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/>
               <line x1="12" y1="9" x2="12" y2="13"/>
               <line x1="12" y1="17" x2="12.01" y2="17"/>
             </svg>
             <span>
-              PARO EN LÍNEA: {activeParo.category} ({activeParo.cause}) ── CRONÓMETRO: {formattedTime}
+              {elapsedSeconds >= 1800 ? '⚠️ DETENCIÓN PROLONGADA DETECTADA: ' : 'PARO EN LÍNEA: '}
+              {activeParo.category} ({activeParo.cause.replaceAll('_', ' ')}) ── CRONÓMETRO: {formattedTime}
             </span>
           </StickyTimerBanner>
         )}
@@ -320,29 +528,33 @@ function SupervisorPortal({ supervisorName, supervisorLineId, isOffline, handleL
             <LineTag>Línea {supervisorLineId} {supervisorLineId === "L8" ? "(Bolsón)" : ""}</LineTag>
           </SupervisorInfo>
         </SupervisorProfile>
-        
-        <LogoutButton 
-          onClick={handleLogout} 
-          title="Cerrar sesión de terminal"
-          id="global-logout-button"
-        >
-          {/* Logout SVG Icon */}
-          <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
-            <polyline points="16 17 21 12 16 7"/>
-            <line x1="21" y1="12" x2="9" y2="12"/>
-          </svg>
-        </LogoutButton>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+          {/* Indicador de red dinámico tipo semáforo */}
+          <ConnectivityIndicator offline={isOffline} id="global-connectivity-indicator">
+            <StatusDot offline={isOffline} />
+            <span>{isOffline ? "Offline" : "Online"}</span>
+          </ConnectivityIndicator>
+          
+          <LogoutButton 
+            onClick={handleLogout} 
+            title="Cerrar sesión de terminal"
+            id="global-logout-button"
+          >
+            {/* Logout SVG Icon */}
+            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+              <polyline points="16 17 21 12 16 7"/>
+              <line x1="21" y1="12" x2="9" y2="12"/>
+            </svg>
+          </LogoutButton>
+        </div>
       </PortalHeader>
 
       {/* Contenedor principal de pestañas reactivas */}
       <MainContent>
         {currentTab === 'HUD' && (
           <HudPlanta supervisorLineId={supervisorLineId} />
-        )}
-        
-        {currentTab === 'PERSONAL' && (
-          <MiPersonal supervisorLineId={supervisorLineId} />
         )}
         
         {currentTab === 'PERSONAL_SKU' && (
@@ -359,6 +571,48 @@ function SupervisorPortal({ supervisorName, supervisorLineId, isOffline, handleL
         currentTab={currentTab} 
         onTabChange={setCurrentTab} 
       />
+
+      {/* 🔴 DIÁLOGO DE CONFIRMACIÓN DE PARO PROLONGADO */}
+      {showParoReminder && activeParo && (
+        <ConfirmationOverlay id="paro-reminder-overlay">
+          <ConfirmationContent onClick={(e) => e.stopPropagation()}>
+            <div style={{
+              width: '56px',
+              height: '56px',
+              borderRadius: '50%',
+              backgroundColor: '#FEE2E2',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              color: '#EF4444',
+              marginBottom: '8px'
+            }}>
+              <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/>
+                <line x1="12" y1="9" x2="12" y2="13"/>
+                <line x1="12" y1="17" x2="12.01" y2="17"/>
+              </svg>
+            </div>
+            <div>
+              <AlertTitle>Alerta de Paro Técnico Prolongado</AlertTitle>
+              <AlertMessage style={{ marginTop: '8px' }}>
+                La línea ha estado detenida en la categoría <strong>{activeParo.category}</strong> por más de 30 minutos (Transcurrido: {formattedTime}).
+              </AlertMessage>
+              <AlertMessage style={{ marginTop: '8px', fontWeight: 600, color: '#1E293B' }}>
+                ¿La línea física sigue detenida?
+              </AlertMessage>
+            </div>
+            <ButtonGroup>
+              <ActionButton variant="secondary" onClick={handleKeepParo} id="confirm-keep-paro-btn">
+                Sí, continuar en Paro
+              </ActionButton>
+              <ActionButton variant="danger" onClick={handleEndParoGlobal} id="confirm-end-paro-btn">
+                No, reanudar producción ahora
+              </ActionButton>
+            </ButtonGroup>
+          </ConfirmationContent>
+        </ConfirmationOverlay>
+      )}
     </AppViewport>
   );
 }

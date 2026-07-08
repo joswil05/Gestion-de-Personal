@@ -3526,3 +3526,170 @@ export const REAL_PROGRAMA = [
     "comentario": ""
   }
 ];
+
+/**
+ * Puestos SKU-Dependientes: Se activan SOLO cuando la línea tiene un SKU específico.
+ * Basados en la hoja "Puestos SKU" del Excel "Base de Datos.xlsx".
+ * Estos puestos se agregan dinámicamente a la colección "puestos" cuando el SKU coincide.
+ */
+export const REAL_SKU_SLOTS = [
+  // --- Línea 1: SKU "850RM4H32L40" (Retornable) ---
+  {
+    "id": "SLOT_L1_SKU_001",
+    "lineId": "L1",
+    "puestoName": "Lámpara 1,2",
+    "tipoPuesto": "Puesto Vario",
+    "status": "SUSPENDIDO",
+    "idWorkerCurrent": null,
+    "idWorkerOriginal": null,
+    "requiredCapabilities": [],
+    "sexoPreferente": "Femenino",
+    "tiempoEnPuesto": 1.0,
+    "tiempoMinRecuperacion": 3.0,
+    "asignadoEnSegundoVirtual": null,
+    "isSkuDependent": true,
+    "requiredSkus": ["850RM4H32L40", "850SV4H32L40", "850MX0632L35"]
+  },
+  {
+    "id": "SLOT_L1_SKU_002",
+    "lineId": "L1",
+    "puestoName": "Lámpara 2,2",
+    "tipoPuesto": "Puesto Vario",
+    "status": "SUSPENDIDO",
+    "idWorkerCurrent": null,
+    "idWorkerOriginal": null,
+    "requiredCapabilities": [],
+    "sexoPreferente": "Femenino",
+    "tiempoEnPuesto": 1.0,
+    "tiempoMinRecuperacion": 1.0,
+    "asignadoEnSegundoVirtual": null,
+    "isSkuDependent": true,
+    "requiredSkus": ["850RM4H32L40", "850SV4H32L40", "850MX0632L35"]
+  },
+  {
+    "id": "SLOT_L1_SKU_003",
+    "lineId": "L1",
+    "puestoName": "Mesa 2",
+    "tipoPuesto": "Puesto Vario",
+    "status": "SUSPENDIDO",
+    "idWorkerCurrent": null,
+    "idWorkerOriginal": null,
+    "requiredCapabilities": [],
+    "sexoPreferente": "Femenino",
+    "tiempoEnPuesto": 2.0,
+    "tiempoMinRecuperacion": 2.0,
+    "asignadoEnSegundoVirtual": null,
+    "isSkuDependent": true,
+    "requiredSkus": ["850RM4H32L40", "850SV4H32L40", "850MX0632L35"]
+  },
+  // --- Línea 4: SKU "Alcohol" ---
+  {
+    "id": "SLOT_L4_SKU_001",
+    "lineId": "L4",
+    "puestoName": "Sticker 1",
+    "tipoPuesto": "Puesto Vario",
+    "status": "SUSPENDIDO",
+    "idWorkerCurrent": null,
+    "idWorkerOriginal": null,
+    "requiredCapabilities": [],
+    "sexoPreferente": "Femenino",
+    "tiempoEnPuesto": null,
+    "tiempoMinRecuperacion": null,
+    "asignadoEnSegundoVirtual": null,
+    "isSkuDependent": true,
+    "requiredSkus": ["Alcohol"]
+  },
+  {
+    "id": "SLOT_L4_SKU_002",
+    "lineId": "L4",
+    "puestoName": "Sticker 2",
+    "tipoPuesto": "Puesto Vario",
+    "status": "SUSPENDIDO",
+    "idWorkerCurrent": null,
+    "idWorkerOriginal": null,
+    "requiredCapabilities": [],
+    "sexoPreferente": "Femenino",
+    "tiempoEnPuesto": null,
+    "tiempoMinRecuperacion": null,
+    "asignadoEnSegundoVirtual": null,
+    "isSkuDependent": true,
+    "requiredSkus": ["Alcohol"]
+  },
+  {
+    "id": "SLOT_L4_SKU_003",
+    "lineId": "L4",
+    "puestoName": "Sticker 3",
+    "tipoPuesto": "Puesto Vario",
+    "status": "SUSPENDIDO",
+    "idWorkerCurrent": null,
+    "idWorkerOriginal": null,
+    "requiredCapabilities": [],
+    "sexoPreferente": "Femenino",
+    "tiempoEnPuesto": null,
+    "tiempoMinRecuperacion": null,
+    "asignadoEnSegundoVirtual": null,
+    "isSkuDependent": true,
+    "requiredSkus": ["Alcohol"]
+  },
+  {
+    "id": "SLOT_L4_SKU_004",
+    "lineId": "L4",
+    "puestoName": "Sticker 4",
+    "tipoPuesto": "Puesto Vario",
+    "status": "SUSPENDIDO",
+    "idWorkerCurrent": null,
+    "idWorkerOriginal": null,
+    "requiredCapabilities": [],
+    "sexoPreferente": "Femenino",
+    "tiempoEnPuesto": null,
+    "tiempoMinRecuperacion": null,
+    "asignadoEnSegundoVirtual": null,
+    "isSkuDependent": true,
+    "requiredSkus": ["Alcohol"]
+  },
+  {
+    "id": "SLOT_L4_SKU_005",
+    "lineId": "L4",
+    "puestoName": "Sticker 5",
+    "tipoPuesto": "Puesto Vario",
+    "status": "SUSPENDIDO",
+    "idWorkerCurrent": null,
+    "idWorkerOriginal": null,
+    "requiredCapabilities": [],
+    "sexoPreferente": "Femenino",
+    "tiempoEnPuesto": null,
+    "tiempoMinRecuperacion": null,
+    "asignadoEnSegundoVirtual": null,
+    "isSkuDependent": true,
+    "requiredSkus": ["Alcohol"]
+  },
+  {
+    "id": "SLOT_L4_SKU_006",
+    "lineId": "L4",
+    "puestoName": "Sticker 6",
+    "tipoPuesto": "Puesto Vario",
+    "status": "SUSPENDIDO",
+    "idWorkerCurrent": null,
+    "idWorkerOriginal": null,
+    "requiredCapabilities": [],
+    "sexoPreferente": "Femenino",
+    "tiempoEnPuesto": null,
+    "tiempoMinRecuperacion": null,
+    "asignadoEnSegundoVirtual": null,
+    "isSkuDependent": true,
+    "requiredSkus": ["Alcohol"]
+  }
+];
+
+/**
+ * Supervisores Reales de Planta — Extraídos del seed de trabajadores.
+ * El coordinador asigna estos supervisores a las líneas desde su panel.
+ */
+export const REAL_SUPERVISORS = [
+  { id: "WORKER_365515", name: "Axel Javier Antonio Tercero Lola", shortName: "Axel Tercero" },
+  { id: "WORKER_99590",  name: "Jairo De Jesus Carrion Puerto",   shortName: "Jairo Carrión" },
+  { id: "WORKER_359224", name: "Nubia Haydee Luna",               shortName: "Nubia Luna" },
+  { id: "WORKER_10432",  name: "Roberto Daniel Lira Munguia",     shortName: "Roberto Lira" },
+  { id: "WORKER_351516", name: "Anielka Lizeth Cruz Blandon",     shortName: "Anielka Cruz" },
+  { id: "WORKER_99708",  name: "Fabricio Antonio Espinoza",       shortName: "Fabricio Espinoza" }
+];

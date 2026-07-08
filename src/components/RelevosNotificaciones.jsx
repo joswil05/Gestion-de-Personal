@@ -22,93 +22,110 @@ import { initializeConnectivityGuard } from '../skills/state-connectivity-guard'
 // --- STYLED COMPONENTS ---
 
 const RelevosContainer = styled('div', {
-  padding: '16px 20px calc(100px + env(safe-area-inset-bottom, 0px)) 20px',
+  padding: '12px 16px calc(80px + env(safe-area-inset-bottom, 0px)) 16px',
   display: 'flex',
   flexDirection: 'column',
-  gap: '20px',
+  gap: '14px',
   fontFamily: '$sans',
-  boxSizing: 'border-box'
+  boxSizing: 'border-box',
+  backgroundColor: '$background',
+  minHeight: '100vh'
 });
 
 const SectionHeader = styled('div', {
-  borderBottom: '1px solid $border',
-  paddingBottom: '12px',
   display: 'flex',
-  flexDirection: 'column',
-  gap: '4px'
+  alignItems: 'center',
+  justifyContent: 'space-between',
+  paddingBottom: '4px'
 });
 
 const SectionTitle = styled('h2', {
-  fontSize: '18px',
-  fontWeight: 800,
+  fontSize: '14px',
+  fontWeight: 700,
   color: '$textPrimary',
   display: 'flex',
   alignItems: 'center',
-  gap: '8px'
+  gap: '6px'
+});
+
+const SubSectionTitle = styled('h3', {
+  fontSize: '11px',
+  fontWeight: 700,
+  color: '$textSecondary',
+  textTransform: 'uppercase',
+  letterSpacing: '0.5px',
+  height: '32px',
+  display: 'flex',
+  alignItems: 'center',
+  gap: '6px',
+  padding: '0 4px',
+  borderBottom: '1px solid $border',
+  margin: '12px 0 6px 0'
 });
 
 const SectionDescription = styled('p', {
-  fontSize: '12px',
-  color: '$textSecondary',
-  lineHeight: 1.4
+  display: 'none' // Se elimina visualmente para evitar scroll innecesario
 });
 
 const EmptyStateCard = styled('div', {
-  padding: '48px 24px',
-  border: '1px dashed $border',
-  borderRadius: '16px',
-  backgroundColor: '$card',
-  color: '$textSecondary',
-  fontSize: '12px',
-  textAlign: 'center',
+  height: '48px',
   display: 'flex',
-  flexDirection: 'column',
   alignItems: 'center',
   justifyContent: 'center',
-  gap: '12px',
-  boxShadow: '$subtle'
+  gap: '8px',
+  backgroundColor: '$card',
+  border: '1px solid $border',
+  borderRadius: '12px',
+  color: '$textSecondary',
+  fontSize: '12px',
+  boxShadow: '$subtle',
+  padding: '0 16px',
+  boxSizing: 'border-box'
 });
 
 const RelevoList = styled('div', {
   display: 'flex',
   flexDirection: 'column',
-  gap: '12px'
+  gap: '10px'
 });
 
-// Consola de Prioridad / Tarjetas L8
 const RelevoPriorityCard = styled('div', {
   backgroundColor: '$card',
   border: '1px solid $border',
-  borderRadius: '16px',
-  padding: '20px 24px',
-  boxShadow: '$elevation1',
+  borderRadius: '12px',
+  height: '64px',
+  padding: '0 12px 0 14px',
+  boxShadow: '$subtle',
   display: 'flex',
-  flexDirection: 'column',
-  gap: '14px',
+  alignItems: 'center',
+  justifyContent: 'space-between',
   position: 'relative',
   overflow: 'hidden',
-  transition: 'all 0.3s cubic-bezier(0.16, 1, 0.3, 1)'
+  gap: '12px',
+  borderLeft: '4px solid $dangerBorder',
+  boxSizing: 'border-box'
 });
 
 const CardHeaderRow = styled('div', {
   display: 'flex',
-  justifyContent: 'space-between',
-  alignItems: 'center'
+  alignItems: 'center',
+  gap: '8px'
 });
 
 const StationBadge = styled('div', {
   display: 'flex',
   flexDirection: 'column',
-  gap: '4px'
+  gap: '1px'
 });
 
 const StationName = styled('strong', {
-  fontSize: '13.5px',
-  color: '$textPrimary'
+  fontSize: '13px',
+  color: '$textPrimary',
+  fontWeight: 700
 });
 
 const LineTag = styled('span', {
-  fontSize: '10px',
+  fontSize: '9px',
   fontWeight: 700,
   color: '$accent',
   letterSpacing: '0.5px',
@@ -120,83 +137,74 @@ const FatigaTimer = styled('span', {
   fontWeight: 700,
   color: '$dangerBorder',
   backgroundColor: '$dangerBg',
-  padding: '4px 10px',
-  borderRadius: '8px',
+  padding: '3px 8px',
+  borderRadius: '6px',
   display: 'inline-flex',
   alignItems: 'center',
-  gap: '6px',
+  gap: '4px',
   fontFamily: 'monospace',
-  fontVariantNumeric: 'tabular-nums',
   border: '1px solid #FCA5A5'
 });
 
 const OperatorLabel = styled('div', {
-  fontSize: '11.5px',
+  fontSize: '11px',
   color: '$textSecondary',
   display: 'flex',
   alignItems: 'center',
-  gap: '8px'
+  gap: '4px'
 });
 
 const MatchmakerBox = styled('div', {
-  backgroundColor: '#F8FAFC',
-  border: '1px solid #E2E8F0',
-  borderRadius: '12px',
-  padding: '12px 16px',
   display: 'flex',
-  flexDirection: 'column',
-  gap: '8px'
+  alignItems: 'center',
+  gap: '12px',
+  height: '100%'
 });
 
 const SuggestionHeader = styled('span', {
-  fontSize: '9px',
-  fontWeight: 700,
-  color: '#64748B',
-  textTransform: 'uppercase',
-  letterSpacing: '0.8px'
+  display: 'none' // Comprimido para el list-item de 64px
 });
 
 const SuggestionWorker = styled('div', {
   display: 'flex',
-  justifyContent: 'space-between',
   alignItems: 'center',
   gap: '10px'
 });
 
 const WorkerName = styled('strong', {
-  fontSize: '12.5px',
-  color: '#0F172A'
+  fontSize: '12px',
+  color: '$textPrimary',
+  fontWeight: 700
 });
 
 const WorkerId = styled('span', {
   fontFamily: 'monospace',
-  fontSize: '10px',
-  color: '#64748B'
+  fontSize: '9px',
+  color: '$textSecondary'
 });
 
 const ActionBtn = styled('button', {
-  padding: '8px 16px',
-  minHeight: '38px', // Android touch targets
+  padding: '0 10px',
+  height: '32px',
   border: 'none',
-  borderRadius: '10px',
-  fontSize: '11.5px',
+  borderRadius: '8px',
+  fontSize: '11px',
   fontWeight: 700,
   cursor: 'pointer',
-  transition: 'all 0.2s cubic-bezier(0.16, 1, 0.3, 1)',
+  transition: 'all 0.15s ease',
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'center',
-  gap: '6px',
+  gap: '4px',
+  fontFamily: '$sans',
 
   variants: {
     variant: {
       accent: {
         backgroundColor: '$accent',
         color: '#FFFFFF',
-        boxShadow: '0 2px 4px rgba(15, 23, 42, 0.06)',
         '&:hover': {
-          backgroundColor: '#1D4ED8',
-          boxShadow: '0 4px 12px rgba(15, 23, 42, 0.1)'
+          backgroundColor: '#1D4ED8'
         }
       },
       danger: {
@@ -222,8 +230,7 @@ const ActionBtn = styled('button', {
         color: '#475569',
         border: '1px solid #E2E8F0',
         '&:hover': {
-          backgroundColor: '#E2E8F0',
-          color: '#1E293B'
+          backgroundColor: '#E2E8F0'
         }
       }
     }
@@ -233,53 +240,165 @@ const ActionBtn = styled('button', {
   }
 });
 
-// Tarjeta de Relevista en Tránsito (Supervisor Pasillo)
 const TransitCard = styled('div', {
   backgroundColor: '$card',
   border: '1px solid $border',
-  borderRadius: '16px',
-  padding: '20px 24px',
-  boxShadow: '$elevation1',
+  borderRadius: '12px',
+  height: '64px',
+  padding: '0 12px 0 14px',
+  boxShadow: '$subtle',
   display: 'flex',
-  flexDirection: 'column',
-  gap: '16px',
+  alignItems: 'center',
+  justifyContent: 'space-between',
+  gap: '12px',
   borderLeft: '4px solid $transitBorder',
-  transition: 'all 0.3s ease'
+  transition: 'all 0.15s ease',
+  boxSizing: 'border-box'
 });
 
 const RowActions = styled('div', {
   display: 'flex',
-  gap: '8px',
-  marginTop: '4px'
+  gap: '6px'
 });
-
-
 
 const VacancySelectArea = styled('div', {
   display: 'flex',
+  alignItems: 'center',
+  gap: '4px'
+});
+
+const PlantAlertGroup = styled('div', {
+  border: '1px solid $border',
+  borderRadius: '12px',
+  overflow: 'hidden',
+  display: 'flex',
   flexDirection: 'column',
-  gap: '6px',
-  maxHeight: '140px',
-  overflowY: 'auto'
+  boxShadow: '$subtle'
+});
+
+const PlantAlertItem = styled('div', {
+  display: 'flex',
+  alignItems: 'center',
+  gap: '8px',
+  padding: '8px 12px',
+  borderBottom: '1px solid $border',
+  fontSize: '11.5px',
+  color: '$dangerBorder',
+  fontWeight: 600,
+  backgroundColor: '$dangerBg',
+  boxSizing: 'border-box',
+  '&:last-child': {
+    borderBottom: 'none'
+  }
 });
 
 const ToastNotification = styled('div', {
   backgroundColor: '#1E293B',
   color: '#FFFFFF',
-  padding: '12px 18px',
-  borderRadius: '12px',
-  fontSize: '12px',
+  padding: '10px 16px',
+  borderRadius: '8px',
+  fontSize: '11px',
   fontWeight: 600,
   position: 'fixed',
-  top: '24px',
+  top: '16px',
   left: '50%',
   transform: 'translateX(-50%)',
   zIndex: 3000,
   boxShadow: '$elevation3',
   display: 'flex',
   alignItems: 'center',
-  gap: '8px',
+  gap: '6px',
   animation: 'slideDown 0.3s cubic-bezier(0.16, 1, 0.3, 1)'
+});
+
+const ConfirmationOverlay = styled('div', {
+  position: 'fixed',
+  top: 0,
+  left: 0,
+  right: 0,
+  bottom: 0,
+  backgroundColor: 'rgba(15, 23, 42, 0.5)',
+  backdropFilter: 'blur(4px)',
+  zIndex: 1600,
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  padding: '16px'
+});
+
+const ConfirmationContent = styled('div', {
+  width: '100%',
+  maxWidth: '360px',
+  backgroundColor: '$card',
+  borderRadius: '12px',
+  boxShadow: '0 8px 32px rgba(15, 23, 42, 0.15)',
+  padding: '20px',
+  display: 'flex',
+  flexDirection: 'column',
+  gap: '12px',
+  boxSizing: 'border-box',
+  fontFamily: '$sans'
+});
+
+const DialogTitle = styled('h3', {
+  fontSize: '14px',
+  fontWeight: 700,
+  color: '$textPrimary',
+  textAlign: 'center'
+});
+
+const DialogSubtitle = styled('p', {
+  fontSize: '11px',
+  color: '$textSecondary',
+  textAlign: 'center',
+  lineHeight: 1.3
+});
+
+const WorkerListContainer = styled('div', {
+  maxHeight: '200px',
+  overflowY: 'auto',
+  display: 'flex',
+  flexDirection: 'column',
+  gap: '6px',
+  paddingRight: '2px'
+});
+
+const WorkerListItem = styled('button', {
+  width: '100%',
+  padding: '8px 10px',
+  backgroundColor: '#F8FAFC',
+  border: '1px solid #E2E8F0',
+  borderRadius: '6px',
+  textAlign: 'left',
+  cursor: 'pointer',
+  display: 'flex',
+  justifyContent: 'space-between',
+  alignItems: 'center',
+  transition: 'all 0.15s ease',
+  fontFamily: '$sans',
+
+  '&:hover': {
+    backgroundColor: '#EFF6FF',
+    borderColor: '#BFDBFE'
+  }
+});
+
+const CancelBtn = styled('button', {
+  width: '100%',
+  padding: '10px',
+  backgroundColor: '#FFFFFF',
+  border: '1px solid #CBD5E1',
+  borderRadius: '6px',
+  color: '$textSecondary',
+  fontSize: '11.5px',
+  fontWeight: 700,
+  cursor: 'pointer',
+  transition: 'all 0.15s ease',
+  fontFamily: '$sans',
+
+  '&:hover': {
+    backgroundColor: '#F1F5F9'
+  }
 });
 
 // --- COMPONENT ---
@@ -314,6 +433,7 @@ export default function RelevosNotificaciones({ supervisorLineId }) {
 
   const [skippedIndexes, setSkippedIndexes] = useState({});
   const [priorityOrder, setPriorityOrder] = useState(["L4", "L1", "L2", "L6", "L7", "L5", "L3", "L8", "L9", "L10"]);
+  const [manualDispatchSlot, setManualDispatchSlot] = useState(null);
 
   // 2.5 Cargar global_priority reactivamente
   useEffect(() => {
@@ -355,6 +475,11 @@ export default function RelevosNotificaciones({ supervisorLineId }) {
     const transitChains = getSlotsInTransitChains(allSlots, workers, priorityOrder);
     const transitChainsSet = new Set(transitChains);
 
+    const getBaseNameLocal = (name) => {
+      if (!name) return "";
+      return name.toLowerCase().split(/\d/)[0].trim();
+    };
+
     allSlots.forEach(slot => {
       if (slot.status !== 'ASIGNADO' || !slot.asignadoEnSegundoVirtual) return;
       
@@ -372,7 +497,108 @@ export default function RelevosNotificaciones({ supervisorLineId }) {
       if (transitChainsSet.has(slot.id)) return;
 
       if (elapsed >= 105 || slot.relevoSolicitado) {
-        fatigued.push({ ...slot, elapsed });
+        // Evaluar si es resoluble localmente por intercambio cruzado compatible en su propia línea
+        let isLocalResolvable = false;
+        let localSwapInfo = null;
+        const workerA = workers[slot.idWorkerCurrent];
+
+        if (workerA) {
+          const sameLineSlots = allSlots.filter(s => s.lineId === slot.lineId && s.id !== slot.id);
+          
+          // 1. Buscar si hay otro fatigado compatible (Siempre bloquea L8)
+          let partnerFatigued = null;
+          for (const slotB of sameLineSlots) {
+            if (slotB.status !== 'ASIGNADO' || !slotB.idWorkerCurrent) continue;
+            const esFijoB = ["Operador A", "Averiero", "Operador C"].includes(slotB.tipoPuesto);
+            if (esFijoB) continue;
+
+            let isFatiguedB = slotB.relevoSolicitado === true;
+            if (!isFatiguedB && slotB.asignadoEnSegundoVirtual) {
+              const tB = slotB.asignadoEnSegundoVirtual;
+              const msB = tB.toDate ? tB.toDate().getTime() : (tB.seconds ? tB.seconds * 1000 : new Date(tB).getTime());
+              const elapsedB = Math.max(0, Math.floor((Date.now() - msB) / 60000));
+              isFatiguedB = elapsedB >= 105;
+            }
+            if (!isFatiguedB) continue;
+
+            if (getBaseNameLocal(slot.puestoName) === getBaseNameLocal(slotB.puestoName)) continue;
+            const workerB = workers[slotB.idWorkerCurrent];
+            if (!workerB) continue;
+
+            if (canWorkerOccupiedSlot(workerA, slotB) && canWorkerOccupiedSlot(workerB, slot)) {
+              partnerFatigued = { slotB, workerB };
+              break;
+            }
+          }
+
+          if (partnerFatigued) {
+            isLocalResolvable = true;
+            localSwapInfo = {
+              partnerSlot: partnerFatigued.slotB,
+              partnerWorker: partnerFatigued.workerB,
+              reason: "both_fatigued"
+            };
+          } else {
+            // 2. Si no hay fatigado compatible, verificar si L8 tiene personal disponible compatible
+            const l8Available = Object.values(workers).filter(w => 
+              (w.status === "DISPONIBLE_BOLSON" || w.status === "POOL_ARRANQUE") && 
+              w.currentSlotId == null
+            );
+
+            const hasCompatibleL8Worker = l8Available.some(w => {
+              const blacklist = slot.rejectedWorkerIds || [];
+              if (blacklist.includes(w.id)) {
+                console.log(`[QA Debug] ${w.name} (${w.id}) excluido de ${slot.puestoName} por estar en la blacklist.`);
+                return false;
+              }
+              if (!canWorkerOccupiedSlot(w, slot)) {
+                console.log(`[QA Debug] ${w.name} (${w.id}) excluido de ${slot.puestoName} por canWorkerOccupiedSlot.`);
+                return false;
+              }
+              if (w.lastActivity && w.lastActivity === slot.puestoName) {
+                console.log(`[QA Debug] ${w.name} (${w.id}) excluido de ${slot.puestoName} por lastActivity matching (fatiga ergonómica 24h).`);
+                return false;
+              }
+              console.log(`[QA Debug] CANDIDATO COMPATIBLE L8 DETECTADO: ${w.name} (${w.id}) para puesto ${slot.puestoName}.`);
+              return true;
+            });
+
+            // Si L8 NO tiene recursos, verificamos si hay algún estable compatible localmente
+            if (!hasCompatibleL8Worker) {
+              let partnerStable = null;
+              for (const slotB of sameLineSlots) {
+                if (slotB.status !== 'ASIGNADO' || !slotB.idWorkerCurrent) continue;
+                const esFijoB = ["Operador A", "Averiero", "Operador C"].includes(slotB.tipoPuesto);
+                if (esFijoB) continue;
+
+                if (getBaseNameLocal(slot.puestoName) === getBaseNameLocal(slotB.puestoName)) continue;
+                const workerB = workers[slotB.idWorkerCurrent];
+                if (!workerB) continue;
+
+                if (canWorkerOccupiedSlot(workerA, slotB) && canWorkerOccupiedSlot(workerB, slot)) {
+                  partnerStable = { slotB, workerB };
+                  break;
+                }
+              }
+
+              if (partnerStable) {
+                isLocalResolvable = true;
+                localSwapInfo = {
+                  partnerSlot: partnerStable.slotB,
+                  partnerWorker: partnerStable.workerB,
+                  reason: "no_l8_resources"
+                };
+              }
+            }
+          }
+        }
+
+        fatigued.push({ 
+          ...slot, 
+          elapsed, 
+          isLocalResolvable, 
+          localSwapInfo 
+        });
       }
     });
 
@@ -388,36 +614,50 @@ export default function RelevosNotificaciones({ supervisorLineId }) {
     );
   }, [workers]);
 
-  // 7. Algoritmo inteligente de matchmaking para sugerir candidatos en L8
-  const getSuggestedCandidate = (slot) => {
-    const blacklist = slot.rejectedWorkerIds || [];
-    const stationName = slot.puestoName;
+  // 7. Algoritmo inteligente de matchmaking para sugerir candidatos únicos en L8
+  const suggestionsMap = useMemo(() => {
+    const map = {};
+    const suggestedUserIds = new Set();
 
-    const aptCandidates = availableL8Workers.filter(w => {
-      // a. Ignorar si está blacklisteado (rechazado físicamente en pasillo)
-      if (blacklist.includes(w.id)) return false;
+    activeFatiguedSlots.forEach(slot => {
+      if (slot.isLocalResolvable) {
+        map[slot.id] = { candidate: null, count: 0 };
+        return;
+      }
 
-      // b. Restricciones duras (Médicas y de Género)
-      if (!canWorkerOccupiedSlot(w, slot)) return false;
+      const blacklist = slot.rejectedWorkerIds || [];
+      const stationName = slot.puestoName;
 
-      // c. Filtro ergonómico: No debe haber realizado la misma actividad al cierre anterior
-      if (w.lastActivity && w.lastActivity === stationName) return false;
+      // Filtrar candidatos aptos de L8 (no sugeridos previamente en la cola de prioridad)
+      const aptCandidates = availableL8Workers.filter(w => {
+        if (suggestedUserIds.has(w.id)) return false;
+        if (blacklist.includes(w.id)) return false;
+        if (!canWorkerOccupiedSlot(w, slot)) return false;
+        if (w.lastActivity && w.lastActivity === stationName) return false;
+        return true;
+      });
 
-      return true;
+      if (aptCandidates.length === 0) {
+        map[slot.id] = { candidate: null, count: 0 };
+        return;
+      }
+
+      const index = skippedIndexes[slot.id] || 0;
+      const finalIndex = index % aptCandidates.length;
+      const chosenCandidate = aptCandidates[finalIndex];
+
+      map[slot.id] = {
+        candidate: chosenCandidate,
+        count: aptCandidates.length
+      };
+
+      if (chosenCandidate) {
+        suggestedUserIds.add(chosenCandidate.id);
+      }
     });
 
-    if (aptCandidates.length === 0) {
-      return { candidate: null, count: 0 };
-    }
-
-    const index = skippedIndexes[slot.id] || 0;
-    const finalIndex = index % aptCandidates.length;
-
-    return {
-      candidate: aptCandidates[finalIndex],
-      count: aptCandidates.length
-    };
-  };
+    return map;
+  }, [activeFatiguedSlots, availableL8Workers, skippedIndexes]);
 
   // Manejar el salto/rechazo cíclico de sugerencias
   const handleSkipSuggestion = (slotId, count) => {
@@ -671,105 +911,128 @@ export default function RelevosNotificaciones({ supervisorLineId }) {
         <>
           <SectionHeader>
             <SectionTitle>
-              <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#2563EB" strokeWidth="2.5">
+              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#2563EB" strokeWidth="2.5">
                 <circle cx="12" cy="12" r="10"/>
                 <polyline points="12 6 12 12 16 14"/>
               </svg>
               <span>Consola de Prioridad de Relevos Planta</span>
             </SectionTitle>
-            <SectionDescription>
-              Bitácora global de puestos con fatiga ergonómica acumulada, ordenada por tiempo de vencimiento. Despacha reemplazos compatibles.
-            </SectionDescription>
           </SectionHeader>
 
           <RelevoList id="l8-fatigue-queue">
             {activeFatiguedSlots.length === 0 ? (
               <EmptyStateCard id="l8-empty-fatigue-queue">
-                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
                   <polyline points="22 4 12 14.01 9 11.01"/>
                 </svg>
-                <span>Planta Estable. Ningún puesto supera el límite ergonómico de 105 minutos actualmente.</span>
+                <span>Planta Estable. Ningún puesto supera los 105 min.</span>
               </EmptyStateCard>
             ) : (
               activeFatiguedSlots.map(slot => {
                 const currentWorker = workers[slot.idWorkerCurrent];
                 const currentWorkerName = currentWorker ? currentWorker.name : "Operario";
-                const suggestionObj = getSuggestedCandidate(slot);
+                const suggestionObj = suggestionsMap[slot.id] || { candidate: null, count: 0 };
 
                 return (
                   <RelevoPriorityCard key={slot.id} id={`priority-card-${slot.id}`}>
-                    <CardHeaderRow>
-                      <StationBadge>
-                        <LineTag>Línea {slot.lineId}</LineTag>
-                        <StationName>{slot.puestoName}</StationName>
-                      </StationBadge>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', flex: 1, minWidth: 0 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        <LineTag>L{slot.lineId}</LineTag>
+                        <StationName style={{ textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>
+                          {slot.puestoName}
+                        </StationName>
+                      </div>
+                      <OperatorLabel style={{ textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>
+                        Fatigado: <strong>{currentWorkerName}</strong>
+                      </OperatorLabel>
+                    </div>
+
+                    <div style={{ flexShrink: 0 }}>
                       <FatigaTimer>
-                        <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
-                          <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
-                        </svg>
-                        <span>{slot.elapsed} min</span>
+                        <span>{slot.elapsed}m</span>
                       </FatigaTimer>
-                    </CardHeaderRow>
+                    </div>
 
-                    <OperatorLabel>
-                      <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                        <path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/>
-                        <circle cx="12" cy="7" r="4"/>
-                      </svg>
-                      <span>Operario Fatigado: <strong>{currentWorkerName}</strong> ({slot.idWorkerCurrent})</span>
-                    </OperatorLabel>
-
-                    {/* SUGERENCIA INTELIGENTE MATCHMAKER */}
-                    <MatchmakerBox>
-                      <SuggestionHeader>Sugerencia de Reemplazo Aptitud L8</SuggestionHeader>
-                      {suggestionObj.candidate ? (
-                        <SuggestionWorker>
-                          <div>
-                            <WorkerName>{suggestionObj.candidate.name}</WorkerName>
-                            <WorkerId> ── Ficha: {suggestionObj.candidate.id} ({suggestionObj.candidate.role})</WorkerId>
+                    {slot.isLocalResolvable ? (
+                      <div style={{ 
+                        flexShrink: 0, 
+                        backgroundColor: 'hsl(45, 100%, 94%)', 
+                        border: '1px solid hsl(45, 100%, 80%)', 
+                        borderRadius: '6px', 
+                        padding: '4px 8px', 
+                        fontSize: '10px', 
+                        color: 'hsl(35, 92%, 35%)', 
+                        fontWeight: 700,
+                        maxWidth: '130px',
+                        textAlign: 'center',
+                        textOverflow: 'ellipsis',
+                        overflow: 'hidden',
+                        whiteSpace: 'nowrap'
+                      }}>
+                        Autogestión Local
+                      </div>
+                    ) : (
+                      <MatchmakerBox>
+                        {suggestionObj.candidate ? (
+                          <SuggestionWorker>
+                            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', minWidth: '90px' }}>
+                              <WorkerName style={{ textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap', maxWidth: '100px' }}>
+                                {suggestionObj.candidate.name}
+                              </WorkerName>
+                              <WorkerId>Sugerido ({suggestionObj.count})</WorkerId>
+                            </div>
+                            <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
+                              <ActionBtn 
+                                variant="accent" 
+                                onClick={() => handleDispatchRelevo(slot, suggestionObj.candidate)}
+                                id={`dispatch-relevo-${slot.id}-btn`}
+                              >
+                                <span>Despachar</span>
+                              </ActionBtn>
+                              <ActionBtn 
+                                variant="secondary" 
+                                onClick={() => handleSkipSuggestion(slot.id, suggestionObj.count)}
+                                id={`skip-relevo-${slot.id}-btn`}
+                                style={{ padding: '0 8px' }}
+                              >
+                                <span>Saltar</span>
+                              </ActionBtn>
+                              <ActionBtn
+                                variant="secondary"
+                                onClick={() => setManualDispatchSlot(slot)}
+                                id={`manual-relevo-${slot.id}-btn`}
+                              >
+                                <span>Manual</span>
+                              </ActionBtn>
+                            </div>
+                          </SuggestionWorker>
+                        ) : (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            <span style={{ fontSize: '10px', color: '#EF4444', fontWeight: 600 }}>Sin candidatos</span>
+                            <div style={{ display: 'flex', gap: '4px' }}>
+                              <ActionBtn
+                                variant="secondary"
+                                onClick={() => setManualDispatchSlot(slot)}
+                                id={`manual-relevo-${slot.id}-btn`}
+                                style={{ backgroundColor: '#EFF6FF', borderColor: '#BFDBFE', color: '#1E40AF' }}
+                              >
+                                <span>Manual</span>
+                              </ActionBtn>
+                              {slot.rejectedWorkerIds && slot.rejectedWorkerIds.length > 0 && (
+                                <ActionBtn
+                                  variant="secondary"
+                                  onClick={() => handleClearBlacklist(slot.id)}
+                                  id={`clear-blacklist-${slot.id}-btn`}
+                                >
+                                  <span>Restablecer</span>
+                                </ActionBtn>
+                              )}
+                            </div>
                           </div>
-                          <div style={{ display: 'flex', gap: '8px' }}>
-                            <ActionBtn 
-                              variant="secondary" 
-                              onClick={() => handleSkipSuggestion(slot.id, suggestionObj.count)}
-                              id={`skip-relevo-${slot.id}-btn`}
-                              style={{ padding: '8px 12px' }}
-                            >
-                              <span>Rechazar</span>
-                            </ActionBtn>
-                            <ActionBtn 
-                              variant="accent" 
-                              onClick={() => handleDispatchRelevo(slot, suggestionObj.candidate)}
-                              id={`dispatch-relevo-${slot.id}-btn`}
-                            >
-                              <span>Despachar</span>
-                            </ActionBtn>
-                          </div>
-                        </SuggestionWorker>
-                      ) : (
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%', gap: '10px' }}>
-                          <div style={{ fontSize: '11px', color: '#EF4444', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '4px' }}>
-                            <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
-                              <circle cx="12" cy="12" r="10"/>
-                              <line x1="12" y1="8" x2="12" y2="12"/>
-                              <line x1="12" y1="16" x2="12.01" y2="16"/>
-                            </svg>
-                            <span>No hay relevista compatible en L8.</span>
-                          </div>
-                          {slot.rejectedWorkerIds && slot.rejectedWorkerIds.length > 0 && (
-                            <ActionBtn
-                              variant="secondary"
-                              onClick={() => handleClearBlacklist(slot.id)}
-                              id={`clear-blacklist-${slot.id}-btn`}
-                              style={{ padding: '6px 12px', minHeight: '30px', backgroundColor: '#F1F5F9', border: '1px solid #CBD5E1' }}
-                            >
-                              <span>Restablecer rechazados</span>
-                            </ActionBtn>
-                          )}
-                        </div>
-                      )}
-                    </MatchmakerBox>
+                        )}
+                      </MatchmakerBox>
+                    )}
                   </RelevoPriorityCard>
                 );
               })
@@ -779,9 +1042,9 @@ export default function RelevosNotificaciones({ supervisorLineId }) {
           {/* 📬 ALERTAS DE RETORNO AL BOLSÓN L8 */}
           {inTransitWorkers.length > 0 && (
             <>
-              <SectionHeader style={{ marginTop: '24px' }}>
+              <SectionHeader style={{ marginTop: '16px' }}>
                 <SectionTitle style={{ color: '#10B981' }}>
-                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#10B981" strokeWidth="2.5">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#10B981" strokeWidth="2.5">
                     <polyline points="17 1 21 5 17 9"/>
                     <path d="M3 11V9a4 4 0 0 1 4-4h14"/>
                     <polyline points="7 23 3 19 7 15"/>
@@ -789,41 +1052,33 @@ export default function RelevosNotificaciones({ supervisorLineId }) {
                   </svg>
                   <span>Recepción de Retornos al Bolsón</span>
                 </SectionTitle>
-                <SectionDescription>
-                  Confirma la llegada física de los operarios relevados que regresan a descansar al Bolsón L8.
-                </SectionDescription>
               </SectionHeader>
 
               <RelevoList id="l8-transit-queue">
                 {inTransitWorkers.map(tw => (
                   <TransitCard key={tw.id} id={`transit-card-${tw.id}`} style={{ borderLeftColor: '#10B981' }}>
-                    <CardHeaderRow>
-                      <StationBadge>
-                        <LineTag style={{ backgroundColor: '#D1FAE5', color: '#065F46' }}>Retorno a L8</LineTag>
-                        <StationName>{tw.name}</StationName>
-                      </StationBadge>
-                      <span style={{ fontSize: '10px', fontWeight: 700, color: '#10B981', backgroundColor: '#E0F2FE', padding: '3px 8px', borderRadius: '6px' }}>
-                        De Regreso
-                      </span>
-                    </CardHeaderRow>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', flex: 1, minWidth: 0 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        <LineTag style={{ color: '#10B981' }}>Retorno L8</LineTag>
+                        <StationName style={{ textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>
+                          {tw.name}
+                        </StationName>
+                      </div>
+                      <OperatorLabel style={{ textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap', fontSize: '11px' }}>
+                        Ficha: {tw.id} ── En descanso
+                      </OperatorLabel>
+                    </div>
 
-                    <OperatorLabel>
-                      <span>El operario ha sido relevado y está de regreso en descanso (Ficha: {tw.id})</span>
-                    </OperatorLabel>
-
-                    <RowActions>
+                    <div style={{ display: 'flex', gap: '4px', flexShrink: 0 }}>
                       <ActionBtn 
                         variant="success" 
                         onClick={() => handleAcceptReturnToBolson(tw)}
                         id={`accept-bolson-return-${tw.id}`}
-                        style={{ width: '100%', marginTop: '6px', backgroundColor: '#10B981' }}
+                        style={{ backgroundColor: '#10B981', color: '#FFFFFF' }}
                       >
-                        <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
-                          <polyline points="20 6 9 17 4 12"/>
-                        </svg>
-                        <span>Recibir en Bolsón</span>
+                        <span>Recibir</span>
                       </ActionBtn>
-                    </RowActions>
+                    </div>
                   </TransitCard>
                 ))}
               </RelevoList>
@@ -835,27 +1090,22 @@ export default function RelevosNotificaciones({ supervisorLineId }) {
         <>
           <SectionHeader>
             <SectionTitle>
-              <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#2563EB" strokeWidth="2.5">
+              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#2563EB" strokeWidth="2.5">
                 <path d="M16 3h5v5M8 21H3v-5M12 12l9-9M12 12l-9 9"/>
               </svg>
               <span>Notificaciones y Recepción de Relevos</span>
             </SectionTitle>
-            <SectionDescription>
-              Recibe operarios despachados en pasillo y gestiona de forma inmediata la reasignación de tu personal fatigado relevado.
-            </SectionDescription>
           </SectionHeader>
-
-
 
           {/* 📬 ALERTAS DE TRÁNSITO / RECEPCIÓN */}
           <RelevoList id="supervisor-transit-alerts">
             {inTransitWorkers.length === 0 ? (
               <EmptyStateCard id="supervisor-empty-transit">
-                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
                   <polyline points="22 4 12 14.01 9 11.01"/>
                 </svg>
-                <span>Tu canal de notificaciones y relevos está libre. Todos los puestos operan según el tiempo estipulado.</span>
+                <span>Notificaciones y relevos sin novedades.</span>
               </EmptyStateCard>
             ) : (
               inTransitWorkers.map(tw => {
@@ -870,39 +1120,39 @@ export default function RelevosNotificaciones({ supervisorLineId }) {
                 
                 return (
                   <TransitCard key={tw.id} id={`transit-card-${tw.id}`}>
-                    <CardHeaderRow>
-                      <StationBadge>
-                        <LineTag>{destSlot ? 'Relevista en Tránsito' : 'Operario en Tránsito'}</LineTag>
-                        <StationName>{tw.name}</StationName>
-                      </StationBadge>
-                      <span style={{ fontSize: '10px', fontWeight: 700, color: '#A855F7', backgroundColor: '#F3E8FF', padding: '3px 8px', borderRadius: '6px' }}>
-                        En Camino
-                      </span>
-                    </CardHeaderRow>
- 
-                    <OperatorLabel>
-                      {destName ? (
-                        <span>Destinado a la estación: <strong>{destName}</strong> (Ficha: {tw.id})</span>
-                      ) : (
-                        <span>Asignación General a Línea {tw.lineaDestinoId} (Ficha: {tw.id})</span>
-                      )}
-                    </OperatorLabel>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', flex: 1, minWidth: 0 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        <LineTag style={{ color: '#A855F7' }}>{destSlot ? 'Relevo' : 'Tránsito'}</LineTag>
+                        <StationName style={{ textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>
+                          {tw.name}
+                        </StationName>
+                      </div>
+                      <OperatorLabel style={{ textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap', fontSize: '11px' }}>
+                        {destName ? (
+                          <span>Destino: <strong>{destName}</strong></span>
+                        ) : (
+                          <span>Asignación General L{tw.lineaDestinoId}</span>
+                        )}
+                      </OperatorLabel>
+                    </div>
 
                     {relocationInfo && (
                       <div style={{ 
-                        marginTop: '6px',
-                        padding: '10px 14px',
-                        backgroundColor: '#F8FAFC',
-                        border: '1px solid #E2E8F0',
-                        borderRadius: '10px',
-                        fontSize: '11px',
+                        flexShrink: 0, 
+                        backgroundColor: '#F8FAFC', 
+                        border: '1px solid #E2E8F0', 
+                        borderRadius: '6px', 
+                        padding: '4px 8px', 
+                        fontSize: '10px', 
                         color: '#475569',
-                        lineHeight: 1.3
+                        maxWidth: '120px',
+                        textAlign: 'right',
+                        marginRight: '4px',
+                        textOverflow: 'ellipsis',
+                        overflow: 'hidden',
+                        whiteSpace: 'nowrap'
                       }}>
-                        🔄 <strong>Destino al ser relevado:</strong> {relievedWorker.name} se reubicará en:
-                        <div style={{ marginTop: '4px', fontWeight: 700, color: '#0F172A' }}>
-                          📍 {relocationInfo.label}
-                        </div>
+                        Reubica: <strong>{relocationInfo.label.split(' ')[0]}</strong>
                       </div>
                     )}
 
@@ -912,75 +1162,56 @@ export default function RelevosNotificaciones({ supervisorLineId }) {
                           variant="success" 
                           onClick={() => handleAcceptRelevo(tw)}
                           id={`accept-transit-relevo-${tw.id}`}
-                          style={{ flex: 1 }}
                         >
-                          <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
-                            <polyline points="20 6 9 17 4 12"/>
-                          </svg>
-                          <span>Aceptar Relevo</span>
+                          <span>Aceptar</span>
                         </ActionBtn>
                         <ActionBtn 
                           variant="danger" 
                           onClick={() => handleRejectRelevo(tw)}
                           id={`reject-transit-relevo-${tw.id}`}
-                          style={{ flex: 1 }}
                         >
-                          <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
-                            <line x1="18" y1="6" x2="6" y2="18"/>
-                            <line x1="6" y1="6" x2="18" y2="18"/>
-                          </svg>
                           <span>Rechazar</span>
                         </ActionBtn>
                       </RowActions>
                     ) : (
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '4px' }}>
+                      <div style={{ display: 'flex', gap: '4px', alignItems: 'center', flexShrink: 0 }}>
                         {vacantLocalSlots.length > 0 ? (
-                          <>
-                            <span style={{ fontSize: '10px', fontWeight: 700, color: '#B45309' }}>Asignar a Puesto Vacante Local:</span>
-                            <VacancySelectArea>
-                              {vacantLocalSlots.map(v => (
-                                <button
-                                  key={v.id}
-                                  onClick={() => handleAcceptGeneralTransit(tw, v.id)}
-                                  style={{
-                                    padding: '10px 12px',
-                                    backgroundColor: '#FFFFFF',
-                                    border: '1px solid #CBD5E1',
-                                    borderRadius: '8px',
-                                    fontSize: '11px',
-                                    fontWeight: 600,
-                                    color: '#1E293B',
-                                    textAlign: 'left',
-                                    cursor: 'pointer',
-                                    display: 'flex',
-                                    justifyContent: 'space-between',
-                                    alignItems: 'center',
-                                    marginBottom: '4px'
-                                  }}
-                                  id={`reassign-transit-to-${v.id}`}
-                                >
-                                  <span>{v.puestoName}</span>
-                                  <span style={{ fontSize: '9px', fontWeight: 700, color: '#2563EB' }}>Ubicar</span>
-                                </button>
-                              ))}
-                            </VacancySelectArea>
-                          </>
+                          <select
+                            onChange={(e) => {
+                              if (e.target.value) {
+                                handleAcceptGeneralTransit(tw, e.target.value);
+                                e.target.value = "";
+                              }
+                            }}
+                            style={{
+                              height: '32px',
+                              padding: '0 8px',
+                              borderRadius: '8px',
+                              border: '1px solid #CBD5E1',
+                              fontSize: '11px',
+                              fontWeight: 700,
+                              color: '#2563EB',
+                              backgroundColor: '#EFF6FF',
+                              outline: 'none',
+                              cursor: 'pointer'
+                            }}
+                            id={`reassign-transit-select-${tw.id}`}
+                            defaultValue=""
+                          >
+                            <option value="" disabled>Ubicar en...</option>
+                            {vacantLocalSlots.map(v => (
+                              <option key={v.id} value={v.id}>{v.puestoName}</option>
+                            ))}
+                          </select>
                         ) : (
-                          <div style={{ fontSize: '11px', color: '#EF4444', fontWeight: 600, padding: '8px', border: '1px dashed #FCA5A5', borderRadius: '8px', backgroundColor: '#FEE2E2' }}>
-                            No hay celdas vacantes en tu línea. Libera un puesto primero.
-                          </div>
+                          <span style={{ fontSize: '10px', color: '#EF4444', fontWeight: 600 }}>Sin vacantes</span>
                         )}
                         <ActionBtn 
                           variant="danger" 
                           onClick={() => handleRejectRelevo(tw)}
                           id={`reject-transit-relevo-${tw.id}`}
-                          style={{ width: '100%' }}
                         >
-                          <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
-                            <line x1="18" y1="6" x2="6" y2="18"/>
-                            <line x1="6" y1="6" x2="18" y2="18"/>
-                          </svg>
-                          <span>Rechazar Arribo</span>
+                          <span>Rechazar</span>
                         </ActionBtn>
                       </div>
                     )}
@@ -991,34 +1222,101 @@ export default function RelevosNotificaciones({ supervisorLineId }) {
           </RelevoList>
 
           {/* BITÁCORA GENERAL DE ALERTAS DE PLANTA */}
-          <SectionHeader style={{ marginTop: '16px' }}>
-            <SectionTitle style={{ fontSize: '14px', color: '$textSecondary' }}>
-              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9M13.73 21a2 2 0 0 1-3.46 0"/>
-              </svg>
-              <span>Canal de Notificaciones de Planta</span>
-            </SectionTitle>
-          </SectionHeader>
+          <SubSectionTitle>
+            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+              <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9M13.73 21a2 2 0 0 1-3.46 0"/>
+            </svg>
+            <span>Canal de Notificaciones de Planta</span>
+          </SubSectionTitle>
 
-          <RelevoList id="plant-wide-notifs-feed">
+          <div id="plant-wide-notifs-feed">
             {activeFatiguedSlots.filter(s => s.lineId !== supervisorLineId).length === 0 ? (
-              <div style={{ fontSize: '11px', color: '#94A3B8', textAlign: 'center', padding: '16px 0', border: '1px dashed #E2E8F0', borderRadius: '8px' }}>
-                Sin notificaciones de fatiga externas. Todas las líneas activas operan de forma normal.
-              </div>
+              <EmptyStateCard style={{ borderStyle: 'solid' }}>
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                  <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
+                  <polyline points="22 4 12 14.01 9 11.01"/>
+                </svg>
+                <span>Sin alertas de fatiga externas en planta.</span>
+              </EmptyStateCard>
             ) : (
-              activeFatiguedSlots.filter(s => s.lineId !== supervisorLineId).map(slot => (
-                <div key={slot.id} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 14px', border: '1px solid #FEE2E2', borderRadius: '8px', backgroundColor: '#FFF5F5', fontSize: '11px', color: '#EF4444', fontWeight: 600 }}>
-                  <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
-                    <circle cx="12" cy="12" r="10"/>
-                    <line x1="12" y1="8" x2="12" y2="12"/>
-                    <line x1="12" y1="16" x2="12.01" y2="16"/>
-                  </svg>
-                  <span>Línea {slot.lineId} necesita relevo inminente en "{slot.puestoName}" ({slot.elapsed}m activo).</span>
-                </div>
-              ))
+              <PlantAlertGroup>
+                {activeFatiguedSlots.filter(s => s.lineId !== supervisorLineId).map(slot => (
+                  <PlantAlertItem key={slot.id}>
+                    <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
+                      <circle cx="12" cy="12" r="10"/>
+                      <line x1="12" y1="8" x2="12" y2="12"/>
+                      <line x1="12" y1="16" x2="12.01" y2="16"/>
+                    </svg>
+                    <span>L{slot.lineId} necesita relevo en "{slot.puestoName}" ({slot.elapsed}m).</span>
+                  </PlantAlertItem>
+                ))}
+              </PlantAlertGroup>
             )}
-          </RelevoList>
+          </div>
         </>
+      )}
+
+      {/* 🔵 MODAL DE ASIGNACIÓN MANUAL DESDE EL BOLSÓN L8 */}
+      {manualDispatchSlot && (
+        <ConfirmationOverlay onClick={() => setManualDispatchSlot(null)} id="manual-dispatch-modal">
+          <ConfirmationContent onClick={(e) => e.stopPropagation()}>
+            <div>
+              <DialogTitle>Asignación Manual: Línea {manualDispatchSlot.lineId}</DialogTitle>
+              <DialogSubtitle style={{ marginTop: '4px' }}>
+                Selecciona un operario libre del Bolsón L8 para despachar a: <strong>{manualDispatchSlot.puestoName}</strong>
+              </DialogSubtitle>
+            </div>
+
+            <WorkerListContainer>
+              {availableL8Workers.length === 0 ? (
+                <div style={{ fontSize: '12px', color: '#EF4444', textAlign: 'center', padding: '16px', border: '1px dashed #FCA5A5', borderRadius: '8px', backgroundColor: '#FEE2E2', fontWeight: 500 }}>
+                  No hay operarios disponibles en el Bolsón L8 actualmente.
+                </div>
+              ) : (
+                availableL8Workers.map(w => {
+                  const matches = canWorkerOccupiedSlot(w, manualDispatchSlot);
+                  return (
+                    <WorkerListItem
+                      key={w.id}
+                      onClick={async () => {
+                        const slot = manualDispatchSlot;
+                        const worker = w;
+                        setManualDispatchSlot(null);
+                        await handleDispatchRelevo(slot, worker);
+                      }}
+                    >
+                      <div style={{ display: 'flex', flexDirection: 'column' }}>
+                        <strong style={{ fontSize: '12px', color: '#1E293B' }}>{w.name}</strong>
+                        <span style={{ fontSize: '10px', color: '$textSecondary', fontFamily: 'monospace' }}>
+                          Ficha: {w.id} ── {w.role}
+                        </span>
+                        {w.medicalRestrictions && w.medicalRestrictions.length > 0 && (
+                          <span style={{ alignSelf: 'flex-start', marginTop: '2px', fontSize: '8px', fontWeight: 700, color: '#991B1B', backgroundColor: '#FEE2E2', padding: '1px 4px', borderRadius: '3px' }}>
+                            ⚠️ REST. MÉDICA
+                          </span>
+                        )}
+                      </div>
+                      <span style={{ 
+                        fontSize: '11px', 
+                        fontWeight: 700, 
+                        color: matches ? '#2563EB' : '#EF4444',
+                        backgroundColor: matches ? '#DBEAFE' : '#FEE2E2',
+                        padding: '4px 8px',
+                        borderRadius: '6px'
+                      }}>
+                        {matches ? 'Despachar' : 'Incompatible'}
+                      </span>
+                    </WorkerListItem>
+                  );
+                })
+              )}
+            </WorkerListContainer>
+
+            <CancelBtn onClick={() => setManualDispatchSlot(null)}>
+              Cancelar
+            </CancelBtn>
+          </ConfirmationContent>
+        </ConfirmationOverlay>
       )}
     </RelevosContainer>
   );

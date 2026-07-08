@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { styled, keyframes } from '../styles/theme';
-import { db, puestosColl, trabajadoresColl, initializeTurnoWithSheets, programNextDayShift, assignPuestosLive, executeCoordinatorSuggestion, getHistorialDia, saveHistorialDia, getProgramaProduccionPorFecha } from '../services/firebaseService';
+import { db, puestosColl, trabajadoresColl, initializeTurnoWithSheets, programNextDayShift, assignPuestosLive, executeCoordinatorSuggestion, getHistorialDia, saveHistorialDia, getProgramaProduccionPorFecha, canWorkerOccupiedSlot, assignSupervisorToLine } from '../services/firebaseService';
+import { REAL_SUPERVISORS } from '../dev/realDataSeed';
 import { collection, doc, onSnapshot, getDocs, updateDoc, setDoc, query, where, getDoc, writeBatch, serverTimestamp } from 'firebase/firestore';
 import { triggerNativeHapticFeedback } from '../skills/capacitor-android-bridge';
 
@@ -38,16 +39,19 @@ const StickyHeaderContainer = styled('div', {
 const PanelHeader = styled('header', {
   backgroundColor: '$card',
   borderBottom: '1px solid $border',
-  padding: '12px 20px',
+  padding: '0 16px',
+  height: '$headerHeight',
   display: 'flex',
   justifyContent: 'space-between',
   alignItems: 'center',
   position: 'relative',
   zIndex: 10,
-  flexWrap: 'wrap',
-  gap: '8px',
+  flexWrap: 'nowrap',
+  boxSizing: 'border-box',
   '@mobile': {
-    padding: '10px 12px',
+    height: '$headerHeight',
+    flexWrap: 'nowrap',
+    padding: '0 12px',
     gap: '6px'
   }
 });
@@ -72,41 +76,108 @@ const OfflineBanner = styled('div', {
 const LogoArea = styled('div', {
   display: 'flex',
   alignItems: 'center',
-  gap: '10px'
-});
-
-const LogoIcon = styled('div', {
-  width: '32px',
-  height: '32px',
-  borderRadius: '8px',
-  backgroundColor: '$accent',
-  color: '#FFFFFF',
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  boxShadow: '0 4px 8px rgba(15, 23, 42, 0.08)'
+  gap: '8px',
+  flexShrink: 0,
+  '@mobile': {
+    gap: '4px'
+  }
 });
 
 const PanelTitle = styled('h1', {
-  fontSize: '14px',
-  fontWeight: 700,
+  fontSize: '$fonts$sizeTitleCard',
+  fontWeight: '$fonts$weightBold',
   color: '$textPrimary',
-  lineHeight: 1.2
-});
-
-const PanelSubtitle = styled('span', {
-  fontSize: '10px',
-  color: '$textSecondary',
-  fontWeight: 500,
-  display: 'block'
+  lineHeight: 1,
+  margin: 0,
+  '@mobile': {
+    display: 'none'
+  }
 });
 
 const ProfileArea = styled('div', {
   display: 'flex',
   alignItems: 'center',
   gap: '10px',
+  flexShrink: 0,
   '@mobile': {
     gap: '6px'
+  }
+});
+
+const HeaderSpacer = styled('div', {
+  flex: 1,
+  '@mobile': {
+    display: 'none'
+  }
+});
+
+const TimelineControlWrapper = styled('div', {
+  display: 'flex',
+  alignItems: 'center',
+  gap: '6px',
+  flexShrink: 1,
+  maxWidth: '220px',
+  width: 'auto',
+  '@mobile': {
+    maxWidth: '165px',
+    justifyContent: 'center'
+  }
+});
+
+const TimelineButtonsGroup = styled('div', {
+  display: 'flex',
+  gap: '2px',
+  backgroundColor: '$background',
+  padding: '2px',
+  borderRadius: '20px',
+  border: '1px solid $border',
+  width: '100%',
+  justifyContent: 'space-between'
+});
+
+const TimelineButton = styled('button', {
+  padding: '4px 6px',
+  fontSize: '$fonts$sizeMeta', // 11px
+  fontWeight: '$fonts$weightBold',
+  borderRadius: '16px',
+  border: 'none',
+  cursor: 'pointer',
+  transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  gap: '4px',
+  flex: 1,
+  minWidth: 0,
+  whiteSpace: 'nowrap',
+  
+  variants: {
+    active: {
+      today: {
+        backgroundColor: '#FFFFFF',
+        color: '#16A34A',
+        boxShadow: '0 1px 3px rgba(0,0,0,0.05)'
+      },
+      nextDay: {
+        backgroundColor: '#FFFFFF',
+        color: '#7E22CE',
+        boxShadow: '0 1px 3px rgba(0,0,0,0.05)'
+      },
+      history: {
+        backgroundColor: '#FFFFFF',
+        color: '#2563EB',
+        boxShadow: '0 1px 3px rgba(0,0,0,0.05)'
+      },
+      inactive: {
+        backgroundColor: 'transparent',
+        color: '#64748B'
+      }
+    }
+  },
+  '@mobile': {
+    padding: '3px 4px',
+    fontSize: '10px',
+    gap: '2px'
   }
 });
 
@@ -135,14 +206,17 @@ const LogoutBtn = styled('button', {
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'center',
-  transition: 'all 0.2s',
+  transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
 
   '&:hover': {
-    color: '#EF4444',
+    color: '$statusAlert',
     backgroundColor: '$dangerBg'
   },
   '&:active': {
     transform: 'scale(0.92)'
+  },
+  '@mobile': {
+    padding: '4px'
   }
 });
 
@@ -155,6 +229,59 @@ const TabContentContainer = styled('div', {
   '@mobile': {
     padding: '12px 10px'
   }
+});
+
+// --- PESTAÑA: AUSENCIAS ---
+const SectionHeaderTitle = styled('div', {
+  display: 'flex',
+  alignItems: 'center',
+  gap: '6px',
+  height: '32px',
+  fontSize: '11px',
+  fontWeight: 800,
+  color: '$textPrimary',
+  textTransform: 'uppercase',
+  letterSpacing: '0.5px',
+  marginBottom: '8px'
+});
+
+const AbsentListContainer = styled('div', {
+  border: '1px solid $border',
+  borderRadius: '12px',
+  overflow: 'hidden',
+  backgroundColor: '#FFFFFF',
+  display: 'flex',
+  flexDirection: 'column'
+});
+
+const AbsentListItem = styled('div', {
+  height: '64px',
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'space-between',
+  padding: '0 16px',
+  backgroundColor: '#FFFFFF',
+  borderBottom: '1px solid $border',
+  gap: '12px',
+  boxSizing: 'border-box',
+  '&:last-child': {
+    borderBottom: 'none'
+  },
+  '&:hover': {
+    backgroundColor: '#F8FAFC'
+  }
+});
+
+const AbsentAvatar = styled('div', {
+  width: '36px',
+  height: '36px',
+  borderRadius: '50%',
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  fontSize: '11px',
+  fontWeight: 800,
+  flexShrink: 0
 });
 
 // --- PESTAÑA: MAPA GLOBAL ---
@@ -323,14 +450,22 @@ const OeeBar = styled('div', {
 // --- PESTAÑA: PUESTOS & COBERTURA ---
 const LineButtonsRow = styled('div', {
   display: 'flex',
-  flexWrap: 'wrap',
-  gap: '8px',
-  marginBottom: '16px'
+  flexWrap: 'nowrap',
+  gap: '6px',
+  marginBottom: '16px',
+  overflowX: 'auto',
+  whiteSpace: 'nowrap',
+  WebkitOverflowScrolling: 'touch', // Fluid mobile horizontal scrolling
+  msOverflowStyle: 'none',
+  scrollbarWidth: 'none',
+  '&::-webkit-scrollbar': {
+    display: 'none'
+  }
 });
 
 const LineFilterButton = styled('button', {
-  padding: '8px 14px',
-  borderRadius: '8px',
+  padding: '6px 12px',
+  borderRadius: '20px',
   border: '1px solid $border',
   backgroundColor: '#FFFFFF',
   color: '$textSecondary',
@@ -338,9 +473,10 @@ const LineFilterButton = styled('button', {
   fontWeight: 700,
   cursor: 'pointer',
   transition: 'all 0.15s ease',
+  flexShrink: 0,
 
   '&:hover': {
-    backgroundColor: '#F1F5F9',
+    backgroundColor: '#F8FAFC',
     color: '$textPrimary'
   },
 
@@ -364,18 +500,22 @@ const LayoutHeader = styled('div', {
   display: 'flex',
   justifyContent: 'space-between',
   alignItems: 'center',
-  marginBottom: '16px',
+  padding: '8px 0',
+  height: '56px',
+  maxHeight: '56px',
   borderBottom: '1px solid $border',
-  paddingBottom: '12px'
+  boxSizing: 'border-box',
+  marginBottom: '12px'
 });
 
 const LayoutGrid = styled('div', {
   display: 'grid',
-  gridTemplateColumns: '1fr 1fr',
+  gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)',
   gap: '24px',
 
   '@mobile': {
-    gridTemplateColumns: '1fr'
+    gridTemplateColumns: 'minmax(0, 1fr)',
+    gap: '12px'
   }
 });
 
@@ -386,7 +526,7 @@ const ColumnCard = styled('div', {
   padding: '16px',
   display: 'flex',
   flexDirection: 'column',
-  gap: '12px'
+  gap: '0px'
 });
 
 const ColumnTitle = styled('h3', {
@@ -402,37 +542,90 @@ const ColumnTitle = styled('h3', {
   paddingBottom: '8px'
 });
 
+const SlotsListWrapper = styled('div', {
+  display: 'flex',
+  flexDirection: 'column',
+  marginTop: '0px',
+  border: 'none',
+  boxShadow: 'none',
+  borderRadius: 0,
+  overflow: 'hidden'
+});
+
+const StatusIndicatorBar = styled('div', {
+  position: 'absolute',
+  left: 0,
+  top: 0,
+  bottom: 0,
+  width: '3px',
+  borderRadius: 0,
+  transition: 'all 0.25s ease',
+  
+  variants: {
+    state: {
+      covered: {
+        backgroundColor: '$successBorder'
+      },
+      deficit: {
+        backgroundColor: '$dangerBorder'
+      },
+      suspended: {
+        backgroundColor: '#94A3B8'
+      }
+    },
+    fatigue: {
+      NORMAL: {},
+      CRITICO: {
+        backgroundColor: '$dangerBorder !important',
+        animation: `${pulse} 1.5s infinite`
+      }
+    }
+  }
+});
+
 const SlotDetailCard = styled('div', {
-  padding: '12px 14px',
-  borderRadius: '8px',
-  border: '1px solid $border',
+  padding: '8px 24px 8px 20px',
   display: 'flex',
   justifyContent: 'space-between',
   alignItems: 'center',
   transition: 'all 0.15s ease',
+  position: 'relative',
+  borderBottom: '1px solid $border',
+  height: '64px',
+  boxSizing: 'border-box',
+  overflow: 'hidden',
+  width: '100%',
+
+  '&:last-child': {
+    borderBottom: 'none'
+  },
+
+  '&:hover': {
+    backgroundColor: '#F8FAFC'
+  },
 
   variants: {
     state: {
       covered: {
-        backgroundColor: '#FFFFFF',
-        borderLeft: '4px solid $successBorder'
+        backgroundColor: '#FFFFFF'
       },
       deficit: {
-        backgroundColor: '#FFF1F2',
-        borderColor: '#FECDD3',
-        borderLeft: '4px solid $dangerBorder'
+        backgroundColor: '#FFFFFF',
+        '&:hover': {
+          backgroundColor: '#FFF5F5'
+        }
       },
       suspended: {
         backgroundColor: '#F8FAFC',
-        borderLeft: '4px solid #94A3B8',
         opacity: 0.75
       }
     },
     locked: {
       true: {
-        borderColor: '$accent',
-        boxShadow: '0 0 8px rgba(37, 99, 235, 0.12)',
-        backgroundColor: '#F0F5FF'
+        backgroundColor: '#F0F5FF',
+        '&:hover': {
+          backgroundColor: '#E0EBFF'
+        }
       }
     }
   }
@@ -441,34 +634,75 @@ const SlotDetailCard = styled('div', {
 const SlotInfo = styled('div', {
   display: 'flex',
   flexDirection: 'column',
-  gap: '2px'
+  gap: '2px',
+  flex: 1,
+  minWidth: 0,
+  paddingLeft: '8px'
 });
 
 const SlotName = styled('strong', {
-  fontSize: '12px',
+  fontSize: '13px',
+  fontWeight: 600,
   color: '$textPrimary'
 });
 
 const SlotWorkerName = styled('span', {
-  fontSize: '10px',
+  fontSize: '11px',
   color: '$textSecondary',
-  fontWeight: 500
+  fontWeight: 500,
+  whiteSpace: 'nowrap',
+  overflow: 'hidden',
+  textOverflow: 'ellipsis'
 });
 
 const StatusPill = styled('span', {
   fontSize: '9px',
-  fontWeight: 800,
-  padding: '3px 8px',
-  borderRadius: '20px',
+  fontWeight: 700,
+  padding: '2px 6px',
+  borderRadius: '4px',
   textTransform: 'uppercase',
+  letterSpacing: '0.3px',
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: '4px',
+  border: 'none',
+  flexShrink: 0,
 
   variants: {
     state: {
-      covered: { backgroundColor: '$successBg', color: '$successBorder' },
-      deficit: { backgroundColor: '$dangerBg', color: '$dangerBorder', animation: `${pulse} 2s infinite` },
-      suspended: { backgroundColor: '#F1F5F9', color: '#64748B' }
+      covered: { 
+        backgroundColor: '$chipSuccessBg', 
+        color: '$chipSuccessText'
+      },
+      deficit: { 
+        backgroundColor: '$chipDangerBg', 
+        color: '$chipDangerText', 
+        animation: `${pulse} 2s infinite` 
+      },
+      suspended: { 
+        backgroundColor: '$chipNeutralBg', 
+        color: '$chipNeutralText' 
+      }
     }
   }
+});
+
+const FatigueBadge = styled('span', {
+  fontSize: '9px',
+  fontWeight: 700,
+  padding: '2.5px 7px',
+  borderRadius: '6px',
+  textTransform: 'uppercase',
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: '4px',
+  letterSpacing: '0.2px',
+  fontFamily: 'monospace',
+  fontVariantNumeric: 'tabular-nums',
+  backgroundColor: '$dangerBg',
+  color: '$dangerBorder',
+  border: '1px solid $dangerBorder',
+  animation: `${pulse} 1.5s infinite`
 });
 
 // --- PESTAÑA: DASHBOARDS & ANALÍTICAS ---
@@ -522,11 +756,11 @@ const ChartCard = styled('div', {
   backgroundColor: '#FFFFFF',
   border: '1px solid $border',
   borderRadius: '16px',
-  padding: '24px',
+  padding: '12px 16px',
   boxShadow: '$elevation1',
   display: 'flex',
   flexDirection: 'column',
-  gap: '16px'
+  gap: '12px'
 });
 
 const ChartTitle = styled('h3', {
@@ -570,6 +804,50 @@ const CardTitle = styled('h2', {
 });
 
 
+
+const EmptyStateCard = styled('div', {
+  height: '48px',
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  gap: '8px',
+  backgroundColor: '$card',
+  border: '1px solid $border',
+  borderRadius: '12px',
+  color: '$textSecondary',
+  fontSize: '12px',
+  fontWeight: 500,
+  boxSizing: 'border-box',
+  width: '100%'
+});
+
+const SuggestionsListContainer = styled('div', {
+  border: '1px solid $border',
+  borderRadius: '12px',
+  overflow: 'hidden',
+  backgroundColor: '#FFFFFF',
+  display: 'flex',
+  flexDirection: 'column',
+  width: '100%'
+});
+
+const SuggestionListItem = styled('div', {
+  height: '64px',
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'space-between',
+  padding: '0 16px',
+  backgroundColor: '#FFFFFF',
+  borderBottom: '1px solid $border',
+  gap: '12px',
+  boxSizing: 'border-box',
+  '&:last-child': {
+    borderBottom: 'none'
+  },
+  '&:hover': {
+    backgroundColor: '#F8FAFC'
+  }
+});
 
 const SuggestionsGrid = styled('div', {
   display: 'grid',
@@ -833,48 +1111,35 @@ const ActiveShiftDashboard = styled('div', {
   border: '1px solid $border'
 });
 
-const SupervisorHorizontalList = styled('div', {
+const SupervisorVerticalList = styled('div', {
   display: 'flex',
-  gap: '14px',
-  overflowX: 'auto',
-  padding: '8px 4px 12px 4px',
-  scrollbarWidth: 'none',
-  WebkitOverflowScrolling: 'touch',
-  margin: '0 -16px',
-  paddingLeft: '16px',
-  paddingRight: '16px',
-  '&::-webkit-scrollbar': {
-    display: 'none'
-  }
+  flexDirection: 'column'
 });
 
-const SupervisorAvatarCard = styled('div', {
+const SupervisorListItem = styled('div', {
+  height: '$listItemHeight',
   display: 'flex',
-  flexDirection: 'column',
   alignItems: 'center',
-  gap: '6px',
-  flex: '0 0 70px',
-  cursor: 'pointer',
-  transition: 'transform 0.2s ease',
-  '&:active': {
-    transform: 'scale(0.92)'
+  borderBottom: '1px solid $listDivider',
+  boxSizing: 'border-box',
+  gap: '12px',
+  '&:last-child': {
+    borderBottom: 'none'
   }
 });
 
-const SupervisorAvatar = styled('div', {
-  width: '44px',
-  height: '44px',
-  borderRadius: '50%',
-  backgroundColor: '#DBEAFE',
-  color: '$accent',
-  display: 'flex',
+const SupervisorLineChip = styled('span', {
+  backgroundColor: '$chipAccentBg',
+  color: '$chipAccentText',
+  fontSize: '$sizeMeta',
+  fontWeight: '$weightBold',
+  padding: '2px 8px',
+  borderRadius: '12px',
+  height: '$chipHeight',
+  display: 'inline-flex',
   alignItems: 'center',
   justifyContent: 'center',
-  fontSize: '13px',
-  fontWeight: 700,
-  border: '2px solid #FFFFFF',
-  boxShadow: '0 2px 6px rgba(0,0,0,0.06)',
-  position: 'relative'
+  boxSizing: 'border-box'
 });
 
 const AlertasContainer = styled('div', {
@@ -972,17 +1237,16 @@ const IconWrapper = styled('div', {
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'center',
-  height: '32px',
-  width: '56px',
-  borderRadius: '16px',
-  transition: 'all 0.25s cubic-bezier(0.4, 0, 0.2, 1)',
+  height: '24px',
+  width: '24px',
   color: '$textSecondary',
+  transition: 'color 0.25s ease, transform 0.25s ease',
 
   variants: {
     active: {
       true: {
-        backgroundColor: '#DBEAFE',
-        color: '$accent'
+        color: '$accent',
+        transform: 'scale(1.05)'
       }
     }
   }
@@ -1087,7 +1351,304 @@ const DayToggleButton = styled('button', {
 
 
 
+// --- NEW TOKENS AND STYLED COMPONENTS FOR MAPA REDESIGN ---
+
+const ScreenHeader = styled('div', {
+  display: 'flex',
+  alignItems: 'baseline',
+  justifyContent: 'space-between',
+  padding: '16px 0 8px 0',
+  boxSizing: 'border-box'
+});
+
+const ScreenTitle = styled('h2', {
+  fontSize: '$fonts$sizeTitleCard',
+  fontWeight: '$fonts$weightBold',
+  color: '$textPrimary',
+  margin: 0
+});
+
+const ScreenSubtitle = styled('span', {
+  fontSize: '$fonts$sizeMeta',
+  color: '$textSecondary',
+  fontWeight: '$fonts$weightSemibold'
+});
+
+const MapaTabContainer = styled('div', {
+  maxWidth: '1200px',
+  margin: '0 auto',
+  padding: '16px 20px calc(96px + env(safe-area-inset-bottom, 0px)) 20px',
+  animation: `${fadeIn} 0.25s ease-out`,
+  backgroundColor: '$background',
+  boxSizing: 'border-box',
+  '@mobile': {
+    padding: '12px 12px calc(96px + env(safe-area-inset-bottom, 0px)) 12px'
+  }
+});
+
+const LineChipsContainer = styled('div', {
+  padding: '12px',
+  backgroundColor: '$card',
+  borderRadius: '12px',
+  boxShadow: '$elevation1',
+  margin: '12px 0',
+  display: 'flex',
+  flexDirection: 'column',
+  justifyContent: 'center',
+  boxSizing: 'border-box',
+  height: '64px',
+  maxHeight: '80px',
+  overflow: 'hidden'
+});
+
+const LineChipsHorizontalScroll = styled('div', {
+  display: 'flex',
+  flexDirection: 'row',
+  gap: '8px',
+  overflowX: 'auto',
+  width: '100%',
+  '-webkit-overflow-scrolling': 'touch',
+  '&::-webkit-scrollbar': {
+    display: 'none'
+  },
+  scrollbarWidth: 'none'
+});
+
+const LineSelectionChip = styled('div', {
+  height: '40px',
+  minWidth: '76px',
+  borderRadius: '12px',
+  display: 'flex',
+  flexDirection: 'column',
+  alignItems: 'center',
+  justifyContent: 'center',
+  cursor: 'pointer',
+  transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
+  boxSizing: 'border-box',
+  
+  variants: {
+    status: {
+      ok: {
+        backgroundColor: '$chipSuccessBg',
+        color: '$chipSuccessText',
+        border: '1px solid $statusOk'
+      },
+      danger: {
+        backgroundColor: '$chipDangerBg',
+        color: '$chipDangerText',
+        border: '1px solid $statusAlert'
+      }
+    },
+    selected: {
+      true: {
+        transform: 'scale(1.02)',
+        boxShadow: '$elevation2',
+        borderWidth: '2px'
+      }
+    }
+  }
+});
+
+const LinesListContainer = styled('div', {
+  backgroundColor: '$card',
+  borderRadius: '12px',
+  boxShadow: '$elevation1',
+  margin: '12px 0',
+  overflow: 'hidden',
+  border: '1px solid $border',
+  boxSizing: 'border-box',
+  display: 'flex',
+  flexDirection: 'column'
+});
+
+const LineListItem = styled('div', {
+  height: '$listItemHeight',
+  backgroundColor: '$card',
+  boxShadow: '$listSeparator',
+  borderRadius: 0,
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'space-between',
+  padding: '0 16px',
+  gap: '12px',
+  cursor: 'pointer',
+  transition: 'background-color 0.2s',
+  boxSizing: 'border-box',
+  border: '0px solid transparent',
+  
+  '&:hover': {
+    backgroundColor: '$surfaceHover'
+  },
+  '&:active': {
+    backgroundColor: '$surfaceHover'
+  },
+  
+  variants: {
+    status: {
+      ok: {
+        borderLeftWidth: '3px',
+        borderLeftStyle: 'solid',
+        borderLeftColor: '$statusOk',
+        paddingLeft: '13px'
+      },
+      danger: {
+        borderLeftWidth: '3px',
+        borderLeftStyle: 'solid',
+        borderLeftColor: '$statusAlert',
+        paddingLeft: '13px'
+      }
+    }
+  }
+});
+
+const ZoneALine = styled('div', {
+  width: '48px',
+  fontSize: '$fonts$sizeTitleCard',
+  fontWeight: '$fonts$weightBold',
+  color: '$textPrimary',
+  display: 'flex',
+  alignItems: 'center',
+  flexShrink: 0
+});
+
+const ZoneBLine = styled('div', {
+  display: 'flex',
+  flexDirection: 'column',
+  flex: 1,
+  padding: '0 12px',
+  minWidth: 0,
+  justifyContent: 'center'
+});
+
+const LineTextSku = styled('span', {
+  fontSize: '$fonts$sizeSecondary',
+  fontWeight: '$fonts$weightSemibold',
+  color: '$textPrimary',
+  whiteSpace: 'nowrap',
+  overflow: 'hidden',
+  textOverflow: 'ellipsis'
+});
+
+const LineTextSup = styled('span', {
+  fontSize: '$fonts$sizeMeta',
+  color: '$textSecondary',
+  whiteSpace: 'nowrap',
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  marginTop: '2px',
+  
+  variants: {
+    unassigned: {
+      true: {
+        color: '$statusAlert',
+        fontWeight: '$fonts$weightSemibold'
+      }
+    }
+  }
+});
+
+const ZoneCLine = styled('div', {
+  display: 'flex',
+  flexDirection: 'column',
+  alignItems: 'flex-end',
+  justifyContent: 'center',
+  flexShrink: 0
+});
+
+const CoverageBadge = styled('span', {
+  fontSize: '$fonts$sizeMeta',
+  fontWeight: '$fonts$weightBold',
+  padding: '3px 8px',
+  borderRadius: '12px',
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  whiteSpace: 'nowrap',
+  boxSizing: 'border-box',
+  
+  variants: {
+    range: {
+      green: {
+        backgroundColor: '$chipSuccessBg',
+        color: '$chipSuccessText',
+        border: '1px solid $statusOk'
+      },
+      yellow: {
+        backgroundColor: '#FFFBEB',
+        color: '#B45309',
+        border: '1px solid #FCD34D'
+      },
+      red: {
+        backgroundColor: '$chipDangerBg',
+        color: '$chipDangerText',
+        border: '1px solid $statusAlert'
+      }
+    }
+  }
+});
+
+const OeeBadgeText = styled('span', {
+  fontSize: '$fonts$sizeMeta',
+  color: '$textSecondary',
+  marginTop: '2px'
+});
+
+const QuickStatsContainer = styled('div', {
+  backgroundColor: '$card',
+  border: '1px solid $border',
+  borderRadius: '12px',
+  padding: '12px 16px',
+  display: 'grid',
+  gridTemplateColumns: '1fr 1fr 1fr',
+  alignItems: 'center',
+  justifyContent: 'center',
+  textAlign: 'center',
+  boxShadow: '$subtle',
+  boxSizing: 'border-box',
+  width: '100%',
+  margin: '12px 0'
+});
+
+const QuickStatItem = styled('div', {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: '4px',
+  position: 'relative',
+  
+  '&:not(:last-child)::after': {
+    content: '""',
+    position: 'absolute',
+    right: 0,
+    top: '15%',
+    height: '70%',
+    width: '1px',
+    backgroundColor: '$border'
+  }
+});
+
+const QuickStatLabel = styled('span', {
+  fontSize: '$fonts$sizeMeta',
+  color: '$textSecondary',
+  fontWeight: '$fonts$weightSemibold',
+  textTransform: 'uppercase',
+  letterSpacing: '0.3px'
+});
+
+const QuickStatValue = styled('span', {
+  fontSize: '$fonts$sizeTitleCard',
+  fontWeight: '$fonts$weightBold',
+  
+  variants: {
+    status: {
+      ok: { color: '$statusOk' },
+      alert: { color: '$statusAlert' },
+      normal: { color: '$textPrimary' }
+    }
+  }
+});
+
 // --- COMPONENT IMPLEMENTATION ---
+
 
 export default function PanelCoordinador({ coordinatorName, onLogout, isOffline }) {
   const [currentTab, setCurrentTab] = useState('MAPA'); // 'MAPA' | 'PUESTOS' | 'DASHBOARD' | 'SUGERENCIAS' | 'CONTROL'
@@ -1130,10 +1691,20 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
   });
 
 
-  const presetSupervisors = [
-    "Ing. Carlos Mendoza", "Ing. Sofía Reyes", "Ing. Martín Gómez", 
-    "Ing. Elena Torres", "Ing. Oscar Díaz", "Ing. Lucía Sanz"
-  ];
+  // Supervisores reales del sistema — enriquecidos con asignaciones actuales
+  const availableSupervisors = useMemo(() => {
+    return REAL_SUPERVISORS.map(sup => {
+      // Buscar si ya está asignado a alguna línea
+      const assignedLine = Object.entries(supervisors).find(
+        ([, val]) => val?.workerId === sup.id
+      );
+      return {
+        ...sup,
+        assignedLine: assignedLine ? assignedLine[0] : null,
+        isAvailable: !assignedLine || assignedLine[0] === editingLineId
+      };
+    });
+  }, [supervisors, editingLineId]);
 
   // 1. Escuchar la colección config reactivamente
   useEffect(() => {
@@ -1177,7 +1748,16 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
 
       const sups = map["supervisors_assignment"];
       if (sups) {
-        setSupervisors(sups);
+        // Normalizar: si los valores son strings (viejo formato), convertir a objetos
+        const normalized = {};
+        Object.entries(sups).forEach(([lineId, val]) => {
+          if (typeof val === 'string') {
+            normalized[lineId] = { workerId: null, name: val, shortName: val };
+          } else {
+            normalized[lineId] = val;
+          }
+        });
+        setSupervisors(normalized);
       }
     });
 
@@ -1342,7 +1922,7 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
         isLinePrep,
         deficitCount,
         sku: isSuspended ? "INACTIVO" : activeSku,
-        supervisor: supervisors[lineId] || "Sin Asignar",
+        supervisor: supervisors[lineId]?.shortName || supervisors[lineId]?.name || (typeof supervisors[lineId] === 'string' ? supervisors[lineId] : "Sin Asignar"),
         puestosData: linePuestos
       };
     });
@@ -1397,12 +1977,23 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
         isLinePrep: false,
         deficitCount: tomorrowDeficits,
         sku: skuTomorrow,
-        supervisor: supervisors[lineId] || "Sin Asignar",
+        supervisor: supervisors[lineId]?.shortName || supervisors[lineId]?.name || (typeof supervisors[lineId] === 'string' ? supervisors[lineId] : "Sin Asignar"),
         puestosData: tomorrowPuestosData
       };
     });
     return stats;
   }, [viewDay, lineStats, configDocs, activeLines, puestos, supervisors]);
+
+  // Obtener los informes de producción y eventos de SKU guardados en Firestore
+  const productionReports = useMemo(() => {
+    const reportsDoc = configDocs["production_reports"];
+    return reportsDoc?.reports || [];
+  }, [configDocs]);
+
+  const skuEvents = useMemo(() => {
+    const reportsDoc = configDocs["production_reports"];
+    return reportsDoc?.skuEvents || [];
+  }, [configDocs]);
 
   // Auto-seleccionar la primera línea activa por defecto si la actual está suspendida o inactiva
   useEffect(() => {
@@ -1503,6 +2094,17 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
     };
   }, [viewDay, plantMetrics, configDocs, activeLines]);
 
+  const totalDeficits = useMemo(() => {
+    if (!activeLineStats) return 0;
+    return activeLines.reduce((acc, l) => {
+      const stats = activeLineStats[l];
+      if (stats && stats.sku !== "INACTIVO") {
+        return acc + (stats.deficitCount || 0);
+      }
+      return acc;
+    }, 0);
+  }, [activeLines, activeLineStats]);
+
   // 6. Alertas de fatiga y operarios en tránsito globales
   const plantAlerts = useMemo(() => {
     const list = [];
@@ -1546,10 +2148,18 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
   // 6.5. ALGORITMO SMART ROTATION: Calcular sugerencias de inyección y rotación por déficit en base a la planificación seleccionada
   const deficitSuggestions = useMemo(() => {
     // Helper function for role matching
-    const isWorkerRoleCompatibleWithSlot = (workerRole, slotTipo) => {
+    const isWorkerRoleCompatibleWithSlot = (workerRole, slotTipo, slotName) => {
       if (!workerRole || !slotTipo) return false;
       const wRole = workerRole.trim().toLowerCase();
       const sTipo = slotTipo.trim().toLowerCase();
+      const sName = slotName ? slotName.trim().toLowerCase() : "";
+
+      // Estibadores: Ningún rol de operador técnico (A, B, C, Averiero, Calderas, etc.) es compatible con Estibador/Estivador
+      const isEstibador = sName.includes("estibador") || sName.includes("estivador");
+      const isTechnicalOperator = wRole.includes("operador") || wRole.includes("averiero");
+      if (isEstibador && isTechnicalOperator) {
+        return false;
+      }
 
       if (sTipo === "operador a") {
         return wRole === "operador a" || wRole === "operador b";
@@ -1561,7 +2171,7 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
         return wRole === "operador c" || wRole === "operador b" || wRole === "operador a";
       }
       if (sTipo === "puesto vario") {
-        return ["operario", "operario varios", "auxiliar materiales", "limpieza", "soporte", "nuevos ingresos", "asistente", "rotativo", "operario de patio"].includes(wRole);
+        return ["operario", "operario varios", "auxiliar materiales", "limpieza", "soporte", "nuevos ingresos", "asistente", "rotativo", "operario de patio", "operador b"].includes(wRole);
       }
       return wRole === sTipo;
     };
@@ -1608,11 +2218,8 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
         // A. Primero buscar en el Pool de Arranque
         let chosenWorker = poolWorkers.find(w => {
           if (assignedInSuggestions.has(w.id)) return false;
-          if (!isWorkerRoleCompatibleWithSlot(w.role, slot.tipoPuesto)) return false;
-          
-          const restrictions = w.medicalRestrictions || [];
-          const medicalConflict = requiredCap.some(cap => restrictions.includes(`PROHIBIDO_${cap}`) || restrictions.includes(cap));
-          if (medicalConflict) return false;
+          if (!isWorkerRoleCompatibleWithSlot(w.role, slot.tipoPuesto, slot.puestoName)) return false;
+          if (!canWorkerOccupiedSlot(w, slot)) return false;
 
           if (w.lastActivity === stationName) return false;
           return true;
@@ -1624,11 +2231,8 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
         if (!chosenWorker) {
           chosenWorker = bolsonWorkers.find(w => {
             if (assignedInSuggestions.has(w.id)) return false;
-            if (!isWorkerRoleCompatibleWithSlot(w.role, slot.tipoPuesto)) return false;
-            
-            const restrictions = w.medicalRestrictions || [];
-            const medicalConflict = requiredCap.some(cap => restrictions.includes(`PROHIBIDO_${cap}`) || restrictions.includes(cap));
-            if (medicalConflict) return false;
+            if (!isWorkerRoleCompatibleWithSlot(w.role, slot.tipoPuesto, slot.puestoName)) return false;
+            if (!canWorkerOccupiedSlot(w, slot)) return false;
 
             if (w.lastActivity === stationName) return false;
             return true;
@@ -1642,7 +2246,8 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
 
           const candidateRotations = activeAssignedWorkers.filter(w => {
             if (assignedInSuggestions.has(w.id)) return false;
-            if (!isWorkerRoleCompatibleWithSlot(w.role, slot.tipoPuesto)) return false;
+            if (!isWorkerRoleCompatibleWithSlot(w.role, slot.tipoPuesto, slot.puestoName)) return false;
+            if (!canWorkerOccupiedSlot(w, slot)) return false;
 
             const wSlot = puestos.find(p => p.id === w.currentSlotId);
             if (!wSlot) return false;
@@ -1651,10 +2256,6 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
             if (wLinePriority >= slotPriority) return false; // Solo rotar de menor a mayor prioridad
 
             if (w.role === "OPERADOR_A" || w.role === "AVERIERO") return false;
-
-            const restrictions = w.medicalRestrictions || [];
-            const medicalConflict = requiredCap.some(cap => restrictions.includes(`PROHIBIDO_${cap}`) || restrictions.includes(cap));
-            if (medicalConflict) return false;
 
             return true;
           });
@@ -1737,7 +2338,7 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
         // A. Buscar en los trabajadores no asignados para mañana
         let chosenWorker = availableWorkersTomorrow.find(w => {
           if (assignedInSuggestions.has(w.id)) return false;
-          if (!isWorkerRoleCompatibleWithSlot(w.role, slot.tipoPuesto)) return false;
+          if (!isWorkerRoleCompatibleWithSlot(w.role, slot.tipoPuesto, slot.puestoName)) return false;
           const restrictions = w.medicalRestrictions || [];
           if (requiredCap.some(cap => restrictions.includes(`PROHIBIDO_${cap}`) || restrictions.includes(cap))) return false;
           if (w.lastActivity === stationName) return false;
@@ -1756,7 +2357,7 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
 
             const w = workers[a.idWorkerCurrent];
             if (!w || w.role === "OPERADOR_A" || w.role === "AVERIERO") return false;
-            if (!isWorkerRoleCompatibleWithSlot(w.role, slot.tipoPuesto)) return false;
+            if (!isWorkerRoleCompatibleWithSlot(w.role, slot.tipoPuesto, slot.puestoName)) return false;
 
             const originalSlot = puestos.find(p => p.id === a.id);
             if (!originalSlot) return false;
@@ -2053,28 +2654,34 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
   };
 
   const handleSaveSupervisor = async () => {
-    if (!editingLineId) return;
+    if (!editingLineId || !tempSupervisorName) return;
     triggerNativeHapticFeedback('short');
     try {
-      const newAssignments = { ...supervisors, [editingLineId]: tempSupervisorName };
-      await setDoc(doc(db, "config", "supervisors_assignment"), newAssignments);
-      
-      // Marcar plan como BORRADOR
-      await setDoc(doc(db, "config", "next_day_plan"), {
-        status: "BORRADOR",
-        updatedAt: new Date()
-      }, { merge: true });
+      // tempSupervisorName ahora contiene el workerId del supervisor seleccionado
+      const selectedSup = REAL_SUPERVISORS.find(s => s.id === tempSupervisorName);
+      if (!selectedSup) {
+        // Si es "Sin Asignar" — limpiar asignación
+        const newAssignments = { ...supervisors };
+        newAssignments[editingLineId] = { workerId: null, name: "Sin Asignar", shortName: "Sin Asignar" };
+        await setDoc(doc(db, "config", "supervisors_assignment"), newAssignments);
+        await setDoc(doc(db, "config", "next_day_plan"), { status: "BORRADOR", updatedAt: new Date() }, { merge: true });
+        setEditingLineId(null);
+        return;
+      }
 
+      await assignSupervisorToLine(editingLineId, selectedSup.id, selectedSup.name, selectedSup.shortName);
       setEditingLineId(null);
     } catch (err) {
-      alert("Error al guardar la asignación del supervisor.");
+      alert(`Error al asignar supervisor: ${err.message}`);
     }
   };
 
   const handleOpenEditSupervisor = (lineId) => {
     triggerNativeHapticFeedback('short');
     setEditingLineId(lineId);
-    setTempSupervisorName(supervisors[lineId] || "");
+    // Pre-seleccionar el workerId actual del supervisor asignado
+    const currentAssignment = supervisors[lineId];
+    setTempSupervisorName(currentAssignment?.workerId || "");
   };
 
   return (
@@ -2094,35 +2701,22 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
         )}
         <PanelHeader>
           <LogoArea>
-            <LogoIcon>
-              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
-                <path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/>
-                <path d="m3.3 7 8.7 5 8.7-5"/>
-                <path d="M12 22V12"/>
-              </svg>
-            </LogoIcon>
-            <div>
-              <PanelTitle>SmartAssign</PanelTitle>
-              <PanelSubtitle>Mando de Coordinación General de Planta</PanelSubtitle>
-            </div>
+            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#2563EB" strokeWidth="2.5" style={{ flexShrink: 0 }}>
+              <path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/>
+              <path d="m3.3 7 8.7 5 8.7-5"/>
+              <path d="M12 22V12"/>
+            </svg>
+            <PanelTitle>SmartAssign</PanelTitle>
           </LogoArea>
 
+          {/* flex spacer */}
+          <HeaderSpacer />
+
           {/* Segmented Control de Perspectiva Temporal Global */}
-          <div style={{ 
-            display: 'flex', 
-            alignItems: 'center', 
-            gap: '8px',
-            flexWrap: 'wrap'
-          }} id="global-timeline-segmented-control">
-            <div style={{ 
-              display: 'flex', 
-              gap: '3px', 
-              backgroundColor: '#E2E8F0', 
-              padding: '3px', 
-              borderRadius: '8px',
-              border: '1px solid #CBD5E1'
-            }}>
-              <button
+          <TimelineControlWrapper id="global-timeline-segmented-control">
+            <TimelineButtonsGroup>
+              <TimelineButton
+                active={viewDay === 'TODAY' ? 'today' : 'inactive'}
                 onClick={() => {
                   triggerNativeHapticFeedback('short');
                   const local = new Date();
@@ -2130,21 +2724,6 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
                   const localDate = new Date(local.getTime() - (offset * 60 * 1000));
                   setSelectedDate(localDate.toISOString().split('T')[0]);
                   setViewDay('TODAY');
-                }}
-                style={{
-                  padding: '5px 10px',
-                  fontSize: '10.5px',
-                  fontWeight: 800,
-                  borderRadius: '6px',
-                  border: 'none',
-                  cursor: 'pointer',
-                  backgroundColor: viewDay === 'TODAY' ? '#FFFFFF' : 'transparent',
-                  color: viewDay === 'TODAY' ? '#16A34A' : '#64748B',
-                  boxShadow: viewDay === 'TODAY' ? '0 1px 3px rgba(0,0,0,0.1)' : 'none',
-                  transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '4px'
                 }}
                 id="timeline-btn-today"
               >
@@ -2156,9 +2735,10 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
                   display: 'inline-block'
                 }} />
                 Hoy
-              </button>
+              </TimelineButton>
 
-              <button
+              <TimelineButton
+                active={viewDay === 'NEXT_DAY' ? 'nextDay' : 'inactive'}
                 onClick={() => {
                   triggerNativeHapticFeedback('short');
                   const tomorrow = new Date();
@@ -2167,21 +2747,6 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
                   const localDate = new Date(tomorrow.getTime() - (offset * 60 * 1000));
                   setSelectedDate(localDate.toISOString().split('T')[0]);
                   setViewDay('NEXT_DAY');
-                }}
-                style={{
-                  padding: '5px 10px',
-                  fontSize: '10.5px',
-                  fontWeight: 800,
-                  borderRadius: '6px',
-                  border: 'none',
-                  cursor: 'pointer',
-                  backgroundColor: viewDay === 'NEXT_DAY' ? '#FFFFFF' : 'transparent',
-                  color: viewDay === 'NEXT_DAY' ? '#7E22CE' : '#64748B',
-                  boxShadow: viewDay === 'NEXT_DAY' ? '0 1px 3px rgba(0,0,0,0.1)' : 'none',
-                  transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '4px'
                 }}
                 id="timeline-btn-next-day"
               >
@@ -2193,27 +2758,13 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
                   display: 'inline-block'
                 }} />
                 Mañana
-              </button>
+              </TimelineButton>
 
-              <button
+              <TimelineButton
+                active={viewDay === 'HISTORY' ? 'history' : 'inactive'}
                 onClick={() => {
                   triggerNativeHapticFeedback('short');
                   setViewDay('HISTORY');
-                }}
-                style={{
-                  padding: '5px 10px',
-                  fontSize: '10.5px',
-                  fontWeight: 800,
-                  borderRadius: '6px',
-                  border: 'none',
-                  cursor: 'pointer',
-                  backgroundColor: viewDay === 'HISTORY' ? '#FFFFFF' : 'transparent',
-                  color: viewDay === 'HISTORY' ? '#2563EB' : '#64748B',
-                  boxShadow: viewDay === 'HISTORY' ? '0 1px 3px rgba(0,0,0,0.1)' : 'none',
-                  transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '4px'
                 }}
                 id="timeline-btn-history"
               >
@@ -2225,8 +2776,8 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
                   display: 'inline-block'
                 }} />
                 Historial
-              </button>
-            </div>
+              </TimelineButton>
+            </TimelineButtonsGroup>
 
             {/* Selector de fecha inline visible contextualmente en modo Historial */}
             {viewDay === 'HISTORY' && (
@@ -2262,12 +2813,11 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
                 />
               </div>
             )}
-          </div>
+          </TimelineControlWrapper>
 
           <ProfileArea>
-            <CoordinatorBadge>Coordinador General</CoordinatorBadge>
             <span style={{ fontSize: '12px', fontWeight: 700, color: '#1E293B', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '100px' }}>{coordinatorName}</span>
-            <LogoutBtn onClick={onLogout} title="Cerrar terminal de coordinación" id="coordinator-logout-btn">
+            <LogoutBtn onClick={onLogout} title="Cerrar terminal de coordination" id="coordinator-logout-btn">
               <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                 <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/>
               </svg>
@@ -2279,20 +2829,20 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
       {/* --- RENDERIZADO REACTIVO DE PESTAÑAS (TABS) --- */}
 
       {currentTab === 'MAPA' && (
-        <TabContentContainer id="tab-coordinador-mapa">
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px', flexWrap: 'wrap', gap: '8px', borderBottom: '1px solid #E2E8F0', paddingBottom: '10px' }}>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <h2 style={{ fontSize: '14px', fontWeight: 800, color: '#1E293B', marginBottom: '2px' }}>
-                {viewDay === 'TODAY' ? "Monitoreo en Tiempo Real" : (viewDay === 'HISTORY' ? "Historial Real de Planta" : "Cobertura Día Siguiente")}
-              </h2>
-              <span style={{ fontSize: '10px', color: '#64748B', fontWeight: 700 }}>
+        <MapaTabContainer id="tab-coordinador-mapa">
+          {viewDay !== 'NEXT_DAY' && (
+            <ScreenHeader>
+              <ScreenTitle>
+                {viewDay === 'TODAY' ? "Monitoreo en Tiempo Real" : "Historial Real de Planta"}
+              </ScreenTitle>
+              <ScreenSubtitle>
                 {activeLines.filter(lineId => activeLineStats?.[lineId] && activeLineStats[lineId].sku !== "INACTIVO").length} Líneas Activas
-              </span>
-            </div>
-          </div>
+              </ScreenSubtitle>
+            </ScreenHeader>
+          )}
 
           {/* ORDENES DE PRODUCCION REALES DEL EXCEL (Cargadas de programa_produccion) */}
-          {dayOrders && dayOrders.length > 0 && (
+          {viewDay !== 'NEXT_DAY' && dayOrders && dayOrders.length > 0 && (
             <BentoCard style={{ marginBottom: '16px', padding: '12px 14px', borderLeft: '4px solid #2563EB' }} id="coordination-excel-orders-panel">
               <CardTitle style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '8px' }}>
                 <span style={{ fontSize: '12px' }}>📋</span>
@@ -2343,185 +2893,60 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
           )}
 
           {/* DASHBOARD DE MOSAICOS REACTIVOS — EXIGENCIA PLAN MAESTRO 8.A */}
-          {viewDay === 'NEXT_DAY' && !activeLineStats ? (
-            <BentoCard style={{ marginBottom: '16px', padding: '30px 20px', textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px', boxShadow: '0 4px 12px rgba(0,0,0,0.03)' }} id="coordination-mosaicos-dashboard-empty">
-              <svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#2563EB" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.85 }}>
-                <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
-                <line x1="16" y1="2" x2="16" y2="6"/>
-                <line x1="8" y1="2" x2="8" y2="6"/>
-                <line x1="3" y1="10" x2="21" y2="10"/>
-              </svg>
-              <div>
-                <h4 style={{ fontSize: '13px', fontWeight: 800, color: '#1E293B', marginBottom: '4px' }}>Plan de Producción del Día Siguiente sin Programar</h4>
-                <p style={{ fontSize: '11px', color: '#64748B', maxWidth: '420px', margin: '0 auto', lineHeight: 1.4, marginBottom: '12px' }}>
-                  No se ha realizado la simulación de dotación de personal para mañana. Presione el botón de abajo para cargar las órdenes del Excel o configurar los SKUs de producción y generar el plan proyectado.
-                </p>
-                <button
-                  onClick={() => {
-                    triggerNativeHapticFeedback('short');
-                    handleProgramNextDay();
-                  }}
-                  style={{
-                    padding: '10px 18px',
-                    backgroundColor: '#2563EB',
-                    backgroundImage: 'linear-gradient(135deg, #2563EB 0%, #1D4ED8 100%)',
-                    color: '#FFFFFF',
-                    border: 'none',
-                    borderRadius: '10px',
-                    fontSize: '11px',
-                    fontWeight: 800,
-                    cursor: 'pointer',
-                    boxShadow: '0 4px 12px rgba(37, 99, 235, 0.2)',
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: '6px',
-                    transition: 'all 0.2s ease'
-                  }}
-                  id="program-next-day-empty-mapa-btn"
-                >
-                  <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
-                    <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/>
-                  </svg>
-                  <span>Planificar Día Siguiente (Motor T+1)</span>
-                </button>
-              </div>
-            </BentoCard>
-          ) : (
-            <BentoCard style={{ marginBottom: '16px', padding: '12px 14px' }} id="coordination-mosaicos-dashboard">
-              <CardTitle style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                  <span style={{ fontSize: '12px' }}>🎛</span>
-                  <span style={{ fontSize: '11.5px', fontWeight: 800 }}>Mosaicos Reactivos de Cobertura de Líneas</span>
-                </div>
-                <div style={{ display: 'flex', gap: '8px', fontSize: '9px', fontWeight: 700 }}>
-                  <span style={{ display: 'flex', alignItems: 'center', gap: '3px', color: '#16A34A' }}>
-                    <span style={{ width: '6px', height: '6px', backgroundColor: '#22C55E', borderRadius: '50%' }} /> Cubierto
-                  </span>
-                  <span style={{ display: 'flex', alignItems: 'center', gap: '3px', color: '#EF4444' }}>
-                    <span style={{ width: '6px', height: '6px', backgroundColor: '#EF4444', borderRadius: '50%' }} /> Infracobertura
-                  </span>
-                </div>
-              </CardTitle>
-              
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(68px, 1fr))', gap: '8px' }}>
-                {activeLines.map(lineId => {
-                  const stats = activeLineStats?.[lineId];
-                  if (!stats || stats.sku === "INACTIVO") return null;
+          {viewDay === 'NEXT_DAY' && !activeLineStats && (
+            <>
+              <SectionHeaderTitle style={{ marginBottom: '12px' }}>
+                <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                  <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
+                  <line x1="16" y1="2" x2="16" y2="6"/>
+                  <line x1="8" y1="2" x2="8" y2="6"/>
+                  <line x1="3" y1="10" x2="21" y2="10"/>
+                </svg>
+                <span>Plan de Producción del Día Siguiente sin Programar</span>
+              </SectionHeaderTitle>
 
-                  const isCovered = stats.deficitCount === 0;
-                  
-                  // Generar desglose de déficit por sexo y habilidad en tiempo real
-                  const getDeficitBreakdown = (lId) => {
-                    const s = activeLineStats?.[lId];
-                    if (!s || s.deficitCount === 0) return null;
-                    
-                    const skillMap = {};
-                    const sexMap = { Masculino: 0, Femenino: 0, Indistinto: 0 };
-                    
-                    s.puestosData.forEach(p => {
-                      if (p.status === "VACANTE" || p.status === "ALERTA_VACANTE") {
-                        const skill = p.tipoPuesto || "Operario";
-                        skillMap[skill] = (skillMap[skill] || 0) + 1;
-                        
-                        const sex = p.sexoPreferente || "Indistinto";
-                        if (sexMap[sex] !== undefined) sexMap[sex]++;
-                      }
-                    });
-                    
-                    const skillsStr = Object.keys(skillMap).map(k => `${skillMap[k]} ${k}`).join(', ');
-                    const sexList = [];
-                    if (sexMap.Masculino > 0) sexList.push(`${sexMap.Masculino} Masc`);
-                    if (sexMap.Femenino > 0) sexList.push(`${sexMap.Femenino} Fem`);
-                    if (sexMap.Indistinto > 0) sexList.push(`${sexMap.Indistinto} Indist.`);
-                    const sexStr = sexList.join(', ');
-                    
-                    return { skills: skillsStr, sex: sexStr };
-                  };
-
-                  const breakdown = !isCovered ? getDeficitBreakdown(lineId) : null;
-
-                  return (
-                    <div
-                      key={lineId}
-                      onClick={() => {
-                        triggerNativeHapticFeedback('short');
-                        setSelectedLineId(lineId);
-                      }}
-                      style={{
-                        padding: '8px 4px',
-                        borderRadius: '8px',
-                        backgroundColor: isCovered ? 'rgba(34, 197, 94, 0.08)' : 'rgba(239, 68, 68, 0.08)',
-                        border: isCovered ? '1.5px solid #22C55E' : '1.5px solid #EF4444',
-                        cursor: 'pointer',
-                        display: 'flex',
-                        flexDirection: 'column',
-                        alignItems: 'center',
-                        transition: 'all 0.2s ease',
-                        boxShadow: selectedLineId === lineId 
-                          ? (isCovered ? '0 0 10px rgba(34,197,94,0.3)' : '0 0 10px rgba(239,68,68,0.3)')
-                          : 'none',
-                        transform: selectedLineId === lineId ? 'scale(1.03)' : 'scale(1)'
-                      }}
-                      title={!isCovered ? `Infracobertura. Requiere: ${breakdown?.skills} (${breakdown?.sex})` : 'Cobertura completa'}
+              {dayOrders && dayOrders.length > 0 && (
+                <LinesListContainer id="semaphoric-lines-grid" style={{ marginBottom: '16px' }}>
+                  {dayOrders.map(order => (
+                    <LineListItem
+                      key={order.id}
+                      status="suspended"
+                      style={{ cursor: 'default' }}
                     >
-                      <strong style={{ fontSize: '11px', color: '#1E293B' }}>{lineId}</strong>
-                      <span style={{ fontSize: '8px', fontWeight: 800, color: isCovered ? '#16A34A' : '#B91C1C', marginTop: '2px' }}>
-                        {isCovered ? "OK" : `⚠ -${stats.deficitCount}`}
-                      </span>
-                    </div>
-                  );
-                })}
-              </div>
-              
-              {/* Detalle rápido del mosaico seleccionado */}
-              {(() => {
-                const stats = activeLineStats?.[selectedLineId];
-                if (!stats || stats.sku === "INACTIVO") return null;
-                const isCovered = stats.deficitCount === 0;
-                
-                const getDeficitBreakdown = (lId) => {
-                  const s = activeLineStats?.[lId];
-                  if (!s || s.deficitCount === 0) return null;
-                  
-                  const skillMap = {};
-                  const sexMap = { Masculino: 0, Femenino: 0, Indistinto: 0 };
-                  
-                  s.puestosData.forEach(p => {
-                    if (p.status === "VACANTE" || p.status === "ALERTA_VACANTE") {
-                      const skill = p.tipoPuesto || "Operario";
-                      skillMap[skill] = (skillMap[skill] || 0) + 1;
+                      <ZoneALine>
+                        L{order.lineaId}
+                      </ZoneALine>
                       
-                      const sex = p.sexoPreferente || "Indistinto";
-                      if (sexMap[sex] !== undefined) sexMap[sex]++;
-                    }
-                  });
-                  
-                  const skillsStr = Object.keys(skillMap).map(k => `${skillMap[k]} ${k}`).join(', ');
-                  const sexList = [];
-                  if (sexMap.Masculino > 0) sexList.push(`${sexMap.Masculino} Masc`);
-                  if (sexMap.Femenino > 0) sexList.push(`${sexMap.Femenino} Fem`);
-                  if (sexMap.Indistinto > 0) sexList.push(`${sexMap.Indistinto} Indist.`);
-                  const sexStr = sexList.join(', ');
-                  
-                  return { skills: skillsStr, sex: sexStr };
-                };
-
-                const breakdown = !isCovered ? getDeficitBreakdown(selectedLineId) : null;
-                
-                return (
-                  <div style={{ marginTop: '8px', borderTop: '1px solid #F1F5F9', paddingTop: '6px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '9.5px' }}>
-                    <span style={{ color: '#64748B', fontWeight: 700 }}>
-                      Línea {selectedLineId} seleccionada: <strong style={{ color: '#334155' }}>{stats.sku}</strong>
-                    </span>
-                    <span style={{ color: isCovered ? '#16A34A' : '#EF4444', fontWeight: 800, textAlign: 'right' }}>
-                      {isCovered 
-                        ? "✓ Cobertura óptima al 100%" 
-                        : `Infracobertura ── Requiere: ${breakdown?.skills} (${breakdown?.sex})`}
-                    </span>
-                  </div>
-                );
-              })()}
-            </BentoCard>
+                      <ZoneBLine>
+                        <LineTextSku>{order.item} - {order.producto}</LineTextSku>
+                        <span style={{ fontSize: '10px', color: '#64748B', display: 'block', marginTop: '2px' }}>
+                          Orden: {order.ordenProceso}
+                        </span>
+                        {order.comentario && (
+                          <span style={{ fontSize: '9px', color: '#B45309', fontStyle: 'italic', display: 'block', marginTop: '1px' }}>
+                            * {order.comentario}
+                          </span>
+                        )}
+                      </ZoneBLine>
+                      
+                      <ZoneCLine>
+                        <span style={{ 
+                          fontSize: '11px', 
+                          fontWeight: 800, 
+                          color: '#1E40AF', 
+                          backgroundColor: '#EFF6FF', 
+                          padding: '2px 8px', 
+                          borderRadius: '4px', 
+                          border: '1px solid #BFDBFE' 
+                        }}>
+                          Meta: {order.cajas} cjs
+                        </span>
+                      </ZoneCLine>
+                    </LineListItem>
+                  ))}
+                </LinesListContainer>
+              )}
+            </>
           )}
 
           {/* ACCIONES PRINCIPALES Y DILIGENCIA: SEPARACIÓN DE MÉTODOS Y CORRECCIÓN DE BUG */}
@@ -2532,23 +2957,26 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
             flexWrap: 'wrap'
           }}>
             {viewDay === 'TODAY' ? (
-              <div style={{
-                flex: 1,
-                width: '100%',
-                padding: '12px 16px',
-                backgroundColor: '#EFF6FF',
-                border: '1px solid #BFDBFE',
-                borderRadius: '12px',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '8px',
-                boxSizing: 'border-box'
-              }}>
-                <span style={{ fontSize: '14px' }}>ℹ️</span>
-                <span style={{ fontSize: '10.5px', color: '#1E40AF', fontWeight: 600, lineHeight: '1.3' }}>
-                  <strong>Monitoreo en Vivo Activo:</strong> El inicio del turno y la inyección de personal es gestionado directamente por los supervisores desde el piso de producción. Como Coordinador, audita el estado en tiempo real aquí.
-                </span>
-              </div>
+              <QuickStatsContainer id="coordination-quick-stats-bar">
+                <QuickStatItem>
+                  <QuickStatLabel>OEE Promedio</QuickStatLabel>
+                  <QuickStatValue status={activePlantMetrics.avgOee >= 85 ? "ok" : activePlantMetrics.avgOee >= 70 ? "normal" : "alert"}>
+                    {activePlantMetrics.avgOee}%
+                  </QuickStatValue>
+                </QuickStatItem>
+                <QuickStatItem>
+                  <QuickStatLabel>Déficits</QuickStatLabel>
+                  <QuickStatValue status={totalDeficits === 0 ? "ok" : "alert"}>
+                    {totalDeficits === 0 ? "✓ 0" : `⚠ ${totalDeficits}`}
+                  </QuickStatValue>
+                </QuickStatItem>
+                <QuickStatItem>
+                  <QuickStatLabel>Paros</QuickStatLabel>
+                  <QuickStatValue status={activePlantMetrics.totalDowntimeMinutes === 0 ? "ok" : "alert"}>
+                    {activePlantMetrics.totalDowntimeMinutes} Min
+                  </QuickStatValue>
+                </QuickStatItem>
+              </QuickStatsContainer>
             ) : (
               <>
                 <button
@@ -2560,12 +2988,13 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
                   style={{
                     flex: 1,
                     minWidth: '200px',
-                    padding: '14px 18px',
+                    height: '44px',
+                    padding: '0 18px',
                     backgroundColor: '#2563EB',
                     backgroundImage: 'linear-gradient(135deg, #2563EB 0%, #1D4ED8 100%)',
                     color: '#FFFFFF',
                     border: 'none',
-                    borderRadius: '12px',
+                    borderRadius: '10px',
                     fontSize: '13px',
                     fontWeight: 800,
                     cursor: 'pointer',
@@ -2604,12 +3033,13 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
                   style={{
                     flex: 1,
                     minWidth: '200px',
-                    padding: '14px 18px',
+                    height: '44px',
+                    padding: '0 18px',
                     backgroundColor: '#7E22CE',
                     backgroundImage: 'linear-gradient(135deg, #7E22CE 0%, #6B21A8 100%)',
                     color: '#FFFFFF',
                     border: 'none',
-                    borderRadius: '12px',
+                    borderRadius: '10px',
                     fontSize: '13px',
                     fontWeight: 800,
                     cursor: 'pointer',
@@ -2722,92 +3152,112 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
             );
           })()}
 
-          <GridContainer id="semaphoric-lines-grid">
+          <LinesListContainer id="semaphoric-lines-grid">
             {activeLines
               .filter(lineId => {
                 const stats = activeLineStats?.[lineId];
                 return stats && stats.sku !== "INACTIVO";
               })
               .map(lineId => {
-              const stats = activeLineStats[lineId] || {
-                totalSlots: 0,
-                assignedSlots: 0,
-                coveragePct: 0,
-                coverageState: "suspended",
-                oeePct: 0,
-                deficitCount: 0,
-                isLinePrep: false,
-                sku: "INACTIVO",
-                supervisor: "Sin Asignar",
-                puestosData: []
-              };
+                const stats = activeLineStats[lineId] || {
+                  totalSlots: 0,
+                  assignedSlots: 0,
+                  coveragePct: 0,
+                  coverageState: "suspended",
+                  oeePct: 0,
+                  deficitCount: 0,
+                  isLinePrep: false,
+                  sku: "INACTIVO",
+                  supervisor: "Sin Asignar",
+                  puestosData: []
+                };
 
-              return (
-                <LineStatusCard 
-                  key={lineId} 
-                  coverage={stats.coverageState}
-                  onClick={() => {
-                    if (viewDay === 'HISTORY') {
-                      triggerNativeHapticFeedback('error');
-                      alert("Los reportes históricos están en modo de solo lectura cerrado.");
-                      return;
-                    }
-                    handleOpenEditSupervisor(lineId);
-                  }}
-                  id={`line-card-${lineId}`}
-                >
-                  <LineCardHeader>
-                    <LineTitle>Línea {lineId}</LineTitle>
-                    <SkuTag>{stats.sku}</SkuTag>
-                  </LineCardHeader>
+                const statusVal = stats.deficitCount > 0 ? "danger" : "ok";
 
-                  <div style={{ fontSize: '11px', color: '#64748B', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                    <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                      <path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2M12 7a4 4 0 1 0 0-8 4 4 0 0 0 0 8z"/>
-                    </svg>
-                    <span>Sup: {stats.supervisor}</span>
-                  </div>
-
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '2px' }}>
-                    <span style={{ fontSize: '10px', fontWeight: 700, color: '#334155' }}>
-                      Cobertura: {stats.assignedSlots}/{stats.totalSlots} ({stats.coveragePct}%)
-                    </span>
-                    <MetricPill type={stats.deficitCount > 0 ? "danger" : stats.coverageState === "suspended" ? "suspended" : "success"}>
-                      {stats.isLinePrep ? "En Paro" : stats.deficitCount > 0 ? `⚠ ${stats.deficitCount} Déficit` : "✓ Completa"}
-                    </MetricPill>
-                  </div>
-
-                  {/* MINIMAPA DE CELDAS OPERATIVAS */}
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-                    <MiniMapLabel>Distribución de Puestos</MiniMapLabel>
-                    <SlotsMiniMap>
-                      {stats.puestosData.length === 0 ? (
-                        <span style={{ fontSize: '9px', color: '#94A3B8', fontStyle: 'italic' }}>Sin celdas</span>
+                return (
+                  <LineListItem
+                    key={lineId}
+                    status={statusVal}
+                    onClick={() => {
+                      triggerNativeHapticFeedback('short');
+                      setSelectedLineId(lineId);
+                      setCurrentTab('PUESTOS');
+                    }}
+                    id={`line-card-${lineId}`}
+                  >
+                    {/* ZONA A: Left */}
+                    <ZoneALine>
+                      {lineId}
+                    </ZoneALine>
+                    
+                    {/* ZONA B: Center */}
+                    <ZoneBLine>
+                      <LineTextSku>{stats.sku}</LineTextSku>
+                      {viewDay === 'NEXT_DAY' ? (
+                        <div 
+                          onClick={(e) => {
+                            e.stopPropagation(); // Evita redirigir a Puestos
+                            handleOpenEditSupervisor(lineId);
+                          }}
+                          style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '4px',
+                            cursor: 'pointer',
+                            marginTop: '4px',
+                            color: stats.supervisor === "Sin Asignar" ? '#2563EB' : 'var(--colors-textSecondary, #475569)',
+                            fontSize: '11px',
+                            fontWeight: stats.supervisor === "Sin Asignar" ? 700 : 500,
+                            padding: stats.supervisor === "Sin Asignar" ? '2px 6px' : '0',
+                            border: stats.supervisor === "Sin Asignar" ? '1px dashed #2563EB' : 'none',
+                            borderRadius: '4px',
+                            backgroundColor: stats.supervisor === "Sin Asignar" ? 'rgba(37, 99, 235, 0.05)' : 'transparent',
+                            width: 'fit-content'
+                          }}
+                        >
+                          {stats.supervisor === "Sin Asignar" ? (
+                            <>
+                              <span>+ Asignar Supervisor</span>
+                            </>
+                          ) : (
+                            <>
+                              <span>Sup: {stats.supervisor}</span>
+                              <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ marginLeft: '2px' }}>
+                                <path d="M12 20h9M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
+                              </svg>
+                            </>
+                          )}
+                        </div>
                       ) : (
-                        stats.puestosData.map(p => {
-                          const state = p.status === "SUSPENDIDO" ? "suspended" : (p.status === "ASIGNADO" ? "covered" : "deficit");
-                          return <CellIndicator key={p.id} state={state} title={`${p.puestoName}: ${p.status}`} />;
-                        })
+                        <LineTextSup unassigned={stats.supervisor === "Sin Asignar"}>
+                          Sup: {stats.supervisor}
+                        </LineTextSup>
                       )}
-                    </SlotsMiniMap>
-                  </div>
-
-                  <OeeMeter>
-                    <OeeHeader>
-                      <span>Rendimiento OEE</span>
-                      <strong>{stats.oeePct}%</strong>
-                    </OeeHeader>
-                    <OeeTrack>
-                      <OeeBar 
-                        status={stats.oeePct >= 85 ? "success" : stats.oeePct >= 70 ? "warning" : stats.coverageState === "suspended" ? "suspended" : "danger"} 
-                        style={{ width: `${stats.oeePct}%` }}
-                      />
-                    </OeeTrack>
-                  </OeeMeter>
-                </LineStatusCard>
-              );
-            })}
-          </GridContainer>
+                    </ZoneBLine>
+                    
+                    {/* ZONA C: Right */}
+                    <ZoneCLine>
+                      {(() => {
+                        let rangeColor = "green";
+                        if (stats.coveragePct < 70) {
+                          rangeColor = "red";
+                        } else if (stats.coveragePct < 90) {
+                          rangeColor = "yellow";
+                        }
+                        return (
+                          <CoverageBadge range={rangeColor}>
+                            {stats.assignedSlots}/{stats.totalSlots} ({stats.coveragePct}%)
+                          </CoverageBadge>
+                        );
+                      })()}
+                      <OeeBadgeText>
+                        OEE: {stats.oeePct}%
+                      </OeeBadgeText>
+                    </ZoneCLine>
+                  </LineListItem>
+                );
+              })}
+          </LinesListContainer>
 
           {/* BOLSÓN DE RESERVA — Resumen de líneas suspendidas y operarios en pool */}
           {viewDay === 'NEXT_DAY' && activeLineStats && (() => {
@@ -2885,71 +3335,94 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
               </BentoCard>
             );
           })()}
-        </TabContentContainer>
+        </MapaTabContainer>
       )}
       {currentTab === 'PUESTOS' && (
         <TabContentContainer id="tab-coordinador-puestos">
           {viewDay === 'NEXT_DAY' && !activeLineStats ? (
-            <div style={{ padding: '40px', textAlign: 'center', backgroundColor: '#FFFFFF', border: '1px dashed #CBD5E1', borderRadius: '12px', display: 'flex', flexDirection: 'column', gap: '16px', alignItems: 'center', marginTop: '10px' }}>
-              <svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#64748B" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
-                <line x1="16" y1="2" x2="16" y2="6"/>
-                <line x1="8" y1="2" x2="8" y2="6"/>
-                <line x1="3" y1="10" x2="21" y2="10"/>
-              </svg>
-              <div>
-                <h4 style={{ fontSize: '13px', fontWeight: 800, color: '#1E293B', marginBottom: '4px' }}>Plan de Producción del Día Siguiente sin Programar</h4>
-                <p style={{ fontSize: '11px', color: '#64748B', maxWidth: '360px', margin: '0 auto', lineHeight: 1.4, marginBottom: '12px' }}>
-                  Aún no se ha realizado la simulación de dotación de personal. Presione el botón de abajo para iniciar la dotación proyectada de mañana o cargue el Excel desde el Mapa.
-                </p>
-                <button
-                  onClick={() => {
-                    triggerNativeHapticFeedback('short');
-                    handleProgramNextDay();
-                  }}
-                  style={{
-                    padding: '10px 18px',
-                    backgroundColor: '#2563EB',
-                    backgroundImage: 'linear-gradient(135deg, #2563EB 0%, #1D4ED8 100%)',
-                    color: '#FFFFFF',
-                    border: 'none',
-                    borderRadius: '10px',
-                    fontSize: '11px',
-                    fontWeight: 800,
-                    cursor: 'pointer',
-                    boxShadow: '0 4px 12px rgba(37, 99, 235, 0.2)',
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: '6px',
-                    transition: 'all 0.2s ease'
-                  }}
-                  id="program-next-day-empty-puestos-btn"
-                >
-                  <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
-                    <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/>
-                  </svg>
-                  <span>Planificar Día Siguiente (Motor T+1)</span>
-                </button>
-              </div>
+            <div>
+              <SectionHeaderTitle style={{ marginBottom: '12px' }}>
+                <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                  <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
+                  <line x1="16" y1="2" x2="16" y2="6"/>
+                  <line x1="8" y1="2" x2="8" y2="6"/>
+                  <line x1="3" y1="10" x2="21" y2="10"/>
+                </svg>
+                <span>Plan de Producción del Día Siguiente sin Programar</span>
+              </SectionHeaderTitle>
+              
+              {dayOrders && dayOrders.length > 0 && (
+                <LinesListContainer id="semaphoric-lines-grid-puestos" style={{ marginBottom: '16px' }}>
+                  {dayOrders.map(order => (
+                    <LineListItem
+                      key={order.id}
+                      status="suspended"
+                      style={{ cursor: 'default' }}
+                    >
+                      <ZoneALine>
+                        L{order.lineaId}
+                      </ZoneALine>
+                      
+                      <ZoneBLine>
+                        <LineTextSku>{order.item} - {order.producto}</LineTextSku>
+                        <span style={{ fontSize: '10px', color: '#64748B', display: 'block', marginTop: '2px' }}>
+                          Orden: {order.ordenProceso}
+                        </span>
+                      </ZoneBLine>
+                      
+                      <ZoneCLine>
+                        <span style={{ 
+                          fontSize: '11px', 
+                          fontWeight: 800, 
+                          color: '#1E40AF', 
+                          backgroundColor: '#EFF6FF', 
+                          padding: '2px 8px', 
+                          borderRadius: '4px', 
+                          border: '1px solid #BFDBFE' 
+                        }}>
+                          Meta: {order.cajas} cjs
+                        </span>
+                      </ZoneCLine>
+                    </LineListItem>
+                  ))}
+                </LinesListContainer>
+              )}
+
+              <button
+                onClick={() => {
+                  triggerNativeHapticFeedback('short');
+                  handleProgramNextDay();
+                }}
+                style={{
+                  height: '44px',
+                  padding: '0 18px',
+                  backgroundColor: '#2563EB',
+                  backgroundImage: 'linear-gradient(135deg, #2563EB 0%, #1D4ED8 100%)',
+                  color: '#FFFFFF',
+                  border: 'none',
+                  borderRadius: '10px',
+                  fontSize: '11px',
+                  fontWeight: 800,
+                  cursor: 'pointer',
+                  boxShadow: '0 4px 12px rgba(37, 99, 235, 0.2)',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  transition: 'all 0.2s ease',
+                  width: '100%',
+                  justifyContent: 'center'
+                }}
+                id="program-next-day-empty-puestos-btn"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
+                  <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/>
+                </svg>
+                <span>Planificar Día Siguiente (Motor T+1)</span>
+              </button>
             </div>
           ) : (
              <>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px', flexWrap: 'wrap', gap: '8px', borderBottom: '1px solid #E2E8F0', paddingBottom: '12px' }}>
-            <div>
-              <h2 style={{ fontSize: '13px', fontWeight: 800, color: '#1E293B', marginBottom: '2px' }}>
-                Layout Detallado de Puestos Cubiertos vs Déficit ({viewDay === 'TODAY' ? "Hoy en Vivo" : (viewDay === 'HISTORY' ? `Historial: ${selectedDate}` : "Día Siguiente")})
-              </h2>
-              <p style={{ fontSize: '11px', color: '#64748B' }}>
-                {viewDay === 'TODAY' 
-                  ? "Auditoría en tiempo real del estado de cada celda y operario en el piso de producción." 
-                  : (viewDay === 'HISTORY'
-                    ? "Consulta de la dotación y personal asignado en cada puesto físico en la fecha seleccionada."
-                    : "Plan de dotación preventivo. Selecciona una línea para auditar el estado físico proyectado de cada celda.")}
-              </p>
-            </div>
-            
 
-          </div>
 
           <LineButtonsRow id="line-selectors-row">
             {activeLines
@@ -2964,15 +3437,15 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
                   }}
                   id={`btn-select-line-${lineId}`}
                 >
-                  Línea {lineId}
+                  {lineId}
                 </LineFilterButton>
               ))}
           </LineButtonsRow>
 
           <LayoutHeader>
             <div>
-              <strong style={{ fontSize: '14px', color: '#1E293B' }}>Celdas de Producción de Línea {selectedLineId}</strong>
-              <span style={{ fontSize: '11px', color: '#64748B', display: 'block', marginTop: '2px' }}>
+              <strong style={{ fontSize: '14px', color: '$textPrimary', display: 'block', lineHeight: '1.2' }}>Línea {selectedLineId}</strong>
+              <span style={{ fontSize: '11px', color: 'var(--colors-textSecondary)', display: 'block', marginTop: '2px' }}>
                 SKU {viewDay === 'TODAY' ? "Activo" : "Planificado"}: {activeLineStats?.[selectedLineId]?.sku || "INACTIVO"}
               </span>
             </div>
@@ -3000,59 +3473,68 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
                   return <div style={{ fontSize: '11px', color: '#94A3B8', textAlign: 'center', padding: '16px' }}>Sin puestos fijos configurados.</div>;
                 }
 
-                return fijosPuestos.map(p => {
-                  const state = p.status === "SUSPENDIDO" ? "suspended" : (p.status === "ASIGNADO" ? "covered" : "deficit");
-                  const workerName = viewDay === 'TODAY' ? (workers[p.idWorkerCurrent]?.name || "VACANTE") : (p.workerName || "VACANTE");
+                return (
+                  <SlotsListWrapper>
+                    {fijosPuestos.map(p => {
+                      const state = p.status === "SUSPENDIDO" ? "suspended" : (p.status === "ASIGNADO" ? "covered" : "deficit");
+                      const workerName = viewDay === 'TODAY' ? (workers[p.idWorkerCurrent]?.name || "VACANTE") : (p.workerName || "VACANTE");
 
-                  return (
-                    <SlotDetailCard key={p.id} state={state} locked={!!p.locked} id={`slot-detail-${p.id}`}>
-                      <SlotInfo>
-                        <SlotName>{p.puestoName} ({p.tipoPuesto})</SlotName>
-                        <SlotWorkerName>Titular: {workers[p.idWorkerOriginal]?.name || "Sin Titular"}</SlotWorkerName>
-                        <SlotWorkerName style={{ color: '#2563EB', fontWeight: 700 }}>Asignado: {workerName}</SlotWorkerName>
-                      </SlotInfo>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                        <StatusPill state={state}>
-                          {p.status === "SUSPENDIDO" ? "SUSPENDIDO" : (p.status === "ASIGNADO" ? "✓ CUBIERTO" : "⚠ DÉFICIT")}
-                        </StatusPill>
-                        {viewDay === 'NEXT_DAY' && p.status !== "SUSPENDIDO" && (
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleToggleSlotLock(p.id);
-                            }}
-                            style={{
-                              background: 'none',
-                              border: 'none',
-                              cursor: 'pointer',
-                              padding: '6px',
-                              display: 'flex',
-                              alignItems: 'center',
-                              justifyContent: 'center',
-                              transition: 'all 0.2s ease',
-                              color: p.locked ? '#2563EB' : '#94A3B8'
-                            }}
-                            title={p.locked ? "Bloqueado por el Coordinador (Locked)" : "Desbloqueado (Hacer clic para bloquear)"}
-                          >
-                            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill={p.locked ? "currentColor" : "none"} stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                              {p.locked ? (
-                                <>
-                                  <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
-                                  <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
-                                </>
-                              ) : (
-                                <>
-                                  <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
-                                  <path d="M7 11V7a5 5 0 0 1 9.9-1"/>
-                                </>
-                              )}
-                            </svg>
-                          </button>
-                        )}
-                      </div>
-                    </SlotDetailCard>
-                  );
-                });
+                      return (
+                        <SlotDetailCard key={p.id} state={state} locked={!!p.locked} id={`slot-detail-${p.id}`}>
+                          <StatusIndicatorBar state={state} />
+                          <SlotInfo>
+                            <SlotName>{p.puestoName} ({p.tipoPuesto})</SlotName>
+                            <SlotWorkerName>
+                              <span style={{ fontWeight: 600, color: '#64748B' }}>Titular:</span> {workers[p.idWorkerOriginal]?.name || "Sin Titular"}
+                            </SlotWorkerName>
+                            <SlotWorkerName style={{ color: '#2563EB', fontWeight: 600, marginTop: '2px' }}>
+                              <span style={{ fontWeight: 700 }}>Asignado:</span> {workerName}
+                            </SlotWorkerName>
+                          </SlotInfo>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            <StatusPill state={state}>
+                              {p.status === "SUSPENDIDO" ? "SUSPENDIDO" : (p.status === "ASIGNADO" ? "✓ CUBIERTO" : "⚠ DÉFICIT")}
+                            </StatusPill>
+                            {viewDay === 'NEXT_DAY' && p.status !== "SUSPENDIDO" && (
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleToggleSlotLock(p.id);
+                                }}
+                                style={{
+                                  background: 'none',
+                                  border: 'none',
+                                  cursor: 'pointer',
+                                  padding: '6px',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                  transition: 'all 0.2s ease',
+                                  color: p.locked ? '#2563EB' : '#94A3B8'
+                                }}
+                                title={p.locked ? "Bloqueado por el Coordinador (Locked)" : "Desbloqueado (Hacer clic para bloquear)"}
+                              >
+                                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill={p.locked ? "currentColor" : "none"} stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                                  {p.locked ? (
+                                    <>
+                                      <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+                                      <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+                                      <path d="M7 11V7a5 5 0 0 1 9.9-1"/>
+                                    </>
+                                  )}
+                                </svg>
+                              </button>
+                            )}
+                          </div>
+                        </SlotDetailCard>
+                      );
+                    })}
+                  </SlotsListWrapper>
+                );
               })()}
             </ColumnCard>
 
@@ -3073,78 +3555,84 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
                   return <div style={{ fontSize: '11px', color: '#94A3B8', textAlign: 'center', padding: '16px' }}>Sin puestos varios configurados.</div>;
                 }
 
-                return variosPuestos.map(p => {
-                  const state = p.status === "SUSPENDIDO" ? "suspended" : (p.status === "ASIGNADO" ? "covered" : "deficit");
-                  const workerName = viewDay === 'TODAY' ? (workers[p.idWorkerCurrent]?.name || "VACANTE") : (p.workerName || "VACANTE");
+                return (
+                  <SlotsListWrapper>
+                    {variosPuestos.map(p => {
+                      const state = p.status === "SUSPENDIDO" ? "suspended" : (p.status === "ASIGNADO" ? "covered" : "deficit");
+                      const workerName = viewDay === 'TODAY' ? (workers[p.idWorkerCurrent]?.name || "VACANTE") : (p.workerName || "VACANTE");
 
-                  let isFatigued = false;
-                  let elapsed = 0;
-                  if (viewDay === 'TODAY' && p.status === "ASIGNADO" && p.asignadoEnSegundoVirtual) {
-                    const t = p.asignadoEnSegundoVirtual;
-                    const ms = t.toDate ? t.toDate().getTime() : (t.seconds ? t.seconds * 1000 : new Date(t).getTime());
-                    elapsed = Math.max(0, Math.floor((Date.now() - ms) / 60000));
-                    if (elapsed >= 105) isFatigued = true;
-                  }
+                      let isFatigued = false;
+                      let elapsed = 0;
+                      if (viewDay === 'TODAY' && p.status === "ASIGNADO" && p.asignadoEnSegundoVirtual) {
+                        const t = p.asignadoEnSegundoVirtual;
+                        const ms = t.toDate ? t.toDate().getTime() : (t.seconds ? t.seconds * 1000 : new Date(t).getTime());
+                        elapsed = Math.max(0, Math.floor((Date.now() - ms) / 60000));
+                        if (elapsed >= 105) isFatigued = true;
+                      }
 
-                  return (
-                    <SlotDetailCard 
-                      key={p.id} 
-                      state={state} 
-                      locked={!!p.locked} 
-                      id={`slot-detail-${p.id}`}
-                      style={isFatigued ? { borderLeft: '4px solid #EF4444', boxShadow: '0 0 10px rgba(239, 68, 68, 0.12)' } : {}}
-                    >
-                      <SlotInfo>
-                        <SlotName>{p.puestoName} ({p.tipoPuesto})</SlotName>
-                        <SlotWorkerName>Operario: {workerName}</SlotWorkerName>
-                      </SlotInfo>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                        {isFatigued && (
-                          <StatusPill state="deficit" style={{ backgroundColor: '#FEE2E2', color: '#EF4444', border: '1px solid #FCA5A5', fontSize: '9px', fontWeight: 800 }}>
-                            ⚠️ FATIGADO ({elapsed}m)
-                          </StatusPill>
-                        )}
-                        <StatusPill state={state}>
-                          {p.status === "SUSPENDIDO" ? "SUSPENDIDO" : (p.status === "ASIGNADO" ? "✓ CUBIERTO" : "⚠ DÉFICIT")}
-                        </StatusPill>
-                        {viewDay === 'NEXT_DAY' && p.status !== "SUSPENDIDO" && (
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleToggleSlotLock(p.id);
-                            }}
-                            style={{
-                              background: 'none',
-                              border: 'none',
-                              cursor: 'pointer',
-                              padding: '6px',
-                              display: 'flex',
-                              alignItems: 'center',
-                              justifyContent: 'center',
-                              transition: 'all 0.2s ease',
-                              color: p.locked ? '#2563EB' : '#94A3B8'
-                            }}
-                            title={p.locked ? "Bloqueado por el Coordinador (Locked)" : "Desbloqueado (Hacer clic para bloquear)"}
-                          >
-                            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill={p.locked ? "currentColor" : "none"} stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                              {p.locked ? (
-                                <>
-                                  <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
-                                  <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
-                                </>
-                              ) : (
-                                <>
-                                  <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
-                                  <path d="M7 11V7a5 5 0 0 1 9.9-1"/>
-                                </>
-                              )}
-                            </svg>
-                          </button>
-                        )}
-                      </div>
-                    </SlotDetailCard>
-                  );
-                });
+                      return (
+                        <SlotDetailCard 
+                          key={p.id} 
+                          state={state} 
+                          locked={!!p.locked} 
+                          id={`slot-detail-${p.id}`}
+                        >
+                          <StatusIndicatorBar state={state} fatigue={isFatigued ? "CRITICO" : "NORMAL"} />
+                          <SlotInfo>
+                            <SlotName>{p.puestoName} ({p.tipoPuesto})</SlotName>
+                            <SlotWorkerName>
+                              <span style={{ fontWeight: 600, color: '#64748B' }}>Operario:</span> {workerName}
+                            </SlotWorkerName>
+                          </SlotInfo>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            {isFatigued && (
+                              <FatigueBadge>
+                                FATIGADO ({elapsed}m)
+                              </FatigueBadge>
+                            )}
+                            <StatusPill state={state}>
+                              {p.status === "SUSPENDIDO" ? "SUSPENDIDO" : (p.status === "ASIGNADO" ? "✓ CUBIERTO" : "⚠ DÉFICIT")}
+                            </StatusPill>
+                            {viewDay === 'NEXT_DAY' && p.status !== "SUSPENDIDO" && (
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleToggleSlotLock(p.id);
+                                }}
+                                style={{
+                                  background: 'none',
+                                  border: 'none',
+                                  cursor: 'pointer',
+                                  padding: '6px',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                  transition: 'all 0.2s ease',
+                                  color: p.locked ? '#2563EB' : '#94A3B8'
+                                }}
+                                title={p.locked ? "Bloqueado por el Coordinador (Locked)" : "Desbloqueado (Hacer clic para bloquear)"}
+                              >
+                                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill={p.locked ? "currentColor" : "none"} stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                                  {p.locked ? (
+                                    <>
+                                      <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+                                      <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+                                      <path d="M7 11V7a5 5 0 0 1 9.9-1"/>
+                                    </>
+                                  )}
+                                </svg>
+                              </button>
+                            )}
+                          </div>
+                        </SlotDetailCard>
+                      );
+                    })}
+                  </SlotsListWrapper>
+                );
               })()}
             </ColumnCard>
           </LayoutGrid>
@@ -3155,126 +3643,291 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
 
       {currentTab === 'DASHBOARD' && (
         <TabContentContainer id="tab-coordinador-dashboard">
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px', flexWrap: 'wrap', gap: '8px', borderBottom: '1px solid #E2E8F0', paddingBottom: '12px' }}>
-            <div>
-              <h2 style={{ fontSize: '13px', fontWeight: 800, color: '#1E293B', marginBottom: '2px' }}>
-                KPIs y Dashboards Analíticos de Planta ({viewDay === 'TODAY' ? "Hoy en Vivo" : (viewDay === 'HISTORY' ? `Historial Real: ${selectedDate}` : "Día Siguiente")})
-              </h2>
-              <p style={{ fontSize: '11px', color: '#64748B' }}>
-                {viewDay === 'TODAY' 
-                  ? "Monitoreo industrial consolidador de eficiencia, tiempos muertos y desperdicios reales en piso de producción." 
-                  : (viewDay === 'HISTORY'
-                    ? "Monitoreo de auditoría del histórico de eficiencia, averías y tiempos muertos reales con los que cerró la planta."
-                    : "Monitoreo industrial consolidador de eficiencia proyectada en base al plan de producción del día de mañana.")}
-              </p>
-            </div>
-            
-
-          </div>
-
-          <KpiGrid id="kpi-metric-cards">
-            <KpiCard>
-              <KpiLabel>{viewDay === 'TODAY' ? "OEE Promedio Real de Planta" : (viewDay === 'HISTORY' ? "OEE Promedio al Cierre" : "OEE Promedio Proyectado de Planta")}</KpiLabel>
-              <KpiValue>{activePlantMetrics.avgOee}%</KpiValue>
-              <div style={{ height: '4px', backgroundColor: '#E2E8F0', borderRadius: '2px', overflow: 'hidden', marginTop: '6px' }}>
-                <div style={{ height: '100%', width: `${activePlantMetrics.avgOee}%`, backgroundColor: activePlantMetrics.avgOee >= 85 ? '#22C55E' : activePlantMetrics.avgOee >= 70 ? '#EAB308' : '#EF4444' }} />
-              </div>
-            </KpiCard>
-
-            <KpiCard>
-              <KpiLabel>{viewDay === 'TODAY' ? "Tiempos Muertos de Planta" : (viewDay === 'HISTORY' ? "Tiempos Muertos Reales Totales" : "Paros Proyectados")}</KpiLabel>
-              <KpiValue>{activePlantMetrics.totalDowntimeMinutes} Min</KpiValue>
-              <span style={{ fontSize: '10px', color: '#64748B', fontWeight: 600, marginTop: '6px' }}>
-                {viewDay === 'TODAY' ? "⚠ Tiempo acumulado de paro" : (viewDay === 'HISTORY' ? "✓ Registro total de jornada" : "✓ Sin paros activos registrados para mañana")}
-              </span>
-            </KpiCard>
-
-            <KpiCard>
-              <KpiLabel>{viewDay === 'TODAY' ? "Mermas Totales de Planta" : (viewDay === 'HISTORY' ? "Mermas Reales Totales" : "Mermas Proyectadas")}</KpiLabel>
-              <KpiValue>{activePlantMetrics.totalMermasProcess} Pzs</KpiValue>
-              <span style={{ fontSize: '10px', color: '#16A34A', fontWeight: 600, marginTop: '6px' }}>
-                {viewDay === 'TODAY' ? "✓ Desperdicio acumulado" : (viewDay === 'HISTORY' ? "✓ Registro histórico guardado" : "✓ Límites de mermas bajo control")}
-              </span>
-            </KpiCard>
-          </KpiGrid>
+          <QuickStatsContainer id="kpi-metric-dashboard-card" style={{ margin: '0 0 20px 0' }}>
+            <QuickStatItem>
+              <QuickStatLabel>{viewDay === 'TODAY' ? "OEE Real" : (viewDay === 'HISTORY' ? "OEE Cierre" : "OEE Proyectado")}</QuickStatLabel>
+              <QuickStatValue status={activePlantMetrics.avgOee >= 85 ? "ok" : activePlantMetrics.avgOee >= 70 ? "normal" : "alert"}>
+                {activePlantMetrics.avgOee}%
+              </QuickStatValue>
+            </QuickStatItem>
+            <QuickStatItem>
+              <QuickStatLabel>{viewDay === 'TODAY' ? "Paros Activos" : (viewDay === 'HISTORY' ? "Paros Totales" : "Paros Proyectados")}</QuickStatLabel>
+              <QuickStatValue status={activePlantMetrics.totalDowntimeMinutes === 0 ? "ok" : "alert"}>
+                {activePlantMetrics.totalDowntimeMinutes} Min
+              </QuickStatValue>
+            </QuickStatItem>
+            <QuickStatItem>
+              <QuickStatLabel>{viewDay === 'TODAY' ? "Mermas Totales" : (viewDay === 'HISTORY' ? "Mermas Totales" : "Mermas Proyectadas")}</QuickStatLabel>
+              <QuickStatValue status={activePlantMetrics.totalMermasProcess < 100 ? "ok" : "alert"}>
+                {activePlantMetrics.totalMermasProcess} Pzs
+              </QuickStatValue>
+            </QuickStatItem>
+          </QuickStatsContainer>
 
           {/* Gráficos y Visualizaciones */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '20px', marginTop: '20px' }}>
             {/* GRAFICO PAROS CATEGORIA SVG */}
-            <ChartCard id="paros-chart-card">
-              <ChartTitle>
+            <div>
+              <SectionHeaderTitle style={{ marginBottom: '8px' }}>
                 <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                   <circle cx="12" cy="12" r="10"/>
                   <polyline points="12 6 12 12 16 14"/>
                 </svg>
                 <span>Distribución de Paros de Planta por Categoría</span>
-              </ChartTitle>
+              </SectionHeaderTitle>
+              <ChartCard id="paros-chart-card">
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', padding: '10px 0' }}>
+                  {Object.keys(activePlantMetrics.parosByCategory).map(category => {
+                    const val = activePlantMetrics.parosByCategory[category];
+                    const total = Object.values(activePlantMetrics.parosByCategory).reduce((a, b) => a + b, 0) || 1;
+                    const pct = Math.round((val / total) * 100);
 
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', padding: '10px 0' }}>
-                {Object.keys(activePlantMetrics.parosByCategory).map(category => {
-                  const val = activePlantMetrics.parosByCategory[category];
-                  const total = Object.values(activePlantMetrics.parosByCategory).reduce((a, b) => a + b, 0) || 1;
-                  const pct = Math.round((val / total) * 100);
+                    const barColors = {
+                      MECÁNICO: '#3B82F6',
+                      ELÉCTRICO: '#A855F7',
+                      CALIDAD: '#F59E0B',
+                      FALTA_DE_MATERIAL: '#EF4444'
+                    };
 
-                  const barColors = {
-                    MECÁNICO: '#3B82F6',
-                    ELÉCTRICO: '#A855F7',
-                    CALIDAD: '#F59E0B',
-                    FALTA_DE_MATERIAL: '#EF4444'
-                  };
-
-                  return (
-                    <div key={category} style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '10px', fontWeight: 700, color: '#475569' }}>
-                        <span>{category.replaceAll('_', ' ')}</span>
-                        <strong>{val} min</strong>
+                    return (
+                      <div key={category} style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '10px', fontWeight: 700, color: '#475569' }}>
+                          <span>{category.replaceAll('_', ' ')}</span>
+                          <strong>{val} min</strong>
+                        </div>
+                        <div style={{ height: '14px', backgroundColor: '#F1F5F9', borderRadius: '4px', overflow: 'hidden', position: 'relative' }}>
+                          <div style={{ height: '100%', width: `${pct}%`, backgroundColor: barColors[category] || '#64748B', transition: 'width 0.5s ease' }} />
+                        </div>
                       </div>
-                      <div style={{ height: '14px', backgroundColor: '#F1F5F9', borderRadius: '4px', overflow: 'hidden', position: 'relative' }}>
-                        <div style={{ height: '100%', width: `${pct}%`, backgroundColor: barColors[category] || '#64748B', transition: 'width 0.5s ease' }} />
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </ChartCard>
+                    );
+                  })}
+                </div>
+              </ChartCard>
+            </div>
 
             {/* GRAFICO MERMAS SVG */}
-            <ChartCard id="mermas-chart-card">
-              <ChartTitle>
+            <div>
+              <SectionHeaderTitle style={{ marginBottom: '8px' }}>
                 <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                   <circle cx="12" cy="12" r="10"/>
                   <line x1="12" y1="8" x2="12" y2="12"/>
                   <line x1="12" y1="16" x2="12.01" y2="16"/>
                 </svg>
                 <span>Desperdicios por Material (Mermas en Proceso)</span>
-              </ChartTitle>
+              </SectionHeaderTitle>
+              <ChartCard id="mermas-chart-card" style={{ padding: '8px 12px', maxHeight: '200px' }}>
+                {/* Gráfico de Barras Verticales SVG Limpio y Premium */}
+                <div style={{ display: 'flex', justifyContent: 'space-around', alignItems: 'flex-end', height: '130px', padding: '12px 0 4px 0', borderBottom: '1px solid #E2E8F0', position: 'relative' }}>
+                  {Object.keys(activePlantMetrics.mermasByMaterial).map(material => {
+                    const val = activePlantMetrics.mermasByMaterial[material];
+                    const maxVal = Math.max(10, ...Object.values(activePlantMetrics.mermasByMaterial));
+                    const heightMins = Math.round((val / maxVal) * 85);
 
-              {/* Gráfico de Barras Verticales SVG Limpio y Premium */}
-              <div style={{ display: 'flex', justifyContent: 'space-around', alignItems: 'flex-end', height: '180px', padding: '16px 0 8px 0', borderBottom: '1px solid #E2E8F0', position: 'relative' }}>
-                {Object.keys(activePlantMetrics.mermasByMaterial).map(material => {
-                  const val = activePlantMetrics.mermasByMaterial[material];
-                  const maxVal = Math.max(10, ...Object.values(activePlantMetrics.mermasByMaterial));
-                  const heightMins = Math.round((val / maxVal) * 120);
+                    return (
+                      <div key={material} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px', zIndex: 10 }}>
+                        <strong style={{ fontSize: '9px', color: '#1E293B', fontWeight: 800 }}>{val}</strong>
+                        <div 
+                          style={{ 
+                            width: '24px', 
+                            height: `${heightMins}px`, 
+                            background: 'linear-gradient(to top, #2563EB, #60A5FA)', 
+                            borderRadius: '4px 4px 0 0',
+                            transition: 'height 0.5s ease',
+                            boxShadow: '0 2px 5px rgba(37,99,235,0.15)'
+                          }} 
+                        />
+                        <span style={{ fontSize: '9px', color: '#64748B', fontWeight: 700, textTransform: 'capitalize' }}>{material}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </ChartCard>
+            </div>
+          </div>
 
-                  return (
-                    <div key={material} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px', zIndex: 10 }}>
-                      <strong style={{ fontSize: '9px', color: '#1E293B', fontWeight: 800 }}>{val}</strong>
-                      <div 
-                        style={{ 
-                          width: '24px', 
-                          height: `${heightMins}px`, 
-                          background: 'linear-gradient(to top, #2563EB, #60A5FA)', 
-                          borderRadius: '4px 4px 0 0',
-                          transition: 'height 0.5s ease',
-                          boxShadow: '0 2px 5px rgba(37,99,235,0.15)'
-                        }} 
-                      />
-                      <span style={{ fontSize: '9px', color: '#64748B', fontWeight: 700, textTransform: 'capitalize' }}>{material}</span>
-                    </div>
-                  );
-                })}
+          {/* 📋 SECCIÓN: INFORMES DE PRODUCCIÓN Y EVENTOS DE SKU EN VIVO */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '20px', marginTop: '24px' }}>
+            
+            {/* COLUMNA A: Informes de Cierre de Turno de los Supervisores */}
+            <div>
+              <SectionHeaderTitle style={{ marginBottom: '10px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <span style={{ fontSize: '13px' }}>📋</span>
+                <span>Informes de Cierre de Turno Recibidos</span>
+              </SectionHeaderTitle>
+              
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', maxHeight: '420px', overflowY: 'auto', paddingRight: '4px' }}>
+                {productionReports.length === 0 ? (
+                  <div style={{
+                    textAlign: 'center',
+                    padding: '32px 20px',
+                    color: '#94A3B8',
+                    fontSize: '11px',
+                    backgroundColor: '#FFFFFF',
+                    border: '1px dashed #CBD5E1',
+                    borderRadius: '12px'
+                  }}>
+                    Aún no se han recibido informes de cierre de turno para este periodo.
+                  </div>
+                ) : (
+                  productionReports.map(rep => {
+                    const oeeState = rep.oee >= 85 ? "success" : rep.oee >= 70 ? "warning" : "danger";
+                    const oeeColors = {
+                      success: { bg: '#EFF6FF', text: '#1E40AF', border: '#BFDBFE' },
+                      warning: { bg: '#FFFBEB', text: '#92400E', border: '#FDE68A' },
+                      danger: { bg: '#FEF2F2', text: '#991B1B', border: '#FCA5A5' }
+                    };
+                    const badgeStyle = oeeColors[oeeState];
+
+                    return (
+                      <div key={rep.id} style={{
+                        backgroundColor: '#FFFFFF',
+                        border: '1px solid #E2E8F0',
+                        borderRadius: '12px',
+                        padding: '14px',
+                        boxShadow: '0 2px 4px rgba(0,0,0,0.02)',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '10px'
+                      }}>
+                        {/* Header: Línea y Hora */}
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            <span style={{
+                              padding: '2px 8px',
+                              backgroundColor: '#EFF6FF',
+                              border: '1px solid #BFDBFE',
+                              borderRadius: '6px',
+                              fontSize: '10.5px',
+                              fontWeight: 800,
+                              color: '#1D4ED8'
+                            }}>
+                              Línea {rep.lineId}
+                            </span>
+                            <span style={{ fontSize: '11px', color: '#64748B', fontWeight: 600 }}>
+                              Sup: <strong>{rep.supervisor}</strong>
+                            </span>
+                          </div>
+                          
+                          <span style={{
+                            padding: '3px 8px',
+                            backgroundColor: badgeStyle.bg,
+                            border: `1px solid ${badgeStyle.border}`,
+                            color: badgeStyle.text,
+                            borderRadius: '20px',
+                            fontSize: '10.5px',
+                            fontWeight: 800
+                          }}>
+                            OEE: {rep.oee}%
+                          </span>
+                        </div>
+
+                        {/* Contenido: SKU y Detalle */}
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '3px', borderTop: '1px solid #F1F5F9', paddingTop: '8px' }}>
+                          <span style={{ fontSize: '10px', color: '#94A3B8', fontWeight: 800, textTransform: 'uppercase' }}>SKU Producido</span>
+                          <span style={{ fontSize: '12px', fontWeight: 700, color: '#334155' }}>{rep.sku}</span>
+                        </div>
+
+                        {/* Grid de KPIs */}
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '8px', backgroundColor: '#F8FAFC', padding: '8px 10px', borderRadius: '8px', border: '1px solid #E2E8F0' }}>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', textAlign: 'center' }}>
+                            <span style={{ fontSize: '8px', color: '#64748B', fontWeight: 800 }}>DISPO.</span>
+                            <span style={{ fontSize: '11px', fontWeight: 800, color: '#1E293B' }}>{rep.availability || 0}%</span>
+                          </div>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', textAlign: 'center', borderLeft: '1px solid #E2E8F0', borderRight: '1px solid #E2E8F0' }}>
+                            <span style={{ fontSize: '8px', color: '#64748B', fontWeight: 800 }}>RENDI.</span>
+                            <span style={{ fontSize: '11px', fontWeight: 800, color: '#1E293B' }}>{rep.performance || 0}%</span>
+                          </div>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', textAlign: 'center' }}>
+                            <span style={{ fontSize: '8px', color: '#64748B', fontWeight: 800 }}>CALIDAD</span>
+                            <span style={{ fontSize: '11px', fontWeight: 800, color: '#1E293B' }}>{rep.quality || 0}%</span>
+                          </div>
+                        </div>
+
+                        {/* Paros y Mermas */}
+                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '10px', color: '#475569', fontWeight: 600 }}>
+                          <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                            <span style={{ color: '#EF4444' }}>⚠</span> Paros: <strong>{rep.totalParoMinutes} min</strong>
+                          </span>
+                          <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                            <span style={{ color: '#F59E0B' }}>🗑</span> Mermas: <strong>{rep.totalMermas} pzs</strong>
+                          </span>
+                        </div>
+
+                        {/* Footer: timestamp */}
+                        <div style={{ display: 'flex', justifyContent: 'flex-end', fontSize: '8.5px', color: '#94A3B8', borderTop: '1px solid #F1F5F9', paddingTop: '6px', fontWeight: 500 }}>
+                          Cerrado el: {new Date(rep.closedAt).toLocaleString('es-ES', { hour: '2-digit', minute: '2-digit', second: '2-digit', day: '2-digit', month: '2-digit' })}
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
               </div>
-            </ChartCard>
+            </div>
+
+            {/* COLUMNA B: Registro de SKU Finalizados y Limpiezas */}
+            <div>
+              <SectionHeaderTitle style={{ marginBottom: '10px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <span style={{ fontSize: '13px' }}>🔄</span>
+                <span>Registro de SKUs Finalizados y Setup</span>
+              </SectionHeaderTitle>
+
+              <div style={{
+                backgroundColor: '#FFFFFF',
+                border: '1px solid #E2E8F0',
+                borderRadius: '12px',
+                padding: '16px',
+                boxShadow: '0 2px 4px rgba(0,0,0,0.02)',
+                maxHeight: '420px',
+                overflowY: 'auto'
+              }}>
+                {skuEvents.length === 0 ? (
+                  <div style={{
+                    textAlign: 'center',
+                    padding: '32px 20px',
+                    color: '#94A3B8',
+                    fontSize: '11px',
+                    border: '1px dashed #CBD5E1',
+                    borderRadius: '8px'
+                  }}>
+                    No se han registrado eventos de cambio de orden en este turno.
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', position: 'relative', paddingLeft: '12px', borderLeft: '2px solid #E2E8F0' }}>
+                    {skuEvents.map(evt => (
+                      <div key={evt.id} style={{ position: 'relative', textAlign: 'left' }}>
+                        {/* Indicador de nodo */}
+                        <div style={{
+                          position: 'absolute',
+                          left: '-18px',
+                          top: '2px',
+                          width: '10px',
+                          height: '10px',
+                          borderRadius: '50%',
+                          backgroundColor: '#F59E0B',
+                          border: '2px solid #FFFFFF',
+                          boxShadow: '0 0 0 2px #FDE68A'
+                        }} />
+                        
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+                            <strong style={{ fontSize: '11.5px', color: '#1E293B' }}>
+                              Orden Terminada en Línea {evt.lineId}
+                            </strong>
+                            <span style={{ fontSize: '9px', color: '#94A3B8', fontWeight: 600 }}>
+                              {new Date(evt.timestamp).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })}
+                            </span>
+                          </div>
+                          <span style={{ fontSize: '11px', color: '#475569', fontWeight: 500 }}>
+                            El SKU <strong style={{ color: '#D97706', fontFamily: 'monospace' }}>{evt.sku}</strong> finalizó su producción y la línea inició fase de Limpieza y Setup.
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+            
           </div>
 
 
@@ -3284,34 +3937,22 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
       {currentTab === 'SUGERENCIAS' && (
         <TabContentContainer id="tab-coordinador-sugerencias">
           <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-            {/* Cabecera */}
-            <div>
-              <h2 style={{ fontSize: '13px', fontWeight: 800, color: '#1E293B', marginBottom: '2px' }}>
-                Notificaciones y Recomendaciones Inteligentes de Planta
-              </h2>
-              <span style={{ fontSize: '10px', color: '#64748B', fontWeight: 700 }}>
-                El motor analiza déficits, prioridades de planta y capacidades del personal disponible en tiempo real.
-              </span>
-            </div>
-
             <SuggestionsGrid>
               {/* PANEL DE SUGERENCIAS DE CAMBIO Y ROTACIÓN POR DÉFICIT */}
-              <BentoCard id="coordinador-deficit-sugerencias">
-                <CardTitle>
-                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#2563EB" strokeWidth="2.5">
+              <div id="coordinador-deficit-sugerencias">
+                <SectionHeaderTitle>
+                  <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                     <path d="M16 3h5v5M8 21H3v-5M12 12l9-9M12 12l-9 9"/>
                   </svg>
                   <span>Sugerencias de Cobertura por Déficits Activos</span>
-                </CardTitle>
-                <p style={{ fontSize: '11px', color: '#64748B', marginBottom: '14px', lineHeight: 1.4 }}>
-                  Los siguientes puestos están habilitados por SKU pero se encuentran vacantes. El Matchmaker recomienda el mejor recurso disponible de inmediato:
-                </p>
+                </SectionHeaderTitle>
 
                 {deficitSuggestions.filter(s => s.worker != null).length > 0 && (
                   <ApplyAllButton
                     onClick={handleApplyAllSuggestions}
                     disabled={applyingAll}
                     id="apply-all-suggestions-btn"
+                    style={{ marginBottom: '10px' }}
                   >
                     <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
                       <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
@@ -3325,105 +3966,56 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
                   </ApplyAllButton>
                 )}
 
-                <SuggestionsList>
-                  {deficitSuggestions.length === 0 ? (
-                    <div style={{ padding: '32px 16px', color: '#94A3B8', fontSize: '11px', textAlign: 'center', border: '1px dashed #E2E8F0', borderRadius: '8px', width: '100%' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px', justifyContent: 'center' }}>
-                        <div style={{ width: '6px', height: '6px', borderRadius: '50%', backgroundColor: '#10B981' }} />
-                        <span>No hay déficits activos en la planta. Todas las celdas requeridas por SKU están cubiertas.</span>
-                      </div>
-                    </div>
-                  ) : (
-                    deficitSuggestions.map(sug => {
+                {deficitSuggestions.length === 0 ? (
+                  <EmptyStateCard id="no-deficit-suggestions">
+                    <div style={{ width: '6px', height: '6px', borderRadius: '50%', backgroundColor: '#10B981' }} />
+                    <span>Todas las celdas requeridas por SKU están cubiertas.</span>
+                  </EmptyStateCard>
+                ) : (
+                  <SuggestionsListContainer>
+                    {deficitSuggestions.map(sug => {
                       const isVacantOnly = sug.type === "NINGUNO";
                       const isPool = sug.type === "POOL";
                       const isBolson = sug.type === "BOLSON";
                       const isRotation = sug.type === "ROTACION";
 
                       return (
-                        <SuggestionItem 
-                          key={sug.id}
-                          critical={isVacantOnly}
-                        >
-                          {/* Top row */}
-                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-                              <span style={{ fontSize: '10px', fontWeight: 700, color: '#2563EB', textTransform: 'uppercase' }}>
-                                Línea {sug.slot.lineId}
-                              </span>
-                              <strong style={{ fontSize: '12px', color: '#1E293B' }}>{sug.slot.puestoName}</strong>
-                            </div>
-                            <span style={{ 
-                              fontSize: '9px', 
-                              fontWeight: 700, 
-                              color: isVacantOnly ? '#EF4444' : '#64748B',
-                              backgroundColor: isVacantOnly ? '#FFF1F2' : '#F1F5F9',
-                              border: isVacantOnly ? '1px solid #FECDD3' : '1px solid #E2E8F0',
-                              padding: '3px 8px',
-                              borderRadius: '6px'
-                            }}>
-                              {isVacantOnly ? "PUESTO CRÍTICO VACANTE" : `Requerido: ${sug.slot.tipoPuesto}`}
+                        <SuggestionListItem key={sug.id}>
+                          {/* Izquierda: Línea y puesto */}
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', minWidth: '110px' }}>
+                            <span style={{ fontSize: '9px', fontWeight: 800, color: '#2563EB', textTransform: 'uppercase' }}>
+                              Línea {sug.slot.lineId}
                             </span>
+                            <strong style={{ fontSize: '12px', color: '#1E293B', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '140px' }} title={sug.slot.puestoName}>
+                              {sug.slot.puestoName}
+                            </strong>
                           </div>
 
-                          {/* Recommendation Card */}
-                          <div style={{ 
-                            backgroundColor: isVacantOnly ? '#FFF1F2' : '#F8FAFC',
-                            border: isVacantOnly ? '1px solid #FECDD3' : '1px solid #E2E8F0',
-                            borderRadius: '8px',
-                            padding: '10px 12px',
-                            display: 'flex',
-                            justifyContent: 'space-between',
-                            alignItems: 'center',
-                            flexWrap: 'wrap',
-                            gap: '10px'
-                          }}>
-                            {/* Worker Info */}
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                              <span style={{ fontSize: '9px', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                                {isVacantOnly ? (
-                                  <div style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', color: '#EF4444' }}>
-                                    <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                                      <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
-                                    </svg>
-                                    <span>ESTADO</span>
-                                  </div>
-                                ) : isRotation ? (
-                                  <div style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', color: '#D97706' }}>
-                                    <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                                      <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/>
-                                    </svg>
-                                    <span>SUGERENCIA DE ROTACIÓN</span>
-                                  </div>
-                                ) : (
-                                  <div style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', color: '#2563EB' }}>
-                                    <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                                      <path d="M12 5v14M19 12l-7 7-7-7"/>
-                                    </svg>
-                                    <span>SUGERENCIA DE INYECCIÓN</span>
-                                  </div>
-                                )}
-                              </span>
-                              {sug.worker ? (
-                                <div>
-                                  <strong style={{ fontSize: '11px', color: '#0F172A' }}>{sug.worker.name}</strong>
-                                  <span style={{ fontSize: '9px', color: '#64748B', fontFamily: 'monospace' }}> (Ficha: {sug.worker.id})</span>
-                                  <div style={{ fontSize: '9px', color: '#475569', fontWeight: 600, marginTop: '2px' }}>
-                                    {isRotation 
-                                      ? `Extraer de Línea ${sug.originalLineId} (menor prioridad)`
-                                      : isPool 
-                                        ? `Disponible en Pool de Entrada (Sala de espera)`
-                                        : `Disponible en Línea 8 (Bolsón central)`}
-                                  </div>
+                          {/* Centro: Operario sugerido */}
+                          <div style={{ display: 'flex', flex: 1, flexDirection: 'column', gap: '2px', paddingLeft: '8px', minWidth: 0, overflow: 'hidden' }}>
+                            {sug.worker ? (
+                              <>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', minWidth: 0, overflow: 'hidden', width: '100%' }}>
+                                  <strong style={{ fontSize: '11px', color: '#0F172A', fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', flexShrink: 1 }} title={sug.worker.name}>{sug.worker.name}</strong>
+                                  <span style={{ fontSize: '9px', color: '#64748B', fontFamily: 'monospace', flexShrink: 0 }}>({sug.worker.id})</span>
                                 </div>
-                              ) : (
-                                <span style={{ fontSize: '10px', color: '#94A3B8', fontWeight: 600 }}>
-                                  No hay candidatos aptos en planta con el perfil médico/técnico requerido.
-                                </span>
-                              )}
-                            </div>
+                                <div style={{ fontSize: '9px', color: isRotation ? '#D97706' : '#2563EB', fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                  {isRotation 
+                                    ? `Rotar desde Línea ${sug.originalLineId}`
+                                    : isPool 
+                                      ? `Pool de Entrada`
+                                      : `Bolsón L8`}
+                                </div>
+                              </>
+                            ) : (
+                              <span style={{ fontSize: '10px', color: '#94A3B8', fontWeight: 500 }}>
+                                Sin candidatos aptos en planta
+                              </span>
+                            )}
+                          </div>
 
-                            {/* Action Button */}
+                          {/* Derecha: Botón de acción */}
+                          <div style={{ flexShrink: 0 }}>
                             {sug.worker && (
                               <SuggestionActionButton
                                 onClick={() => handleApplyRotation(
@@ -3435,55 +4027,47 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
                                 )}
                                 disabled={applyingRotationId === sug.slot.id}
                                 type={isRotation ? "rotation" : "injection"}
+                                style={{ padding: '6px 12px', borderRadius: '6px', fontSize: '10px', height: '28px' }}
                               >
                                 {applyingRotationId === sug.slot.id ? (
-                                  <span>Aplicando...</span>
+                                  <span>...</span>
                                 ) : (
-                                  <>
-                                    <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
-                                      <polyline points="20 6 9 17 4 12"/>
-                                    </svg>
-                                    <span>{isRotation ? "Rotar Operario" : "Asignar Operario"}</span>
-                                  </>
+                                  <span>{isRotation ? "Rotar" : "Asignar"}</span>
                                 )}
                               </SuggestionActionButton>
                             )}
                           </div>
-                        </SuggestionItem>
+                        </SuggestionListItem>
                       );
-                    })
-                  )}
-                </SuggestionsList>
-              </BentoCard>
+                    })}
+                  </SuggestionsListContainer>
+                )}
+              </div>
 
               {/* COLUMNA DERECHA: ALERTAS DE FATIGA Y BITÁCORA / RESUMEN PLAN */}
               <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
                 {viewDay === 'TODAY' ? (
                   <>
                     {/* ALERTAS DE FATIGA */}
-                    <BentoCard>
-                      <CardTitle>
-                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#EF4444" strokeWidth="2.5">
+                    <div id="coordinador-fatiga-sugerencias">
+                      <SectionHeaderTitle>
+                        <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#EF4444" strokeWidth="2.5">
                           <circle cx="12" cy="12" r="10"/>
                           <polyline points="12 6 12 12 16 14"/>
                         </svg>
                         <span>Alertas de Fatiga Ergonómica Activas</span>
-                      </CardTitle>
-                      <p style={{ fontSize: '11px', color: '#64748B', marginBottom: '14px' }}>
-                        Trabajadores que han superado el umbral nominal de 105 minutos continuos y requieren rotación:
-                      </p>
+                      </SectionHeaderTitle>
 
-                      <FatigueAlertsList>
-                        {plantAlerts.filter(a => a.type === "fatigue").length === 0 ? (
-                          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '6px', padding: '20px 12px', color: '#64748B', fontSize: '10.5px', textAlign: 'center', border: '1px dashed #E2E8F0', borderRadius: '8px', backgroundColor: '#F8FAFC' }}>
-                            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#10B981" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" style={{ marginBottom: '2px' }}>
-                              <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
-                              <polyline points="22 4 12 14.01 9 11.01"/>
-                            </svg>
-                            <span>Todos los trabajadores se encuentran dentro del límite ergonómico de 105 minutos continuos.</span>
-                          </div>
-                        ) : (
-                          plantAlerts.filter(a => a.type === "fatigue").map(a => (
+                      {plantAlerts.filter(a => a.type === "fatigue").length === 0 ? (
+                        <EmptyStateCard id="no-fatigue-alerts">
+                          <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#10B981" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                            <polyline points="20 6 9 17 4 12"/>
+                          </svg>
+                          <span>Todos los trabajadores dentro del límite ergonómico.</span>
+                        </EmptyStateCard>
+                      ) : (
+                        <FatigueAlertsList>
+                          {plantAlerts.filter(a => a.type === "fatigue").map(a => (
                             <div 
                               key={a.id}
                               style={{
@@ -3506,26 +4090,29 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
                                 <span style={{ fontSize: '9px', color: '#7F1D1D', marginTop: '2px' }}>{a.subtext}</span>
                               </div>
                             </div>
-                          ))
-                        )}
-                      </FatigueAlertsList>
-                    </BentoCard>
+                          ))}
+                        </FatigueAlertsList>
+                      )}
+                    </div>
 
                     {/* BITÁCORA Y ALERTAS GLOBALES */}
-                    <BentoCard>
-                      <CardTitle>
-                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#2563EB" strokeWidth="2.5">
+                    <div id="coordinador-bitacora-sugerencias">
+                      <SectionHeaderTitle>
+                        <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#2563EB" strokeWidth="2.5">
                           <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9M13.73 21a2 2 0 0 1-3.46 0"/>
                         </svg>
                         <span>Bitácora de Relevos y Alertas Globales</span>
-                      </CardTitle>
+                      </SectionHeaderTitle>
 
-                      <AlertasContainer id="plant-alerts-log">
-                        {plantAlerts.length === 0 ? (
-                          <div style={{ padding: '32px 16px', color: '#94A3B8', fontSize: '11px', textAlign: 'center', border: '1px dashed #E2E8F0', borderRadius: '8px' }}>
-                            Sin incidentes en planta. Todas las líneas activas operan de forma normal.
-                          </div>
-                        ) : (
+                      {plantAlerts.length === 0 ? (
+                        <EmptyStateCard id="no-global-alerts">
+                          <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#10B981" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                            <polyline points="20 6 9 17 4 12"/>
+                          </svg>
+                          <span>Sin incidentes en planta. Todas las líneas operan normal.</span>
+                        </EmptyStateCard>
+                      ) : (
+                        <AlertasContainer id="plant-alerts-log">
                           <TimelineContainer>
                             {plantAlerts.map(alert => {
                               const isFatigue = alert.type === "fatigue";
@@ -3545,33 +4132,33 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
                               );
                             })}
                           </TimelineContainer>
-                        )}
-                      </AlertasContainer>
-                    </BentoCard>
+                        </AlertasContainer>
+                      )}
+                    </div>
                   </>
                 ) : (
                   /* DÍA SIGUIENTE: SOLO RESUMEN DEL PLAN DE MAÑANA (SIN DUPLICADO DE SHEETS) */
-                  <BentoCard>
-                    <CardTitle>
-                      <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#2563EB" strokeWidth="2.5">
+                  <div id="coordinador-next-day-resumen">
+                    <SectionHeaderTitle>
+                      <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#2563EB" strokeWidth="2.5">
                         <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
                         <line x1="16" y1="2" x2="16" y2="6"/>
                         <line x1="8" y1="2" x2="8" y2="6"/>
                         <line x1="3" y1="10" x2="21" y2="10"/>
                       </svg>
                       <span>Resumen del Plan (Día Siguiente)</span>
-                    </CardTitle>
-                    <p style={{ fontSize: '11px', color: '#64748B', marginBottom: '14px', lineHeight: 1.4 }}>
-                      Estadísticas proyectadas de dotación para mañana calculadas atómicamente por el motor preventivo:
-                    </p>
+                    </SectionHeaderTitle>
 
                     {(() => {
                       const nextPlan = configDocs["next_day_plan"];
                       if (!nextPlan) {
                         return (
-                          <div style={{ padding: '24px 12px', color: '#94A3B8', fontSize: '10px', textAlign: 'center', border: '1px dashed #E2E8F0', borderRadius: '8px' }}>
-                            Genera la planificación en el Mapa para visualizar las estadísticas.
-                          </div>
+                          <EmptyStateCard id="no-next-day-plan">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#64748B" strokeWidth="2.5">
+                              <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+                            </svg>
+                            <span>Genera la planificación en el Mapa para ver estadísticas.</span>
+                          </EmptyStateCard>
                         );
                       }
                       const totalDeficits = nextPlan.deficits ? Object.values(nextPlan.deficits).reduce((a, b) => a + b, 0) : 0;
@@ -3579,7 +4166,7 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
                       const activeLinesCount = Object.keys(activeSku).filter(l => activeSku[l] !== "INACTIVO").length;
 
                       return (
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', backgroundColor: '#FFFFFF', border: '1px solid #E2E8F0', borderRadius: '12px', padding: '14px' }}>
                           <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', borderBottom: '1px solid #F1F5F9', paddingBottom: '6px' }}>
                             <span style={{ color: '#64748B', fontWeight: 600 }}>Líneas Programadas:</span>
                             <strong style={{ color: '#1E293B' }}>{activeLinesCount} activas</strong>
@@ -3597,7 +4184,7 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
                         </div>
                       );
                     })()}
-                  </BentoCard>
+                  </div>
                 )}
               </div>
             </SuggestionsGrid>
@@ -3606,43 +4193,41 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
       )}
 
       {currentTab === 'CONTROL' && (() => {
-        const supervisorsList = [
-          { id: 1, name: "Carlos M.", initial: "CM", line: "Línea 1", color: "#DBEAFE" },
-          { id: 2, name: "Elena R.", initial: "ER", line: "Línea 2", color: "#D1FAE5" },
-          { id: 3, name: "Marcos P.", initial: "MP", line: "Línea 3", color: "#F3E8FF" },
-          { id: 4, name: "Julia G.", initial: "JG", line: "Línea 4", color: "#FEE2E2" },
-          { id: 5, name: "Tomás H.", initial: "TH", line: "Línea 5", color: "#FEF9C3" }
-        ];
+        const lineColors = { L1: "#DBEAFE", L2: "#D1FAE5", L3: "#F3E8FF", L4: "#FEE2E2", L5: "#FEF9C3", L6: "#E0E7FF", L7: "#FCE7F3" };
+        const supervisorsList = REAL_SUPERVISORS.map(sup => {
+          const assignedEntry = Object.entries(supervisors).find(([, val]) => val?.workerId === sup.id);
+          const lineId = assignedEntry ? assignedEntry[0] : null;
+          const initials = sup.shortName.split(' ').map(w => w[0]).join('').toUpperCase();
+          return {
+            id: sup.id,
+            name: sup.shortName,
+            initial: initials,
+            line: lineId ? `Línea ${lineId}` : "Sin Asignar",
+            color: lineId ? (lineColors[lineId] || "#F1F5F9") : "#F1F5F9",
+            isAssigned: !!lineId
+          };
+        });
 
         return (
           <TabContentContainer id="tab-coordinador-control">
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '20px' }}>
               {/* CONTROL DE ARRANQUE — Solo visible en vista HOY */}
               {viewDay === 'TODAY' ? (
-                <BentoCard id="master-start-card" style={{
-                  border: shiftActive ? '1px solid rgba(16, 185, 129, 0.18)' : '1px solid $border',
-                  backgroundImage: shiftActive ? 'linear-gradient(to bottom, rgba(16, 185, 129, 0.01), #FFFFFF)' : 'none'
-                }}>
-                  <CardTitle style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
+                <div id="master-start-card">
+                  <SectionHeaderTitle style={{ justifyContent: 'space-between', width: '100%', marginBottom: '8px' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                      <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#2563EB" strokeWidth="2.5">
+                      <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                         <polygon points="5 3 19 12 5 21 5 3"/>
                       </svg>
                       <span>Control Maestro del Turno</span>
                     </div>
                     {shiftActive && (
-                      <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', backgroundColor: '#DCFCE7', padding: '4px 10px', borderRadius: '20px', fontSize: '9px', fontWeight: 700, color: '#16A34A', border: '1px solid #BBF7D0' }}>
+                      <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', backgroundColor: '#DCFCE7', padding: '4px 10px', borderRadius: '20px', fontSize: '9px', fontWeight: 700, color: '#16A34A', border: '1px solid #BBF7D0', textTransform: 'none', letterSpacing: 'normal', height: '18px' }}>
                         <LiveIndicator />
                         <span>LIVE</span>
                       </div>
                     )}
-                  </CardTitle>
-                  
-                  <p style={{ fontSize: '11px', color: '#64748B', lineHeight: 1.4, margin: 0 }}>
-                    {shiftActive 
-                      ? "La jornada se encuentra activa y en marcha. Todos los operarios críticos titulares fijos han sido inyectados a sus posiciones de manera atómica."
-                      : "Al iniciar el turno, se inyectarán de forma atómica y consistente todos los operarios titulares fijos a sus celdas operativas en base al plan de SKU programado."}
-                  </p>
+                  </SectionHeaderTitle>
 
                   {!shiftActive && (
                     <div style={{
@@ -3655,8 +4240,7 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
                       fontWeight: 600,
                       display: 'flex',
                       alignItems: 'center',
-                      gap: '6px',
-                      marginTop: '8px'
+                      gap: '6px'
                     }}>
                       <span>⚠️</span>
                       <span>Arranque de turno pendiente desde piso por los supervisores.</span>
@@ -3664,7 +4248,7 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
                   )}
 
                   {shiftActive && (
-                    <ActiveShiftDashboard>
+                    <ActiveShiftDashboard style={{ marginTop: '0px' }}>
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
                         <span style={{ fontSize: '8px', fontWeight: 700, color: '#64748B', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Estado Planta</span>
                         <strong style={{ fontSize: '11px', color: '#16A34A', display: 'flex', alignItems: 'center', gap: '4px' }}>
@@ -3689,28 +4273,26 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
                       </div>
                     </ActiveShiftDashboard>
                   )}
-                </BentoCard>
+                </div>
               ) : (
-                <BentoCard id="master-start-card-disabled" style={{
-                  border: '1px solid #E2E8F0',
-                  backgroundImage: 'linear-gradient(135deg, #F8FAFC 0%, #F1F5F9 100%)'
-                }}>
-                  <CardTitle>
-                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#94A3B8" strokeWidth="2.5">
+                <div id="master-start-card-disabled">
+                  <SectionHeaderTitle>
+                    <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                       <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
                       <line x1="16" y1="2" x2="16" y2="6"/>
                       <line x1="8" y1="2" x2="8" y2="6"/>
                       <line x1="3" y1="10" x2="21" y2="10"/>
                     </svg>
                     <span>Control de Turno (No Disponible)</span>
-                  </CardTitle>
+                  </SectionHeaderTitle>
                   <div style={{ 
                     padding: '20px 14px', 
                     color: '#94A3B8', 
                     fontSize: '11px', 
                     textAlign: 'center', 
-                    border: '1px dashed #E2E8F0', 
-                    borderRadius: '8px', 
+                    border: '1px solid #E2E8F0', 
+                    backgroundColor: '#F8FAFC',
+                    borderRadius: '12px', 
                     lineHeight: 1.5,
                     display: 'flex',
                     flexDirection: 'column',
@@ -3721,50 +4303,39 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
                       <circle cx="12" cy="12" r="10"/>
                       <line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/>
                     </svg>
-                    <span>El control de arranque de turno solo esta disponible en la vista <strong style={{ color: '#64748B' }}>Hoy (En Vivo)</strong>. Cambia al selector de linea temporal para gestionar el turno actual.</span>
+                    <span>El control de arranque de turno solo está disponible en la vista <strong style={{ color: '#64748B' }}>Hoy (En Vivo)</strong>. Cambia al selector de línea temporal para gestionar el turno actual.</span>
                   </div>
-                </BentoCard>
+                </div>
               )}
 
               {/* LISTA RÁPIDA DE ASIGNACIÓN DE SUPERVISORES */}
-              <BentoCard style={{ height: 'fit-content' }}>
-                <CardTitle>
-                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#2563EB" strokeWidth="2.5">
+              <div style={{ height: 'fit-content' }}>
+                <SectionHeaderTitle>
+                  <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                     <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2M9 7a4 4 0 1 0 0-8 4 4 0 0 0 0 8z"/>
                   </svg>
                   <span>Asignar Supervisores a Líneas</span>
-                </CardTitle>
-                <p style={{ fontSize: '11px', color: '#64748B', margin: 0, lineHeight: 1.4 }}>
-                  Supervisores en planta. Para reasignar sus líneas encargadas, pulsa sobre cualquier celda en la pestaña del **Mapa**.
-                </p>
+                </SectionHeaderTitle>
                 
-                <SupervisorHorizontalList>
+                <SupervisorVerticalList>
                   {supervisorsList.map(sup => (
-                    <SupervisorAvatarCard key={sup.id}>
-                      <SupervisorAvatar style={{ backgroundColor: sup.color }}>
+                    <SupervisorListItem key={sup.id}>
+                      {/* Izquierda: Iniciales en texto plano en $sizeMeta y color $textSecondary */}
+                      <span style={{ fontSize: '11px', color: '#475569', width: '24px', flexShrink: 0, fontWeight: 600 }}>
                         {sup.initial}
-                        <div style={{ 
-                          position: 'absolute', 
-                          bottom: '-2px', 
-                          right: '-2px', 
-                          backgroundColor: '#1E293B', 
-                          color: '#FFFFFF', 
-                          fontSize: '8px', 
-                          fontWeight: 800, 
-                          padding: '2px 5px', 
-                          borderRadius: '10px',
-                          border: '1.5px solid #FFFFFF'
-                        }}>
-                          {sup.line.replace("Línea ", "")}
-                        </div>
-                      </SupervisorAvatar>
-                      <span style={{ fontSize: '9px', fontWeight: 700, color: '#1E293B', textAlign: 'center', width: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      </span>
+                      {/* Centro: Nombre completo, fontSize $sizeBody, fontWeight $weightSemibold */}
+                      <span style={{ flexGrow: 1, fontSize: '14px', fontWeight: 600, color: '#0F172A' }}>
                         {sup.name}
                       </span>
-                    </SupervisorAvatarCard>
+                      {/* Derecha: Línea asignada como chip compacto */}
+                      <SupervisorLineChip>
+                        {sup.line}
+                      </SupervisorLineChip>
+                    </SupervisorListItem>
                   ))}
-                </SupervisorHorizontalList>
-              </BentoCard>
+                </SupervisorVerticalList>
+              </div>
             </div>
           </TabContentContainer>
         );
@@ -3772,26 +4343,17 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
 
       {currentTab === 'AUSENTES' && (
         <TabContentContainer id="tab-coordinador-ausentes">
-          <div style={{ marginBottom: '14px' }}>
-            <h2 style={{ fontSize: '13px', fontWeight: 800, color: '#1E293B', marginBottom: '4px' }}>
-              Gestión de Personal Ausente e Incidencias Oficiales
-            </h2>
-            <p style={{ fontSize: '11px', color: '#64748B' }}>
-              Auditoría del Filtro de Asistencia Real del checador. Tipifica incidencias oficiales para excluir operarios ausentes del motor de asignación.
-            </p>
-          </div>
+
 
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '20px' }}>
             {/* PANEL DE CONTROL DE AUSENCIAS */}
-            <BentoCard>
-              <CardTitle>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                  <span style={{ fontSize: '14px' }}>📋</span>
-                  <span>Listado de Personal Ausente y Bajas de Turno</span>
-                </div>
-              </CardTitle>
+            <div>
+              <SectionHeaderTitle>
+                <span style={{ fontSize: '14px' }}>📋</span>
+                <span>Listado de Personal Ausente y Bajas de Turno</span>
+              </SectionHeaderTitle>
               
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginTop: '10px', maxHeight: '450px', overflowY: 'auto', paddingRight: '4px' }}>
+              <AbsentListContainer style={{ maxHeight: '450px', overflowY: 'auto', paddingRight: '4px' }}>
                 {(() => {
                   const absentWorkers = Object.values(workers).filter(w => 
                     ["VACACIONES", "PERMISOS", "CONSULTAS_MEDICAS", "SUBSIDIOS", "ACCIDENTE_LABORAL", "INACTIVO"].includes(w.status?.toUpperCase())
@@ -3799,25 +4361,39 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
 
                   if (absentWorkers.length === 0) {
                     return (
-                      <div style={{ padding: '30px 12px', color: '#94A3B8', fontSize: '11px', textAlign: 'center', border: '1px dashed #E2E8F0', borderRadius: '8px' }}>
+                      <div style={{ padding: '30px 12px', color: '#94A3B8', fontSize: '11px', textAlign: 'center', border: '1px dashed #E2E8F0', borderRadius: '8px', margin: '12px' }}>
                         ¡Todo el personal se encuentra presente o asignado en planta!
                       </div>
                     );
                   }
 
+                  const getInitials = (name) => {
+                    if (!name) return "";
+                    const parts = name.trim().split(/\s+/);
+                    if (parts.length === 1) return parts[0].substring(0, 2).toUpperCase();
+                    return (parts[0][0] + (parts[1]?.[0] || "")).toUpperCase();
+                  };
+
+                  const getBadgeStyles = (status) => {
+                    const s = status?.toUpperCase();
+                    if (s === "VACACIONES") {
+                      return { bg: 'var(--colors-warningBg)', color: 'var(--colors-warningBorder)' };
+                    }
+                    if (s === "PERMISOS") {
+                      return { bg: 'var(--colors-infoBg)', color: 'var(--colors-infoBorder)' };
+                    }
+                    if (s === "CONSULTAS_MEDICAS") {
+                      return { bg: 'var(--colors-transitBg)', color: 'var(--colors-transitBorder)' };
+                    }
+                    if (s === "SUBSIDIOS" || s === "ACCIDENTE_LABORAL") {
+                      return { bg: 'var(--colors-dangerBg)', color: 'var(--colors-dangerBorder)' };
+                    }
+                    return { bg: 'var(--colors-border)', color: 'var(--colors-textSecondary)' };
+                  };
+
                   return absentWorkers.map(w => {
                     const statusUpper = w.status?.toUpperCase() || "INACTIVO";
-                    
-                    const badgeColors = {
-                      VACACIONES: { bg: '#FEF3C7', color: '#D97706', label: 'Vacaciones' },
-                      PERMISOS: { bg: '#E0F2FE', color: '#0369A1', label: 'Permiso' },
-                      CONSULTAS_MEDICAS: { bg: '#F3E8FF', color: '#7E22CE', label: 'Consulta Médica' },
-                      SUBSIDIOS: { bg: '#FEE2E2', color: '#B91C1C', label: 'Subsidio' },
-                      ACCIDENTE_LABORAL: { bg: '#FFEDD5', color: '#C2410C', label: 'Accidente Laboral' },
-                      INACTIVO: { bg: '#F1F5F9', color: '#475569', label: 'Inasistente' }
-                    };
-
-                    const badge = badgeColors[statusUpper] || badgeColors.INACTIVO;
+                    const badge = getBadgeStyles(statusUpper);
 
                     // Derivar sexo
                     const wSex = w.sexo || (
@@ -3827,16 +4403,18 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
                     );
 
                     return (
-                      <div key={w.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 12px', backgroundColor: '#FFFFFF', border: '1px solid #E2E8F0', borderRadius: '8px', gap: '10px' }}>
-                        <div style={{ flex: 1, minWidth: 0 }}>
-                          <strong style={{ fontSize: '11.5px', color: '#1E293B', display: 'block', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>
+                      <AbsentListItem key={w.id}>
+                        <AbsentAvatar style={{ backgroundColor: badge.bg, color: badge.color }}>
+                          {getInitials(w.name)}
+                        </AbsentAvatar>
+
+                        <div style={{ flex: 1, minWidth: 0, paddingLeft: '8px' }}>
+                          <strong style={{ fontSize: '12px', color: 'var(--colors-textPrimary)', display: 'block', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>
                             {w.name}
                           </strong>
-                          <div style={{ display: 'flex', gap: '6px', marginTop: '2px', alignItems: 'center' }}>
-                            <span style={{ fontSize: '9px', fontWeight: 700, color: '#64748B' }}>{w.role}</span>
-                            <span style={{ fontSize: '9px', color: '#94A3B8' }}>•</span>
-                            <span style={{ fontSize: '9px', color: '#64748B' }}>{wSex}</span>
-                          </div>
+                          <span style={{ fontSize: '10px', color: 'var(--colors-textSecondary)', display: 'block', marginTop: '1px' }}>
+                            {w.role} • {wSex}
+                          </span>
                         </div>
 
                         {/* Dropdown de Tipificación en Vivo */}
@@ -3856,15 +4434,22 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
                               }
                             }}
                             style={{
-                              padding: '4px 6px',
-                              borderRadius: '6px',
-                              border: '1px solid #CBD5E1',
-                              fontSize: '10px',
+                              padding: '3px 18px 3px 8px',
+                              borderRadius: '16px',
+                              border: 'none',
+                              fontSize: '9.5px',
                               fontWeight: 700,
                               color: badge.color,
                               backgroundColor: badge.bg,
                               outline: 'none',
-                              cursor: 'pointer'
+                              cursor: 'pointer',
+                              backgroundImage: `url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%23475569' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'></polyline></svg>")`,
+                              backgroundRepeat: 'no-repeat',
+                              backgroundPosition: 'right 6px center',
+                              backgroundSize: '8px',
+                              WebkitAppearance: 'none',
+                              MozAppearance: 'none',
+                              appearance: 'none'
                             }}
                           >
                             <option value="INACTIVO" style={{ color: '#475569', backgroundColor: '#FFFFFF' }}>Ausente Gral.</option>
@@ -3876,12 +4461,12 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
                             <option value="POOL_ARRANQUE" style={{ color: '#16A34A', backgroundColor: '#FFFFFF' }}>✓ Dar de Alta (Pool)</option>
                           </select>
                         </div>
-                      </div>
+                      </AbsentListItem>
                     );
                   });
                 })()}
-              </div>
-            </BentoCard>
+              </AbsentListContainer>
+            </div>
 
             {/* RESUMEN DE INCIDENCIAS */}
             <BentoCard style={{ height: 'fit-content' }}>
@@ -4076,48 +4661,67 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginBottom: '20px' }}>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                <label style={{ fontSize: '10px', fontWeight: 700, color: '#475569' }}>Nombre del Supervisor</label>
-                <input 
-                  type="text" 
+                <label style={{ fontSize: '10px', fontWeight: 700, color: '#475569' }}>Seleccionar Supervisor</label>
+                <select
                   value={tempSupervisorName}
                   onChange={(e) => setTempSupervisorName(e.target.value)}
-                  placeholder="Ej. Ing. Carlos Mendoza"
                   style={{
-                    padding: '8px 10px',
-                    borderRadius: '6px',
+                    padding: '10px 10px',
+                    borderRadius: '8px',
                     border: '1px solid #CBD5E1',
                     fontSize: '12px',
                     outline: 'none',
                     width: '100%',
-                    boxSizing: 'border-box'
+                    boxSizing: 'border-box',
+                    backgroundColor: '#FFFFFF',
+                    cursor: 'pointer',
+                    fontWeight: 600,
+                    color: '#1E293B'
                   }}
-                  id="supervisor-name-field"
-                />
-              </div>
-
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                <span style={{ fontSize: '9px', fontWeight: 700, color: '#64748B' }}>Supervisores Disponibles:</span>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
-                  {presetSupervisors.map(name => (
-                    <button
-                      key={name}
-                      onClick={() => setTempSupervisorName(name)}
-                      style={{
-                        padding: '4px 8px',
-                        backgroundColor: '#F1F5F9',
-                        border: '1px solid #E2E8F0',
-                        borderRadius: '6px',
-                        fontSize: '9px',
-                        fontWeight: 600,
-                        color: '#475569',
-                        cursor: 'pointer'
+                  id="supervisor-select-field"
+                >
+                  <option value="">── Sin Asignar ──</option>
+                  {availableSupervisors.map(sup => (
+                    <option 
+                      key={sup.id} 
+                      value={sup.id}
+                      style={{ 
+                        color: sup.isAvailable ? '#1E293B' : '#94A3B8',
+                        fontWeight: sup.isAvailable ? 600 : 400
                       }}
                     >
-                      {name}
-                    </button>
+                      {sup.shortName}{sup.assignedLine && sup.assignedLine !== editingLineId ? ` (en ${sup.assignedLine})` : ''}
+                    </option>
                   ))}
-                </div>
+                </select>
               </div>
+
+              {/* Info card del supervisor seleccionado */}
+              {tempSupervisorName && (() => {
+                const sel = REAL_SUPERVISORS.find(s => s.id === tempSupervisorName);
+                if (!sel) return null;
+                const existing = availableSupervisors.find(s => s.id === sel.id);
+                return (
+                  <div style={{
+                    padding: '8px 12px',
+                    backgroundColor: existing?.isAvailable ? '#F0FDF4' : '#FEF3C7',
+                    border: `1px solid ${existing?.isAvailable ? '#BBF7D0' : '#FCD34D'}`,
+                    borderRadius: '8px',
+                    fontSize: '10px',
+                    color: existing?.isAvailable ? '#166534' : '#92400E',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '2px'
+                  }}>
+                    <strong>{sel.name}</strong>
+                    {existing?.assignedLine && existing.assignedLine !== editingLineId ? (
+                      <span>⚠ Actualmente asignado a {existing.assignedLine}. Se moverá a {editingLineId}.</span>
+                    ) : (
+                      <span>✓ Disponible para asignación</span>
+                    )}
+                  </div>
+                );
+              })()}
             </div>
 
             <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>

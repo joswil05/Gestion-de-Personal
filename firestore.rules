@@ -1,0 +1,38 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Reglas para la colección de trabajadores (validar máquina de estados)
+    match /trabajadores/{trabajadorId} {
+      allow read: if true;
+      allow write: if request.resource.data.status in [
+        'INACTIVO', 'POOL_ARRANQUE', 'ASIGNADO', 'EN_TRANSITO', 
+        'DISPONIBLE_BOLSON', 'BAJA_TEMPORAL', 'VACACIONES', 
+        'PERMISOS', 'CONSULTAS_MEDICAS', 'SUBSIDIOS', 'ACCIDENTE_LABORAL'
+      ];
+    }
+
+    // Reglas para la colección de puestos (validar estados permitidos)
+    match /puestos/{puestoId} {
+      allow read: if true;
+      allow write: if request.resource.data.status in [
+        'VACANTE', 'ASIGNADO', 'ALERTA_VACANTE', 'SUSPENDIDO'
+      ];
+    }
+
+    // Reglas para la colección de programa de producción
+    match /programa_produccion/{programaId} {
+      allow read, write: if true;
+    }
+
+    // Reglas para la colección de configuración global y de líneas
+    match /config/{configId} {
+      allow read, write: if true;
+      
+      // Permitir acceso recursivo para cualquier configuración interna
+      match /{document=**} {
+        allow read, write: if true;
+      }
+    }
+  }
+}

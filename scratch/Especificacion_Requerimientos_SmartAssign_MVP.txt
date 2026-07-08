@@ -1,0 +1,248 @@
+Pages: 6
+
+--- PAGE 1 ---
+SMARTASSIGN MVP V1.0
+MANUAL DE ESPECIFICACIÓN TÉCNICA DE REQUERIMIENTOS (SRS)
+Código del DocumentoSAS-SRS-2026-V1.4 Fecha de Emisión 25 de Mayo de 2026
+Entorno de OperaciónPiso de Planta — Alta
+Cadencia Industrial Gobernanza Lógica Estricta (.antigravityrules /
+agentskill)
+Autor de Solución Sub-Agentes Organizados /
+Jarvis Persona Líder Técnico de PlantaJoswill Espinoza
+Baquedano
+1. INTRODUCCIÓN Y ALCANCE DEL SOFTWARE (SCOPE LOCK)
+Este manual constituye la especificación de ingeniería formal, los flujos logísticos del negocio y las restricciones
+inmutables de interfaz para el desarrollo e implementación del producto mínimo viable (MVP V1.0) del sistema
+SmartAssign. El objetivo medular es transformar el ecosistema operativo de asignación de personal en un flujo de
+control transparente, predecible y blindado contra condiciones de carrera o fallas inalámbricas en pasillo. 
+Regla de Bloqueo de Fase (Scope Lock): El software de producción queda estrictamente restringido a las Fases
+A (Asistencia) y B (Arranque de Línea Aislado). Todos los motores automatizados correspondientes a la V2.0 (Fases
+C y D)—tales como rotaciones cíclicas automáticas por tiempo de 2 horas (Motor 3), cascadeo reactivo automático
+inter-líneas (Motor 2), desajustes automáticos por paros (Motor 4) o altas de enfermería en caliente (Motor 5)—
+quedan completamente inhabilitados en el backend. Toda rotación operativa en el MVP se gestionará de manera
+manual: liberación del operario al Bolsón y escaneo posterior en el nuevo puesto físico de destino. 
+2. MÁQUINA DE ESTADOS DEL PERSONAL (CICLO DE VIDA)
+Para garantizar la consistencia relacional relacional en tiempo real y evitar que un operario sea registrado en dos
+puestos simultáneamente, se impone una máquina de estados determinista. Todo trabajador de la nómina de 160
+perfiles transiciona obligatoriamente entre estos 6 estados rígidos: 
+INACTIVO Estado Fuera de Turno
+El operario está ausente de la planta, disfrutando de vacaciones aprobadas, con baja médica de largo plazo o
+fuera de su turno asignado. Las vacantes asociadas a su plaza se consideran disponibles para pre-llenado.
+POOL_ARRANQUE Sala de Espera General Virtual
+El operario ha registrado su ingreso físico en la planta mediante el control biométrico. Su perfil se aloja en
+una cola virtual general esperando el inicio de la jornada o la captura manual de su supervisor.
+SmartAssign MVP V1.0 — Confidencial Industrial Página 1 de 6
+--- PAGE 2 ---
+ASIGNADO Anclaje de Celda Operativa
+El operario ha sido validado transaccionalmente por el servidor y se encuentra anclado a un puesto fijo
+técnico o a una mesa de tareas varias rotativas, bloqueando el slot en la base de datos.
+EN_TRANSITO Bloqueo Itinerante Inmune
+Estado de aislamiento en pasillo. Se activa cuando un supervisor despacha a un trabajador hacia otra
+ubicación. El perfil se bloquea de modo que ninguna otra terminal móvil de la planta puede interceptarlo o
+escanearlo en el trayecto, protegiendo el flujo físico. Registra la propiedad lineaDestinoId.
+DISPONIBLE_BOLSON Reserva Activa Centralizada
+El operario se encuentra laborando en las mesas de ensamble manual de la Línea 8. Actúa como el
+amortiguador central de recursos humanos de la fábrica, listo para ser extraído o inyectado bajo demanda.
+BAJA_TEMPORAL Retiro Provisional Auditado
+El trabajador es removido provisionalmente del flujo por el supervisor o coordinador para asistir a una
+consulta médica de urgencia en enfermería o atender una contingencia personal justificada.
+3. FLUJO LOGÍSTICO CRONOLÓGICO
+3.1 Fase de Planificación (Un día antes — Rol: Coordinador General)
+Lectura Planificada de Demanda: El sistema consume los datos de producción de la jornada de mañana
+desde el archivo central de Google Sheets. Identifica las líneas operativas, los turnos a cubrir (apoya esquemas
+variables de 8h, 12h, dobles o cruzados) y el lote SKU asignado.
+Suspensión de Áreas Vacías: Si una línea de producción carece de SKU planificado, un proceso batch
+automático (writeBatch) reduce sus vacantes a cero y muta sus celdas a estado 'SUSPENDIDO'. El personal
+titular de esa línea que asista mañana pasará de forma directa a la Línea 8 (Bolsón) para optimizar los
+recursos.
+Asignación Drag-and-Drop de Supervisores: A través de la pantalla de gestión central, el Coordinador
+arrastra los perfiles de los supervisores disponibles y los asienta en las líneas y turnos activos del día. Al
+guardarse,  el  sistema  despacha  una  notificación  push  a  la  terminal  móvil  del  supervisor,  enlazando
+herméticamente su sesión a dicha línea de producción.
+Pre-visualización  de  Cobertura  Semafórica: El  Coordinador  visualiza  la  planta  en  un  mapa  gráfico  de
+control. Las líneas con personal completo se pintan en Verde; aquellas con déficit debido a vacaciones o citas
+programadas  se  marcan  en  Rojo.  El  Coordinador  balancea  la  planta  removiendo  operarios  de  puestos
+indirectos (bodega, limpieza) y dejándolos libres para suplir las brechas.
+• 
+• 
+• 
+• 
+SmartAssign MVP V1.0 — Confidencial Industrial Página 2 de 6
+--- PAGE 3 ---
+3.2 Fase de Ejecución y Arranque (Día del Turno — Rol: Supervisor / Operario)
+El Minuto Cero: Los operarios registran su ingreso físico. Su estado cambia a POOL_ARRANQUE en la base
+de datos y se les inyecta una propiedad dinámica de ubicación aproximada basada en su asignación teórica de
+ayer (physicalLineLocation).
+Inyección  de  Jornada  (Motor  1): El  Coordinador  presiona  [Gatillar  Arranque  de  Turno].  El  motor  lee  la
+jerarquía dinámica desde el documento de Firestore config/global_priority (Orden: L4 > L1 > L2 > L6 > L7 > L5 >
+L3 > L8 > L9 > L10) y ejecuta un barrido atómico de puestos mecánicos esenciales (Operador A, Averiero,
+Operador C). Si el titular está presente, lo ancla en estado ASIGNADO.
+Lógica de Rastro Dual por Ausencia: Si el titular está ausente, el Motor 1 busca un reemplazo calificado (un
+Operador  B  presente  en  el  pool).  Al  asignarlo  en  caliente,  registra  de  forma  explícita  al  reemplazo  en
+idWorkerCurrent y preserva el rastro del dueño original en idWorkerOriginal. Si no hay relevos, la celda queda
+en estado de alerta extrema (ALERTA_VACANTE).
+Restricción  Operativa  de  Arranque  Local  Aislado: Durante  los  primeros  10  minutos  exactos  del  turno
+(contados  a  partir  del  timestamp  del  servidor),  el  backend  impone  un  bloqueo  estricto.  Los  supervisores
+únicamente pueden registrar en sus puestos operarios cuyo parámetro  physicalLineLocation coincida con su
+línea activa. Se bloquean las transferencias inter-líneas y las capturas duplicadas en pasillos, obligando al
+supervisor a ordenar el personal físico que tiene enfrente y estabilizar los arranques locales.
+4. ESPECIFICACIÓN DETALLADA DE MÓDULOS INTERACTIVOS
+TÁCTILES
+4.1 Panel de Búsqueda y Selección (Search Drawer)
+Para dar soporte a la asignación manual cuando un operario se incorpora tarde o se requiere un cambio manual,
+se implementa el Search Drawer. Al tocar una celda vacía o en alerta en el HUD móvil, se despliega un panel
+inferior deslizable desde la base mediante animaciones nativas. 
+Este panel se conecta mediante un listener reactivo en tiempo real a la colección de trabajadores filtrando de forma
+estricta los perfiles que se encuentren en estado POOL\_ARRANQUE o DISPONIBLE\_BOLSON. Incluye un input
+de texto con auto-foco para filtrado instantáneo por nombre o número de nómina (Ficha ID), además de un botón
+de simulación de escáner QR para entornos de desarrollo. El panel respeta un ancho máximo ergonómico de
+800px para pantallas de tabletas de supervisores. 
+4.2 Modal de Confirmación de Gafete (Prevención de Error Humano)
+Para  erradicar  por  completo  los  incidentes  de  supervisores  que  asignan  operarios  equivocados  por  gafetes
+prestados o confundidos en pasillo, se implementa una pantalla intermedia de confirmación obligatoria de doble
+paso. 
+Al capturar un código QR o seleccionar un operario del Search Drawer, se levanta un modal en primer plano que
+congela  el  flujo  principal.  Este  modal  extrae  desde  Firebase  Storage  la  **fotografía  en  alta  resolución**  del
+trabajador, proyecta su nombre completo en letras destacadas, su número de ficha y su rol aprobado. En la base
+del modal, se incrusta el componente HealthAuditBox, exponiendo de forma explícita cualquier restricción médica
+activa dictada por enfermería (ej. prohibición de carga pesada). El supervisor debe validar visualmente la identidad
+• 
+• 
+• 
+• 
+SmartAssign MVP V1.0 — Confidencial Industrial Página 3 de 6
+--- PAGE 4 ---
+de la persona que tiene enfrente y realizar un segundo toque obligatorio en el botón Azul Cobalto [Confirmar
+Asignación] para asentar la transacción en la nube. 
+4.3 Menú Contextual de Celda Ocupada (Liberación al Bolsón)
+Si un puesto operativo ya se encuentra en estado ASIGNADO y el supervisor necesita liberar al operario por
+rotación manual o relevo, al tocar la celda de 80px se despliega un menú contextual inferior. Este menú expone de
+forma clara tres acciones: 
+[Liberar  Operario  al  Bolsón]: Dispara  la  función  transaccional  de  fondo  releaseWorkerTransaction().  Esta
+ejecuta un bloque atómico en Firestore que cambia el estado de la celda a VACANTE, remueve el ID del
+operario y actualiza el perfil del trabajador al estado  DISPONIBLE\_BOLSON, limpiando sus referencias de
+puesto y moviendo su ubicación física a la Línea 8 para eliminar tiempos muertos.
+[Registrar Baja Temporal]: Cambia el estado del operario a BAJA_TEMPORAL y actualiza la celda inyectando
+la micro-copia correspondiente.
+[Cancelar]: Cierra el menú contextual con transiciones suaves sin aplicar mutaciones.
+4.4 Gestión UX de Banners de Rechazo por Reglas de Negocio
+El frontend envuelve todas las llamadas transaccionales de Firestore en bloques try/catch. Cuando el servidor
+rechaza una asignación debido a la violación de una regla crítica de la planta, la interfaz captura la excepción y
+despliega un componente temporal informativo en pantalla (PromptToast) con fondo desaturado y tipografía clara en
+lenguaje humano de planta, evitando códigos de error crudos: 
+Regla de Negocio Violada Micro-copia Desplegada en el Banner UX
+Colisión con Restricciones Médicas de
+Enfermería
+Asignación denegada por Salud: El operario tiene restricciones
+médicas de esfuerzo incompatibles con las exigencias físicas del
+puesto.
+Fatiga Ergonómica (Regla de No Repetición
+de 24h)
+Fatiga Ergonómica: El operario realizó esta actividad desgastante
+al cierre de ayer. Regla de no repetición de 24 horas activa.
+Canibalización / Intercepción Simultánea en
+Pasillo
+Asignación denegada: El operario ya fue asignado o interceptado
+por otro supervisor en pasillo milisegundos antes.
+4.5 Módulo de Registro de Paros Técnicos
+Ubicado de forma exclusiva en la pestaña "Línea y SKU", este formulario controla las contingencias y detenciones
+mecánicas de la jornada. Obliga al supervisor a completar una secuencia de selectores anidados rígidos: 
+Selector Máster (Código General): El supervisor selecciona la categoría macro del paro (ej. MECÁNICO,
+ELÉCTRICO, CALIDAD, FALTA_DE_MATERIAL).
+Selector  Esclavo  (Sub-código  Técnico): Al  registrarse  la  categoría  máster,  el  frontend  filtra
+instantáneamente  el  árbol  de  opciones  y  despliega  únicamente  las  causas  raíz  asociadas  de  forma
+específica  (ej.  Si  seleccionó  MECÁNICO,  expone:  ATASCO_DE_CADENA,  ROTURA_DE_BANDA,
+DESCALIBRACIÓN_DE_GUÍAS).
+• 
+• 
+• 
+1. 
+2. 
+SmartAssign MVP V1.0 — Confidencial Industrial Página 4 de 6
+--- PAGE 5 ---
+Debajo  de  los  selectores,  se  implementa  un  área  de  texto  obligatoria  para  que  el  supervisor  redacte  una
+justificación en lenguaje libre que describa los síntomas observados en la máquina antes de habilitar el botón
+maestro de confirmación. 
+4.6 Cronómetro Flotante Global de Inactividad de Línea
+Al confirmarse el paro técnico, el sistema inyecta el token de tiempo del servidor y conmuta el estado de la línea
+local a 'PREPARACIÓN/PARO'. En ese instante, se activa un banner de emergencia superior fijo (OfflineBanner
+modificado  o  StickyTimerBanner)  que  renderiza  un  cronómetro  corriendo  en  tiempo  real  con  tipografía
+monoespaciada de alta visibilidad industrial. 
+Este componente se acopla a un Contexto de React global, garantizando de forma inmutable que el temporizador
+permanezca visible y corriendo en la parte superior del dispositivo móvil sin importar que el supervisor navegue
+por otras pestañas (como revisar fichas médicas en "Mi Personal"). El cronómetro se congela y se guarda en la
+base de datos histórica únicamente cuando el supervisor presiona el botón interactivo de acción masiva [Reanudar
+Producción de Línea]. 
+4.7 Formulario Dual de Mermas y Averías de Materiales
+Panel de fin de lote destinado a cuantificar el desperdicio físico real de materiales al cierre del SKU. Estructura de
+forma modular 4 filas inmutables para los materiales del MVP: **Tapón, Botella, Estuche y Etiqueta**. Cada fila
+incorpora dos inputs de tipo numérico obligatorio que desglosan la merma en dos columnas de entrada de datos
+estrictas: 
+Columna 1 (Avería por Inventario): Unidades dañadas por defectos de origen de fábrica, fallas de logística
+interna o abolladuras de almacén.
+Columna 2 (Avería por Proceso): Unidades mordidas, rotas o destruidas por la maquinaria durante la marcha
+de producción debido a descalibraciones.
+El sistema bloquea el envío del formulario y exige una justificación textual detallada si la suma de mermas de
+proceso supera un umbral crítico establecido del 5% del volumen total del lote. 
+4.8 Motor de Cálculo de Eficiencia y Rendimiento Real (Métricas)
+Algoritmo reactivo que corre en el core de la aplicación y calcula de manera constante el indicador OEE de
+rendimiento del turno actual del supervisor. Aplica la siguiente ecuación matemática de ingeniería: 
+Eficiencia (\%) = rac{Unidades \; Totales \; Producidas \; Reportadas}{Tiempo \; Real \; de \; Marcha imes
+Velocidad \; Teórica \; SKU}
+Donde el  Tiempo \; Real \; de \; Marcha se define de forma estricta como el tiempo total transcurrido del turno
+restando de forma exacta la suma de minutos de los paros técnicos guardados en la bitácora de contingencias. 
+El resultado de esta ecuación alimenta dinámicamente una barra de progreso inyectada en el encabezado del
+HUD Planta (LineHeader), mutando sus colores de forma atenuada: Verde si supera el 85% de eficiencia (Estándar
+de Clase Mundial), Amarillo si oscila entre 70% y 84% (Operación Regular), y Rojo si cae por debajo del 70%
+(Línea Crítica Alerta), actualizando en tiempo real tanto la terminal móvil del supervisor como el panel de control
+central del coordinador de planta. 
+• 
+• 
+SmartAssign MVP V1.0 — Confidencial Industrial Página 5 de 6
+--- PAGE 6 ---
+5. GUÍA DE DISEÑO DE INTERFAZ (UI) Y RESTRICCIONES MÉTRICAS
+La interfaz gráfica de usuario adopta una filosofía de diseño estrictamente ejecutiva, limpia y minimalista (Modo
+Claro SaaS), eliminando cualquier tipo de tema oscuro o estética gamificada que pueda inducir a errores bajo la
+iluminación industrial de la planta. 
+Fondo del Viewport General: Fijo en Slate 50 (`#F8FAFC`), reduciendo el cansancio visual del supervisor.
+Tarjetas de Puestos y Modales: Blanco Puro (`#FFFFFF`) con bordes finos grises Slate 200 (`#E2E8F0`) de
+espesor rígido de 1px.
+Acentos Interactivos: Botones de confirmación y llamadas a la acción exclusivos en Azul Cobalto Profesional
+(`#2563EB`).
+Alturas Rígidas Ergonómicas (Thumb Zone): La barra de navegación inferior (TabBar.js) se bloquea a una
+altura estricta de **64px** para un alcance cómodo del pulgar al operar el teléfono con una sola mano. Las
+tarjetas operativas del HUD (SlotCard.js) se fijan rígidamente a un alto de **80px** para un aprovechamiento
+óptimo de la cuadrícula vertical. El botón flotante QR de la cámara se suspende a `bottom: 80px`, justo arriba
+de la TabBar.
+Comportamiento Defensivo Offline (Wi-Fi Guard): Al detectar mediante Capacitor Network la pérdida de
+conexión inalámbrica en zonas muertas de la fábrica, la UI propaga de forma síncrona el estado 'isOffline: true'. Se
+levanta un banner de emergencia superior rojo, se bloquean funcionalmente las aperturas del Search Drawer y
+menús contextuales congelando los traslados inter-líneas, y todas las tarjetas de puestos del HUD mutan
+instantáneamente su fondo al patrón texturizado de líneas diagonales tenues (`$offlineBg`) con la advertencia
+explícita visible: "Asignación Local Pendiente de Sincronización ── No mover al personal hasta recuperar red".
+6. CONSIDERACIONES TÉCNICAS DE BACKEND, CONCURRENCIA Y
+CACHÉ NO-SQL
+Exclusión de Relojes Locales: Queda estrictamente prohibido el uso de `Date.now()` en el cliente para
+estampar  marcas  de  tiempo  en  el  servidor  de  la  nube.  Todas  las  variables  temporales  críticas
+(asignadoEnSegundoVirtual,  updatedAt)  inyectan  de  forma  obligatoria  el  token  nativo  serverTimestamp() de
+Firestore. El frontend calcula el offset de desfase con el servidor en el arranque para calibrar las cuentas
+regresivas locales.
+Blindaje Transaccional contra Condiciones de Carrera: Toda asignación o liberación manual de operarios
+se ejecuta encapsulada herméticamente dentro de un bloque runTransaction(). Si dos supervisores escanean
+simultáneamente a un mismo operario libre en el pasillo, el primer dispositivo que golpee el servidor consolida
+la escritura y bloquea el perfil; la transacción del segundo dispositivo detecta reactivamente la mutación de
+estado en caliente, aborta los cambios de forma segura sin corromper registros y despliega una notificación
+controlada en pantalla: "Operario ya asignado a Línea X".
+Caché Local Persistente Multitabla: Para mitigar la inestabilidad inalámbrica de la red de planta, Firestore se
+inicializa  forzando  la  caché  local  mediante  persistentLocalCache() con  soporte  multitabla  a  través  de
+persistentMultipleTabManager(). Esto asegura que la terminal móvil retenga un espejo local de los datos en
+zonas muertas, encole las transacciones transicionales locales y resincronice el estado de forma automática e
+invisible en cuanto el dispositivo restablezca el enlace con la red inalámbrica de la fábrica.
+• 
+• 
+• 
+• 
+• 
+• 
+• 
+SmartAssign MVP V1.0 — Confidencial Industrial Página 6 de 6

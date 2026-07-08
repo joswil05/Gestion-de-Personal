@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { styled } from '../styles/theme';
-import { db, puestosColl } from '../services/firebaseService';
+import { db, puestosColl, startLineParoTransaction, endLineParoTransaction } from '../services/firebaseService';
 import { doc, onSnapshot, setDoc, updateDoc, writeBatch, getDocs, where, query, serverTimestamp } from 'firebase/firestore';
 import { triggerNativeHapticFeedback } from '../skills/capacitor-android-bridge';
 import { useStopTimer } from './StopTimerContext';
@@ -8,66 +8,66 @@ import { useStopTimer } from './StopTimerContext';
 // --- STITCHES STYLED COMPONENTS ---
 
 const SkuContainer = styled('div', {
-  padding: '16px 20px calc(100px + env(safe-area-inset-bottom, 0px)) 20px',
+  padding: '12px 16px calc(80px + env(safe-area-inset-bottom, 0px)) 16px',
   fontFamily: '$sans',
   display: 'flex',
   flexDirection: 'column',
-  gap: '20px'
+  gap: '14px',
+  backgroundColor: '$background',
+  minHeight: '100vh'
 });
 
 const SkuHeader = styled('div', {
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'space-between',
-  borderBottom: '1px solid $border',
-  paddingBottom: '16px'
+  paddingBottom: '4px'
 });
 
 const SkuTitle = styled('h2', {
-  fontSize: '16px',
+  fontSize: '14px',
   fontWeight: 700,
   color: '$textPrimary',
   display: 'flex',
   alignItems: 'center',
-  gap: '8px'
+  gap: '6px'
 });
 
 const SectionCard = styled('div', {
   backgroundColor: '$card',
   border: '1px solid $border',
-  borderRadius: '16px',
-  padding: '20px 24px',
-  boxShadow: '$elevation1',
+  borderRadius: '12px',
+  padding: '16px',
+  boxShadow: '$subtle',
   display: 'flex',
   flexDirection: 'column',
-  gap: '16px',
-  transition: 'all 0.3s cubic-bezier(0.16, 1, 0.3, 1)'
+  gap: '12px'
 });
 
 const SectionTitle = styled('h3', {
-  fontSize: '13.5px',
+  fontSize: '11px',
   fontWeight: 700,
-  color: '$textPrimary',
-  borderBottom: '1px solid $border',
-  paddingBottom: '12px',
+  color: '$textSecondary',
+  textTransform: 'uppercase',
+  letterSpacing: '0.5px',
   display: 'flex',
   alignItems: 'center',
-  gap: '8px'
+  gap: '6px',
+  padding: '10px 14px 4px 14px',
+  borderBottom: '1px solid $border',
+  margin: 0,
+  backgroundColor: '$card'
 });
 
 const Row = styled('div', {
   display: 'flex',
   justifyContent: 'space-between',
   alignItems: 'center',
-  padding: '12px 0',
+  padding: '10px 0',
   borderBottom: '1px solid $border',
 
   '&:last-child': {
-    borderBottom: 'none',
-    paddingBottom: 0
-  },
-  '&:first-child': {
-    paddingTop: 0
+    borderBottom: 'none'
   }
 });
 
@@ -84,37 +84,38 @@ const Value = styled('span', {
 });
 
 const SkuValue = styled('span', {
-  fontSize: '13px',
+  fontSize: '12px',
   fontWeight: 700,
   color: '$accent',
-  backgroundColor: '$infoBg',
-  border: '1px solid #BFDBFE',
-  padding: '8px 14px',
-  borderRadius: '8px',
+  backgroundColor: 'hsl(217, 91%, 95%)',
+  border: '1px solid hsl(217, 91%, 88%)',
+  padding: '4px 10px',
+  borderRadius: '6px',
   cursor: 'pointer',
   fontFamily: 'monospace',
-  transition: 'all 0.2s cubic-bezier(0.16, 1, 0.3, 1)',
-  boxShadow: '0 1px 2px rgba(0,0,0,0.02)',
+  transition: 'all 0.15s ease',
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: '4px',
 
   '&:hover': {
-    backgroundColor: '#DBEAFE',
-    borderColor: '$accent',
-    transform: 'scale(1.03)'
+    backgroundColor: 'hsl(217, 91%, 92%)',
+    borderColor: '$accent'
   },
   '&:active': {
-    transform: 'scale(0.96)'
+    transform: 'scale(0.97)'
   }
 });
 
 const StatusBadge = styled('span', {
-  fontSize: '10px',
+  fontSize: '9px',
   fontWeight: 700,
-  padding: '5px 12px',
-  borderRadius: '20px',
+  padding: '4px 10px',
+  borderRadius: '12px',
   textTransform: 'uppercase',
   display: 'inline-flex',
   alignItems: 'center',
-  gap: '6px',
+  gap: '4px',
   letterSpacing: '0.3px',
 
   variants: {
@@ -122,20 +123,30 @@ const StatusBadge = styled('span', {
       PRODUCCION: {
         backgroundColor: '$successBg',
         color: '$successBorder',
-        border: '1px solid #BBF7D0'
+        border: '1px solid hsl(142, 70%, 90%)'
+      },
+      ARRANQUE: {
+        backgroundColor: '$successBg',
+        color: '$successBorder',
+        border: '1px solid hsl(142, 70%, 90%)'
       },
       PREPARACION: {
-        backgroundColor: '$warningBg',
-        color: '$warningBorder',
-        border: '1px solid #FEF08A'
+        backgroundColor: '$dangerBg',
+        color: '$dangerBorder',
+        border: '1px solid hsl(0, 100%, 90%)'
+      },
+      PARO: {
+        backgroundColor: '$dangerBg',
+        color: '$dangerBorder',
+        border: '1px solid hsl(0, 100%, 90%)'
       }
     }
   }
 });
 
 const StatusDot = styled('span', {
-  width: '6px',
-  height: '6px',
+  width: '5px',
+  height: '5px',
   borderRadius: '50%',
   display: 'inline-block',
 
@@ -144,8 +155,14 @@ const StatusDot = styled('span', {
       PRODUCCION: {
         backgroundColor: '$successBorder'
       },
+      ARRANQUE: {
+        backgroundColor: '$successBorder'
+      },
       PREPARACION: {
-        backgroundColor: '$warningBorder'
+        backgroundColor: '$dangerBorder'
+      },
+      PARO: {
+        backgroundColor: '$dangerBorder'
       }
     }
   }
@@ -154,55 +171,59 @@ const StatusDot = styled('span', {
 const FormGroup = styled('div', {
   display: 'flex',
   flexDirection: 'column',
-  gap: '6px'
+  gap: '6px',
+  padding: '12px 14px',
+  backgroundColor: '$card',
+  borderBottom: '1px solid $border'
 });
 
 const FormLabel = styled('label', {
   fontSize: '11px',
   fontWeight: 700,
   color: '$textSecondary',
-  letterSpacing: '0.3px'
+  letterSpacing: '0.3px',
+  textTransform: 'uppercase'
 });
 
 const Select = styled('select', {
-  width: '100%',
-  padding: '10px 14px',
-  minHeight: '44px', // Android touch targets
-  borderRadius: '10px',
-  border: '1px solid $border',
-  backgroundColor: '#FFFFFF',
+  border: 'none',
+  backgroundColor: 'transparent',
   fontSize: '13px',
-  color: '$textPrimary',
-  fontWeight: 500,
+  fontWeight: 700,
+  color: '$accent',
+  textAlign: 'right',
   outline: 'none',
-  boxShadow: '0 1px 2px rgba(0,0,0,0.02)',
-  transition: 'all 0.2s ease',
+  cursor: 'pointer',
+  padding: '4px 0',
+  direction: 'rtl',
+  fontFamily: '$sans',
 
-  '&:focus': {
-    borderColor: '$accent',
-    boxShadow: '0 0 0 3px rgba(37, 99, 235, 0.12)'
+  '& option': {
+    color: '$textPrimary',
+    backgroundColor: '$card',
+    direction: 'ltr'
   }
 });
 
 const Textarea = styled('textarea', {
   width: '100%',
-  padding: '12px 14px',
-  minHeight: '80px',
-  borderRadius: '10px',
+  padding: '8px 10px',
+  minHeight: '48px',
+  borderRadius: '6px',
   border: '1px solid $border',
-  backgroundColor: '#FFFFFF',
-  fontSize: '13px',
+  backgroundColor: '#F8FAFC',
+  fontSize: '12px',
   color: '$textPrimary',
   fontWeight: 500,
   outline: 'none',
   fontFamily: '$sans',
   resize: 'none',
-  boxShadow: '0 1px 2px rgba(0,0,0,0.02)',
-  transition: 'all 0.2s ease',
+  transition: 'all 0.15s ease',
 
   '&:focus': {
     borderColor: '$accent',
-    boxShadow: '0 0 0 3px rgba(37, 99, 235, 0.12)'
+    backgroundColor: '#FFFFFF',
+    boxShadow: '0 0 0 2px rgba(37, 99, 235, 0.08)'
   }
 });
 
@@ -214,21 +235,21 @@ const FormGrid = styled('div', {
 
 const SubmitButton = styled('button', {
   width: '100%',
-  padding: '12px 16px',
-  minHeight: '44px', // Android touch targets
-  fontSize: '12.5px',
+  padding: '10px 14px',
+  minHeight: '36px',
+  fontSize: '12px',
   fontWeight: 700,
-  borderRadius: '10px',
+  borderRadius: '8px',
   border: 'none',
   cursor: 'pointer',
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'center',
   gap: '8px',
-  transition: 'all 0.2s cubic-bezier(0.16, 1, 0.3, 1)',
+  transition: 'all 0.15s cubic-bezier(0.16, 1, 0.3, 1)',
 
   '&:active': {
-    transform: 'scale(0.96)'
+    transform: 'scale(0.97)'
   },
 
   variants: {
@@ -245,108 +266,73 @@ const SubmitButton = styled('button', {
         }
       },
       danger: {
-        backgroundColor: '$dangerBg',
-        color: '$dangerBorder',
-        border: '1px solid $dangerBorder',
+        backgroundColor: '$dangerBorder',
+        color: '#FFFFFF',
         '&:hover': {
-          backgroundColor: '#FCA5A5'
+          backgroundColor: '#B91C1C'
         }
       },
       success: {
-        backgroundColor: '$successBg',
-        color: '$successBorder',
-        border: '1px solid $successBorder',
+        backgroundColor: '$successBorder',
+        color: '#FFFFFF',
         '&:hover': {
-          backgroundColor: '#86EFAC'
+          backgroundColor: '#15803D'
         }
       }
     }
   }
 });
 
-const MermaTable = styled('table', {
-  width: '100%',
-  borderCollapse: 'collapse',
-  fontSize: '11px',
-  fontFamily: '$sans'
-});
-
-const Th = styled('th', {
-  textAlign: 'left',
-  padding: '8px',
-  color: '$textSecondary',
-  fontWeight: 700,
-  borderBottom: '1px solid $border'
-});
-
-const Td = styled('td', {
-  padding: '8px 4px',
-  borderBottom: '1px solid $border',
-  verticalAlign: 'middle'
-});
-
-const NumberInput = styled('input', {
-  width: '70px',
-  padding: '6px 8px',
-  borderRadius: '6px',
+const OeeHeroContainer = styled('div', {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: '12px',
+  padding: '16px',
+  backgroundColor: '$card',
   border: '1px solid $border',
-  backgroundColor: '#FFFFFF',
-  fontSize: '11px',
-  textAlign: 'center',
-  outline: 'none',
-
-  '&:focus': {
-    borderColor: '$accent',
-    boxShadow: '0 0 0 2px rgba(37, 99, 235, 0.05)'
-  }
-});
-
-const BlockWarning = styled('div', {
-  backgroundColor: '#FFF1F2',
-  border: '1px solid #FDA4AF',
   borderRadius: '12px',
-  padding: '16px 20px',
-  fontSize: '12px',
-  color: '#BE123C',
-  fontWeight: 600,
-  lineHeight: 1.5,
-  display: 'flex',
-  flexDirection: 'column',
-  gap: '10px',
-  boxShadow: '0 4px 12px rgba(225, 29, 72, 0.05)'
+  boxShadow: '$subtle',
+  boxSizing: 'border-box'
 });
 
-const OeeMeterContainer = styled('div', {
+const OeeHeaderRow = styled('div', {
   display: 'flex',
-  flexDirection: 'column',
-  gap: '8px'
-});
-
-const OeeHeader = styled('div', {
-  display: 'flex',
+  alignItems: 'center',
   justifyContent: 'space-between',
-  alignItems: 'baseline'
+  gap: '12px'
 });
 
-const OeePercent = styled('span', {
-  fontSize: '28px',
+const OeeValueText = styled('span', {
+  fontSize: '40px',
   fontWeight: 800,
-  fontFamily: 'monospace'
+  color: '$textPrimary',
+  letterSpacing: '-1.5px',
+  lineHeight: 1
 });
 
-const ProgressTrack = styled('div', {
-  height: '10px',
-  backgroundColor: '#E2E8F0',
-  borderRadius: '5px',
+const OeeLabelText = styled('span', {
+  fontSize: '11px',
+  fontWeight: 700,
+  color: '$textSecondary',
+  textTransform: 'uppercase',
+  letterSpacing: '0.5px'
+});
+
+const OeeProgressBarContainer = styled('div', {
+  width: '100%',
+  height: '6px',
+  backgroundColor: '$border',
+  borderRadius: '3px',
   overflow: 'hidden'
 });
 
-const ProgressBar = styled('div', {
+const OeeProgressBarFill = styled('div', {
   height: '100%',
-  transition: 'width 0.5s ease',
-
+  borderRadius: '3px',
+  transition: 'width 0.8s cubic-bezier(0.16, 1, 0.3, 1)',
+  
   variants: {
-    status: {
+    level: {
       success: {
         backgroundColor: '$successBorder'
       },
@@ -358,6 +344,242 @@ const ProgressBar = styled('div', {
       }
     }
   }
+});
+
+const OeeStatsRow = styled('div', {
+  display: 'grid',
+  gridTemplateColumns: 'repeat(3, 1fr)',
+  gap: '8px',
+  marginTop: '2px',
+  borderTop: '1px solid $border',
+  paddingTop: '10px'
+});
+
+const OeeStatCol = styled('div', {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: '2px',
+  alignItems: 'center'
+});
+
+const OeeStatLabel = styled('span', {
+  fontSize: '9px',
+  fontWeight: 600,
+  color: '$textSecondary',
+  textTransform: 'uppercase',
+  letterSpacing: '0.3px'
+});
+
+const OeeStatValue = styled('span', {
+  fontSize: '13px',
+  fontWeight: 700,
+  color: '$textPrimary'
+});
+
+const OeeStatusBadge = styled('span', {
+  fontSize: '9px',
+  fontWeight: 700,
+  padding: '3px 8px',
+  borderRadius: '12px',
+  textTransform: 'uppercase',
+  letterSpacing: '0.3px',
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: '4px',
+  
+  variants: {
+    status: {
+      success: {
+        backgroundColor: '$successBg',
+        color: '$successBorder',
+        border: '1px solid hsl(142, 70%, 90%)'
+      },
+      warning: {
+        backgroundColor: '$warningBg',
+        color: '$warningBorder',
+        border: '1px solid hsl(45, 100%, 90%)'
+      },
+      danger: {
+        backgroundColor: '$dangerBg',
+        color: '$dangerBorder',
+        border: '1px solid hsl(0, 100%, 90%)'
+      }
+    }
+  }
+});
+
+const FlatRowGroup = styled('div', {
+  backgroundColor: '$card',
+  border: '1px solid $border',
+  borderRadius: '12px',
+  overflow: 'hidden',
+  display: 'flex',
+  flexDirection: 'column',
+  boxShadow: '$subtle'
+});
+
+const FlatRow = styled('div', {
+  display: 'flex',
+  justifyContent: 'space-between',
+  alignItems: 'center',
+  padding: '10px 14px',
+  backgroundColor: '$card',
+  borderBottom: '1px solid $border',
+  '&:last-child': {
+    borderBottom: 'none'
+  }
+});
+
+const DenseSectionGroup = styled('div', {
+  backgroundColor: '$card',
+  border: '1px solid $border',
+  borderRadius: '12px',
+  display: 'flex',
+  flexDirection: 'column',
+  overflow: 'hidden',
+  boxShadow: '$subtle'
+});
+
+const FormRow = styled('div', {
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'space-between',
+  padding: '10px 14px',
+  backgroundColor: '$card',
+  borderBottom: '1px solid $border',
+  gap: '12px',
+  '&:last-child': {
+    borderBottom: 'none'
+  }
+});
+
+const MermaHeaderRow = styled('div', {
+  display: 'flex',
+  justifyContent: 'space-between',
+  alignItems: 'center',
+  padding: '8px 14px',
+  backgroundColor: '#F8FAFC',
+  borderBottom: '1px solid $border'
+});
+
+const MermaHeaderCol = styled('span', {
+  fontSize: '10px',
+  fontWeight: 700,
+  color: '$textSecondary',
+  textTransform: 'uppercase',
+  letterSpacing: '0.5px'
+});
+
+const MermaListGroup = styled('div', {
+  display: 'flex',
+  flexDirection: 'column'
+});
+
+const MermaRow = styled('div', {
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'space-between',
+  padding: '8px 14px',
+  backgroundColor: '$card',
+  borderBottom: '1px solid $border',
+  gap: '12px',
+  '&:last-child': {
+    borderBottom: 'none'
+  }
+});
+
+const MermaLabel = styled('span', {
+  fontSize: '13px',
+  fontWeight: 600,
+  color: '$textPrimary',
+  textTransform: 'capitalize',
+  flex: 1
+});
+
+const MermaInputsContainer = styled('div', {
+  display: 'flex',
+  alignItems: 'center',
+  gap: '8px'
+});
+
+const MermaInputWrapper = styled('div', {
+  display: 'flex',
+  alignItems: 'center',
+  gap: '4px'
+});
+
+const MermaInputLabel = styled('span', {
+  fontSize: '9px',
+  color: '$textSecondary',
+  fontWeight: 700,
+  textTransform: 'uppercase',
+  marginRight: '2px'
+});
+
+const MermaNumberInput = styled('input', {
+  width: '56px',
+  height: '28px',
+  padding: '0 6px',
+  borderRadius: '6px',
+  border: '1px solid $border',
+  backgroundColor: '#F8FAFC',
+  fontSize: '12px',
+  textAlign: 'center',
+  fontWeight: 700,
+  color: '$textPrimary',
+  outline: 'none',
+  transition: 'all 0.15s ease',
+
+  '&:focus': {
+    borderColor: '$accent',
+    backgroundColor: '#FFFFFF',
+    boxShadow: '0 0 0 2px rgba(37, 99, 235, 0.08)'
+  }
+});
+
+const BlockWarning = styled('div', {
+  backgroundColor: 'hsl(0, 100%, 97%)',
+  borderBottom: '1px solid $border',
+  padding: '12px 14px',
+  fontSize: '12px',
+  color: '$dangerBorder',
+  fontWeight: 600,
+  lineHeight: 1.4,
+  display: 'flex',
+  flexDirection: 'column',
+  gap: '4px'
+});
+
+const MermaSummaryRow = styled('div', {
+  display: 'flex', 
+  justifyContent: 'space-between', 
+  fontSize: '11px', 
+  fontWeight: 700, 
+  padding: '10px 14px', 
+  borderTop: '1px solid $border',
+  backgroundColor: '#F8FAFC'
+});
+
+const MermaExcessBlock = styled('div', {
+  backgroundColor: 'hsl(0, 100%, 97%)',
+  borderTop: '1px solid $border',
+  borderBottom: '1px solid $border',
+  padding: '12px 14px',
+  fontSize: '12px',
+  color: '$dangerBorder',
+  fontWeight: 600,
+  lineHeight: 1.4,
+  display: 'flex',
+  flexDirection: 'column',
+  gap: '8px'
+});
+
+const ButtonWrapper = styled('div', {
+  padding: '12px 14px',
+  backgroundColor: '$card',
+  display: 'flex',
+  flexDirection: 'column',
+  gap: '8px'
 });
 
 const PromptToast = styled('div', {
@@ -446,16 +668,17 @@ export default function LineaSku({ supervisorLineId = "L4" }) {
     return () => unsubscribe();
   }, [supervisorLineId]);
 
-  // 2. Conexión al SKU Global
+  // 2. Conexión al SKU de la Línea Específica
   useEffect(() => {
     const unsubscribe = onSnapshot(doc(db, "config", "global_priority"), (docSnap) => {
       if (docSnap.exists()) {
         const data = docSnap.data();
-        setSku(data.skuAssigned || "SIN PLANIFICAR");
+        const lineSku = (data.skuPlan && data.skuPlan[supervisorLineId]) || data.skuAssigned || "SIN PLANIFICAR";
+        setSku(lineSku);
       }
     });
     return () => unsubscribe();
-  }, []);
+  }, [supervisorLineId]);
 
   // 3. Conexión al Estado de la Línea (Paros, Mermas, OEE, Tiempos) en Firestore
   useEffect(() => {
@@ -530,45 +753,7 @@ export default function LineaSku({ supervisorLineId = "L4" }) {
     triggerNativeHapticFeedback('confirm');
 
     try {
-      const lineDocRef = doc(db, "config", `line_${supervisorLineId}`);
-      
-      const newParo = {
-        category: masterCategory,
-        cause: slaveCause,
-        symptoms: symptoms,
-        startedAt: new Date()
-      };
-
-      // Mutación atómica 1: Registrar Paro en la Línea
-      await updateDoc(lineDocRef, {
-        status: "PREPARACION",
-        activeParo: newParo
-      });
-
-      // Mutación atómica 2: Desalojar Puestos Varios de la línea en suspensión (Motor 4)
-      console.log(`[Motor 4] Desalojando puestos varios de la línea: ${supervisorLineId}`);
-      const qSlots = query(puestosColl, where("lineId", "==", supervisorLineId));
-      const snapshotPuestos = await getDocs(qSlots);
-      const batch = writeBatch(db);
-
-      snapshotPuestos.forEach(docSnap => {
-        const slot = docSnap.data();
-        if (slot.tipoPuesto === "Puesto Vario" && slot.idWorkerCurrent) {
-          const workerId = slot.idWorkerCurrent;
-          batch.update(docSnap.ref, {
-            status: "VACANTE",
-            idWorkerCurrent: null,
-            microCopiaContextual: "Desalojado por Paro Técnico / Preparación de equipo"
-          });
-          batch.update(doc(db, "trabajadores", workerId), {
-            status: "DISPONIBLE_BOLSON",
-            currentSlotId: null,
-            physicalLineLocation: "L8"
-          });
-        }
-      });
-      await batch.commit();
-
+      await startLineParoTransaction(supervisorLineId, masterCategory, slaveCause, symptoms);
       setSymptoms("");
     } catch (err) {
       console.error("[LineaSku] Error al iniciar paro:", err);
@@ -578,32 +763,14 @@ export default function LineaSku({ supervisorLineId = "L4" }) {
 
   // 6. DETENER PARO TÉCNICO (Reanudar Producción)
   const handleEndParo = async () => {
-    if (!lineState?.activeParo) return;
+    if (lineState?.status === "PRODUCCION") return;
     triggerNativeHapticFeedback('confirm');
 
     try {
-      const lineDocRef = doc(db, "config", `line_${supervisorLineId}`);
-      const startedAt = lineState.activeParo.startedAt;
-      const startMs = startedAt?.toDate ? startedAt.toDate().getTime() : new Date(startedAt).getTime();
-      const durationSeconds = Math.max(1, Math.floor((Date.now() - startMs) / 1000));
-
-      const completedParo = {
-        ...lineState.activeParo,
-        endedAt: new Date(),
-        durationSeconds
-      };
-
-      const pastParos = lineState.paros || [];
-
-      await updateDoc(lineDocRef, {
-        status: "PRODUCCION",
-        activeParo: null,
-        paros: [...pastParos, completedParo]
-      });
-
-      console.log(`[Paros] Paro completado y guardado. Duración: ${durationSeconds}s`);
+      await endLineParoTransaction(supervisorLineId);
     } catch (err) {
       console.error("[LineaSku] Error al detener paro:", err);
+      alert("Error al reanudar producción.");
     }
   };
 
@@ -611,8 +778,20 @@ export default function LineaSku({ supervisorLineId = "L4" }) {
   const oeeCalculations = useMemo(() => {
     if (!lineState) return { oee: 95, availability: 100, performance: 100, quality: 100 };
 
-    const startTimestamp = lineState.turnStartTimestamp;
-    const startMs = startTimestamp?.toDate ? startTimestamp.toDate().getTime() : (startTimestamp?.seconds ? startTimestamp.seconds * 1000 : new Date(startTimestamp).getTime());
+    const startTimestamp = lineState?.turnStartTimestamp;
+    let startMs = Date.now() - 3600000; // Por defecto 1 hora atrás para evitar NaN
+    if (startTimestamp) {
+      if (typeof startTimestamp.toDate === 'function') {
+        startMs = startTimestamp.toDate().getTime();
+      } else if (startTimestamp.seconds) {
+        startMs = startTimestamp.seconds * 1000;
+      } else {
+        const ms = new Date(startTimestamp).getTime();
+        if (!isNaN(ms)) {
+          startMs = ms;
+        }
+      }
+    }
     const totalElapsedSeconds = Math.max(60, Math.floor((Date.now() - startMs) / 1000));
 
     // Sumar tiempo acumulado de paros
@@ -624,9 +803,12 @@ export default function LineaSku({ supervisorLineId = "L4" }) {
     }
 
     // Agregar el paro activo si existe
-    if (lineState.activeParo) {
-      const paroStartMs = lineState.activeParo.startedAt?.toDate ? lineState.activeParo.startedAt.toDate().getTime() : new Date(lineState.activeParo.startedAt).getTime();
-      totalParoSeconds += Math.max(0, Math.floor((Date.now() - paroStartMs) / 1000));
+    if (lineState.activeParo && lineState.activeParo.startedAt) {
+      const t = lineState.activeParo.startedAt;
+      const ms = t.toDate ? t.toDate().getTime() : (t.seconds ? t.seconds * 1000 : new Date(t).getTime());
+      if (!isNaN(ms)) {
+        totalParoSeconds += Math.max(0, Math.floor((Date.now() - ms) / 1000));
+      }
     }
 
     // Disponibilidad (Availability)
@@ -642,7 +824,7 @@ export default function LineaSku({ supervisorLineId = "L4" }) {
     const estimatedProduction = Math.max(100, Math.round((runSeconds * speedPerMin) / 60));
 
     // Mermas totales de proceso
-    const processWaste = Object.values(mermas).reduce((acc, m) => acc + (parseInt(m.proceso) || 0), 0);
+    const processWaste = Object.values(mermas || {}).reduce((acc, m) => acc + (parseInt(m?.proceso) || 0), 0);
 
     // Calidad (Quality)
     const quality = estimatedProduction > 0 ? Math.max(0, Math.min(1, (estimatedProduction - processWaste) / estimatedProduction)) : 1;
@@ -656,12 +838,6 @@ export default function LineaSku({ supervisorLineId = "L4" }) {
 
     // OEE %
     const oeeVal = Math.round(availability * performance * quality * 100);
-
-    // Sincronizar OEE en base de datos si cambia significativamente
-    if (lineState.oee !== oeeVal && !lineState.activeParo) {
-      const docRef = doc(db, "config", `line_${supervisorLineId}`);
-      updateDoc(docRef, { oee: oeeVal });
-    }
 
     return {
       oee: oeeVal,
@@ -687,7 +863,7 @@ export default function LineaSku({ supervisorLineId = "L4" }) {
 
   // Validar si el desperdicio supera el 5% de la producción estimada
   const processWastePercentage = useMemo(() => {
-    const totalProcessWaste = Object.values(mermas).reduce((acc, m) => acc + (parseInt(m.proceso) || 0), 0);
+    const totalProcessWaste = Object.values(mermas || {}).reduce((acc, m) => acc + (parseInt(m?.proceso) || 0), 0);
     const estProd = oeeCalculations.estimatedProduction || 100;
     return (totalProcessWaste / estProd) * 100;
   }, [mermas, oeeCalculations.estimatedProduction]);
@@ -715,7 +891,7 @@ export default function LineaSku({ supervisorLineId = "L4" }) {
     <SkuContainer>
       <SkuHeader>
         <SkuTitle>
-          <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#2563EB" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#2563EB" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
             <path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/>
             <path d="m3.3 7 8.7 5 8.7-5"/>
             <path d="M12 22V12"/>
@@ -724,120 +900,118 @@ export default function LineaSku({ supervisorLineId = "L4" }) {
         </SkuTitle>
         <StatusBadge status={lineState?.status || "PRODUCCION"}>
           <StatusDot status={lineState?.status || "PRODUCCION"} />
-          <span>{lineState?.status === "PRODUCCION" ? "En Producción" : "En Paro Técnico"}</span>
+          <span>
+            {lineState?.status === "PRODUCCION" || lineState?.status === "ARRANQUE"
+              ? "Producción"
+              : lineState?.status === "PARO"
+              ? "Paro Técnico"
+              : "Preparación"}
+          </span>
         </StatusBadge>
       </SkuHeader>
 
       {/* TARJETA 1: MÉTRICAS OEE REACTIVAS */}
-      <SectionCard id="oee-reactivo-widget">
-        <SectionTitle>
-          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#2563EB" strokeWidth="2.5">
-            <line x1="18" y1="20" x2="18" y2="10"/>
-            <line x1="12" y1="20" x2="12" y2="4"/>
-            <line x1="6" y1="20" x2="6" y2="14"/>
-          </svg>
-          <span>Eficiencia General del Lote (OEE)</span>
-        </SectionTitle>
+      <OeeHeroContainer id="oee-reactivo-widget">
+        <OeeHeaderRow>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: '6px' }}>
+            <OeeValueText>{oeeCalculations.oee || 0}%</OeeValueText>
+            <OeeLabelText>OEE</OeeLabelText>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '2px' }}>
+            <OeeStatusBadge status={(oeeCalculations.oee || 0) >= 85 ? "success" : (oeeCalculations.oee || 0) >= 70 ? "warning" : "danger"}>
+              {(oeeCalculations.oee || 0) >= 85 ? "Óptimo" : (oeeCalculations.oee || 0) >= 70 ? "Medio" : "Bajo"}
+            </OeeStatusBadge>
+            <span style={{ fontSize: '10px', fontWeight: 600, color: '#475569' }}>
+              Est: <strong>{oeeCalculations.estimatedProduction} pzs</strong>
+            </span>
+          </div>
+        </OeeHeaderRow>
 
-        <OeeMeterContainer>
-          <OeeHeader>
-            <OeePercent>{oeeCalculations.oee}%</OeePercent>
-            <Label>OEE Nominal Calculado</Label>
-          </OeeHeader>
+        <OeeProgressBarContainer>
+          <OeeProgressBarFill 
+            level={(oeeCalculations.oee || 0) >= 85 ? "success" : (oeeCalculations.oee || 0) >= 70 ? "warning" : "danger"} 
+            style={{ width: `${Math.min(100, Math.max(0, oeeCalculations.oee || 0))}%` }}
+          />
+        </OeeProgressBarContainer>
 
-          <ProgressTrack>
-            <ProgressBar 
-              status={oeeCalculations.oee >= 85 ? "success" : oeeCalculations.oee >= 70 ? "warning" : "danger"}
-              style={{ width: `${oeeCalculations.oee}%` }}
-              id="oee-progress-bar"
-            />
-          </ProgressTrack>
-        </OeeMeterContainer>
-
-        <FormGrid style={{ marginTop: '4px' }}>
-          <Row style={{ flexDirection: 'column', alignItems: 'flex-start', borderBottom: 'none', padding: 0 }}>
-            <Label>Disponibilidad</Label>
-            <Value>{oeeCalculations.availability}%</Value>
-          </Row>
-          <Row style={{ flexDirection: 'column', alignItems: 'flex-start', borderBottom: 'none', padding: 0 }}>
-            <Label>Calidad</Label>
-            <Value>{oeeCalculations.quality}%</Value>
-          </Row>
-          <Row style={{ flexDirection: 'column', alignItems: 'flex-start', borderBottom: 'none', padding: 0 }}>
-            <Label>Rendimiento</Label>
-            <Value>{oeeCalculations.performance}%</Value>
-          </Row>
-          <Row style={{ flexDirection: 'column', alignItems: 'flex-start', borderBottom: 'none', padding: 0 }}>
-            <Label>Prod. Estimada</Label>
-            <Value>{oeeCalculations.estimatedProduction} pzs</Value>
-          </Row>
-        </FormGrid>
-      </SectionCard>
+        <OeeStatsRow>
+          <OeeStatCol>
+            <OeeStatLabel>Disponibilidad</OeeStatLabel>
+            <OeeStatValue>{oeeCalculations.availability}%</OeeStatValue>
+          </OeeStatCol>
+          <OeeStatCol>
+            <OeeStatLabel>Rendimiento</OeeStatLabel>
+            <OeeStatValue>{oeeCalculations.performance}%</OeeStatValue>
+          </OeeStatCol>
+          <OeeStatCol>
+            <OeeStatLabel>Calidad</OeeStatLabel>
+            <OeeStatValue>{oeeCalculations.quality}%</OeeStatValue>
+          </OeeStatCol>
+        </OeeStatsRow>
+      </OeeHeroContainer>
 
       {/* TARJETA 2: DATOS DEL LOTE ACTUAL */}
-      <SectionCard>
-        <Row>
+      <FlatRowGroup>
+        <FlatRow>
           <Label>Línea a Cargo</Label>
           <Value>{supervisorLineId}</Value>
-        </Row>
+        </FlatRow>
         
-        <Row>
+        <FlatRow>
           <Label>SKU Activo (Lote)</Label>
           <SkuValue onClick={handleSkuClick} id="sku-detector-trigger">
             {sku}
           </SkuValue>
-        </Row>
+        </FlatRow>
 
-        <Row>
+        <FlatRow>
           <Label>Velocidad Teórica</Label>
           <Value>{sku.includes("BOST") ? "120 pzs/min" : sku.includes("LITE") ? "80 pzs/min" : "100 pzs/min"}</Value>
-        </Row>
-      </SectionCard>
+        </FlatRow>
+      </FlatRowGroup>
 
       {/* TARJETA 3: REGISTRO DE PAROS TÉCNICOS JERÁRQUICOS */}
-      <SectionCard id="paro-tecnico-card">
+      <DenseSectionGroup id="paro-tecnico-card">
         <SectionTitle>
-          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#EF4444" strokeWidth="2.5">
+          <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#EF4444" strokeWidth="2.5">
             <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
             <line x1="9" y1="9" x2="15" y2="15"/>
             <line x1="15" y1="9" x2="9" y2="15"/>
           </svg>
-          <span>Registro de Paros Técnicos de la Jornada</span>
+          <span>Registro de Paros Técnicos</span>
         </SectionTitle>
 
-        {lineState?.status === "PRODUCCION" ? (
-          <form onSubmit={handleStartParo} style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-            <FormGrid>
-              <FormGroup>
-                <FormLabel htmlFor="master-category">Categoría (Máster)</FormLabel>
-                <Select 
-                  id="master-category" 
-                  value={masterCategory} 
-                  onChange={handleMasterChange}
-                >
-                  <option value="MECÁNICO">Mecánico</option>
-                  <option value="ELÉCTRICO">Eléctrico</option>
-                  <option value="CALIDAD">Calidad</option>
-                  <option value="FALTA_DE_MATERIAL">Falta de Material</option>
-                </Select>
-              </FormGroup>
+        {lineState?.status === "PRODUCCION" || lineState?.status === "ARRANQUE" ? (
+          <form onSubmit={handleStartParo} style={{ display: 'flex', flexDirection: 'column', margin: 0 }}>
+            <FormRow>
+              <FormLabel htmlFor="master-category">Categoría</FormLabel>
+              <Select 
+                id="master-category" 
+                value={masterCategory} 
+                onChange={handleMasterChange}
+              >
+                <option value="MECÁNICO">Mecánico</option>
+                <option value="ELÉCTRICO">Eléctrico</option>
+                <option value="CALIDAD">Calidad</option>
+                <option value="FALTA_DE_MATERIAL">Falta de Material</option>
+              </Select>
+            </FormRow>
 
-              <FormGroup>
-                <FormLabel htmlFor="slave-cause">Causa Técnica (Esclavo)</FormLabel>
-                <Select 
-                  id="slave-cause" 
-                  value={slaveCause} 
-                  onChange={(e) => setSlaveCause(e.target.value)}
-                >
-                  {PARO_MAP[masterCategory].map(cause => (
-                    <option key={cause} value={cause}>{cause.replaceAll('_', ' ')}</option>
-                  ))}
-                </Select>
-              </FormGroup>
-            </FormGrid>
+            <FormRow>
+              <FormLabel htmlFor="slave-cause">Causa Técnica</FormLabel>
+              <Select 
+                id="slave-cause" 
+                value={slaveCause} 
+                onChange={(e) => setSlaveCause(e.target.value)}
+              >
+                {PARO_MAP[masterCategory].map(cause => (
+                  <option key={cause} value={cause}>{cause.replaceAll('_', ' ')}</option>
+                ))}
+              </Select>
+            </FormRow>
 
             <FormGroup>
-              <FormLabel htmlFor="symptoms-input">Síntomas del Equipo / Comentarios (Obligatorio)</FormLabel>
+              <FormLabel htmlFor="symptoms-input" style={{ marginBottom: '4px' }}>Síntomas del Equipo / Comentarios</FormLabel>
               <Textarea 
                 id="symptoms-input" 
                 placeholder="Describa síntomas físicos observados del equipo..." 
@@ -846,131 +1020,141 @@ export default function LineaSku({ supervisorLineId = "L4" }) {
               />
             </FormGroup>
 
-            <SubmitButton 
-              type="submit" 
-              intent="danger" 
-              id="toggle-paro-tecnico-button"
-            >
-              REGISTRAR PARO E INICIAR DETENCIÓN
-            </SubmitButton>
+            <ButtonWrapper>
+              <SubmitButton 
+                type="submit" 
+                intent="danger" 
+                id="toggle-paro-tecnico-button"
+              >
+                REGISTRAR PARO E INICIAR DETENCIÓN
+              </SubmitButton>
+            </ButtonWrapper>
           </form>
         ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-            <BlockWarning style={{ backgroundColor: '#FEF2F2', borderColor: '#FCA5A5', color: '#991B1B' }}>
-              <strong>LÍNEA PARADA ── MODO PREPARACIÓN ACTIVO</strong>
-              <span>
-                Categoría: {lineState?.activeParo?.category} ── Causa: {lineState?.activeParo?.cause.replaceAll('_', ' ')}
-              </span>
-              <span>
+          <div style={{ display: 'flex', flexDirection: 'column' }}>
+            <BlockWarning>
+              <strong style={{ fontSize: '11px', textTransform: 'uppercase' }}>
+                Línea Parada ── {lineState?.status === "PARO" ? "Paro Técnico" : "Modo Preparación"}
+              </strong>
+              <div style={{ fontSize: '11px', opacity: 0.9 }}>
+                Categoría: <strong>{lineState?.activeParo?.category}</strong>
+              </div>
+              <div style={{ fontSize: '11px', opacity: 0.9 }}>
+                Causa: <strong>{lineState?.activeParo?.cause.replaceAll('_', ' ')}</strong>
+              </div>
+              <div style={{ fontSize: '11px', opacity: 0.85 }}>
                 Síntomas: {lineState?.activeParo?.symptoms}
-              </span>
+              </div>
             </BlockWarning>
 
-            <SubmitButton 
-              onClick={handleEndParo} 
-              intent="success" 
-              id="toggle-paro-tecnico-button"
-            >
-              REANUDAR PRODUCCIÓN DE LÍNEA (PARAR CRONÓMETRO)
-            </SubmitButton>
+            <ButtonWrapper>
+              <SubmitButton 
+                onClick={handleEndParo} 
+                intent="success" 
+                id="toggle-paro-tecnico-button"
+              >
+                REANUDAR PRODUCCIÓN DE LÍNEA
+              </SubmitButton>
+            </ButtonWrapper>
           </div>
         )}
-      </SectionCard>
+      </DenseSectionGroup>
 
       {/* TARJETA 4: FORMULARIO DUAL DE MERMAS OBLIGATORIO */}
-      <SectionCard id="formulario-mermas-card">
+      <DenseSectionGroup id="formulario-mermas-card">
         <SectionTitle>
-          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#2563EB" strokeWidth="2.5">
+          <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#2563EB" strokeWidth="2.5">
             <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>
           </svg>
-          <span>Formulario Estructurado de Mermas del Lote</span>
+          <span>Formulario de Mermas</span>
         </SectionTitle>
 
-        <MermaTable>
-          <thead>
-            <tr>
-              <Th>Material</Th>
-              <Th>Avería Inventario</Th>
-              <Th>Avería Proceso</Th>
-            </tr>
-          </thead>
-          <tbody>
-            {Object.keys(mermas).map(material => (
-              <tr key={material}>
-                <Td style={{ textTransform: 'capitalize', fontWeight: 'bold', color: '#475569' }}>
-                  {material}
-                </Td>
-                <Td>
-                  <NumberInput 
+        <MermaHeaderRow>
+          <MermaHeaderCol>Material</MermaHeaderCol>
+          <div style={{ display: 'flex', gap: '30px', paddingRight: '12px' }}>
+            <MermaHeaderCol>Inventario</MermaHeaderCol>
+            <MermaHeaderCol>Proceso</MermaHeaderCol>
+          </div>
+        </MermaHeaderRow>
+
+        <MermaListGroup>
+          {Object.keys(mermas || {}).map(material => (
+            <MermaRow key={material}>
+              <MermaLabel>{material}</MermaLabel>
+              <MermaInputsContainer>
+                <MermaInputWrapper>
+                  <MermaNumberInput 
                     type="number"
                     min="0"
                     id={`merma-${material}-inventario`}
-                    value={mermas[material].inventario}
+                    value={mermas[material]?.inventario ?? 0}
                     onChange={(e) => handleMermaChange(material, 'inventario', e.target.value)}
                   />
-                </Td>
-                <Td>
-                  <NumberInput 
+                </MermaInputWrapper>
+                <MermaInputWrapper>
+                  <MermaNumberInput 
                     type="number"
                     min="0"
                     id={`merma-${material}-proceso`}
-                    value={mermas[material].proceso}
+                    value={mermas[material]?.proceso ?? 0}
                     onChange={(e) => handleMermaChange(material, 'proceso', e.target.value)}
                   />
-                </Td>
-              </tr>
-            ))}
-          </tbody>
-        </MermaTable>
+                </MermaInputWrapper>
+              </MermaInputsContainer>
+            </MermaRow>
+          ))}
+        </MermaListGroup>
 
-        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', fontWeight: 700, padding: '10px 4px', borderTop: '1px solid #E2E8F0', marginTop: '6px' }}>
-          <span>Desperdicio de Proceso Actual:</span>
-          <span style={{ color: wasteExceedsLimit ? '#DC2626' : '$successBorder' }}>
-            {oeeCalculations.processWaste} pzs ({processWastePercentage.toFixed(2)}%)
+        <MermaSummaryRow>
+          <span style={{ color: '#475569' }}>Desperdicio Proceso Total:</span>
+          <span style={{ color: wasteExceedsLimit ? 'hsl(0, 84%, 44%)' : 'hsl(142, 72%, 29%)' }}>
+            {oeeCalculations.processWaste} pzs ({processWastePercentage.toFixed(1)}%)
           </span>
-        </div>
+        </MermaSummaryRow>
 
         {wasteExceedsLimit && (
-          <BlockWarning id="merma-exceeds-warning">
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ flexShrink: 0 }}>
+          <MermaExcessBlock id="merma-exceeds-warning">
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ flexShrink: 0 }}>
                 <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/>
                 <line x1="12" y1="9" x2="12" y2="13"/>
                 <line x1="12" y1="17" x2="12.01" y2="17"/>
               </svg>
-              <strong>BLOQUEO DE SEGURIDAD: DESPERCIPCIO EXCESIVO ({processWastePercentage.toFixed(1)}% &gt; 5.0%)</strong>
+              <strong style={{ fontSize: '11px' }}>DESPERDICIO EXCESIVO ({processWastePercentage.toFixed(1)}% &gt; 5.0%)</strong>
             </div>
-            <span>
-              El desperdicio en proceso supera el límite tolerado de calidad del 5.0%. Debe justificar los factores industriales de merma para desbloquear el registro.
+            <span style={{ fontSize: '11px', opacity: 0.9 }}>
+              El desperdicio supera el límite tolerado del 5.0%. Justifique los factores de merma.
             </span>
-            <FormGroup style={{ marginTop: '8px' }}>
-              <FormLabel style={{ color: '#9F1239' }} htmlFor="merma-justification-input">Redacte Justificación Industrial Completa</FormLabel>
+            <FormGroup style={{ gap: '4px', padding: 0, borderBottom: 'none', backgroundColor: 'transparent' }}>
+              <FormLabel style={{ color: 'hsl(0, 84%, 44%)', fontSize: '10px' }} htmlFor="merma-justification-input">Justificación Industrial</FormLabel>
               <Textarea 
                 id="merma-justification-input"
-                placeholder="Escriba aquí los factores y síntomas que justifican la merma excesiva..."
+                placeholder="Escriba los factores y síntomas que justifican la merma..."
                 value={mermaJustification}
                 onChange={(e) => setMermaJustification(e.target.value)}
                 style={{ borderColor: '#FDA4AF', backgroundColor: '#FFF5F5' }}
               />
             </FormGroup>
-          </BlockWarning>
+          </MermaExcessBlock>
         )}
 
-        <SubmitButton 
-          intent="primary"
-          disabled={isSaveMermaDisabled}
-          onClick={handleSaveMermas}
-          id="submit-mermas-button"
-        >
-          REGISTRAR Y GUARDAR MERMAS DEL LOTE
-        </SubmitButton>
+        <ButtonWrapper>
+          <SubmitButton 
+            intent="primary"
+            disabled={isSaveMermaDisabled}
+            onClick={handleSaveMermas}
+            id="submit-mermas-button"
+          >
+            REGISTRAR Y GUARDAR MERMAS DEL LOTE
+          </SubmitButton>
 
-        {mermaSavedMsg && (
-          <div id="merma-saved-toast" style={{ fontSize: '11px', color: '#16A34A', fontWeight: 700, textAlign: 'center', marginTop: '4px', backgroundColor: '#DCFCE7', padding: '8px', borderRadius: '6px' }}>
-            ✓ Mermas sincronizadas exitosamente en la nube.
-          </div>
-        )}
-      </SectionCard>
+          {mermaSavedMsg && (
+            <div id="merma-saved-toast" style={{ fontSize: '11px', color: 'hsl(142, 72%, 25%)', fontWeight: 700, textAlign: 'center', backgroundColor: '$successBg', padding: '8px', borderRadius: '6px', border: '1px solid hsl(142, 70%, 90%)' }}>
+              ✓ Mermas sincronizadas exitosamente.
+            </div>
+          )}
+        </ButtonWrapper>
+      </DenseSectionGroup>
 
       {resetPromptVisible && (
         <PromptToast id="localstorage-reset-toast">

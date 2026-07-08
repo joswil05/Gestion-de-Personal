@@ -22,6 +22,7 @@
   "homepage": "https://github.com/joswil05/Gestion-de-Personal#readme",
   "dependencies": {
     "@capacitor/barcode-scanner": "^3.0.2",
+    "@capacitor/network": "^8.0.1",
     "@stitches/react": "^1.2.8",
     "firebase": "^12.13.0",
     "react": "^19.2.6",

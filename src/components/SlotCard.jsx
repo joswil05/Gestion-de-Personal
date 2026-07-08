@@ -1,6 +1,7 @@
 import React from 'react';
 import { styled, keyframes } from '../styles/theme';
 import { MICRO_COPY } from '../skills/ui-saas-master';
+import { getServerTimeOffset } from '../services/firebaseService';
 
 // Keyframes para animaciones de fatiga y advertencia (Modo Claro Premium - Sin Emojis)
 const pulseYellow = keyframes({
@@ -23,133 +24,200 @@ const pulseBorderYellow = keyframes({
   '50%': { borderColor: '$warningBorder', boxShadow: '0 0 8px rgba(234, 179, 8, 0.1)' }
 });
 
-// Tarjeta del Puesto (Rígida a 80px, con desborde oculto y bordes redondeados)
+// Contenedor del Puesto (Fila densa de 64px de alto, sin bordes exteriores, separador inferior)
 const CardContainer = styled('div', {
-  height: '$slotHeight', // Estricto: 80px
+  height: '$listItemHeight', // Estricto: 64px
   backgroundColor: '$card',
-  border: '1px solid $border',
-  borderRadius: '10px',
-  padding: '14px 20px',
+  border: 'none',
+  borderRadius: 0,
+  boxShadow: '$listSeparator', // Separador inferior inset 1px
+  padding: '0 16px 0 24px', // Mayor padding a la izquierda para acomodar la barra de estado
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'space-between',
+  gap: '12px',
   boxSizing: 'border-box',
   fontFamily: '$sans',
   position: 'relative',
   overflow: 'hidden',
-  boxShadow: '$subtle',
-  transition: 'all 0.2s cubic-bezier(0.16, 1, 0.3, 1)',
+  transition: 'background-color 0.2s',
   cursor: 'pointer',
 
   '&:hover': {
-    borderColor: '#CBD5E1',
-    boxShadow: '$elevation1'
+    backgroundColor: '$surfaceHover'
   },
   
   '&:active': {
-    transform: 'scale(0.97)',
-    boxShadow: '$subtle'
+    backgroundColor: '$surfaceHover'
+  },
+
+  '&:last-child': {
+    boxShadow: 'none'
   },
 
   variants: {
-    status: {
-      ASIGNADO: {
-        borderLeft: '4px solid $accent'
-      },
-      EN_TRANSITO: {
-        backgroundColor: '$transitBg',
-        borderLeft: '4px solid $transitBorder'
-      },
-      DISPONIBLE_BOLSON: {
-        backgroundColor: '$successBg',
-        borderLeft: '4px solid $successBorder'
-      },
-      BAJA_TEMPORAL: {
-        backgroundColor: '$dangerBg',
-        borderLeft: '4px solid $dangerBorder'
-      },
-      POOL_ARRANQUE: {
-        backgroundColor: '$infoBg',
-        borderLeft: '4px solid $infoBorder'
-      },
-      VACANTE: {
-        borderLeft: '4px solid #94A3B8',
-        borderStyle: 'dashed',
-        backgroundColor: '#F8FAFC',
-        '&:hover': {
-          backgroundColor: '#FFFFFF',
-          borderColor: '$accent'
-        }
-      },
-      ALERTA_VACANTE: {
-        borderLeft: '4px solid $dangerBorder',
-        borderStyle: 'dashed',
-        backgroundColor: '$dangerBg',
-        '&:hover': {
-          backgroundColor: '#FFFFFF',
-          borderColor: '$dangerBorder'
-        }
-      }
-    },
     fatigue: {
       NORMAL: {},
       SUGERIDO: {
         animation: `${pulseBorderYellow} 2s infinite`,
-        borderLeft: '4px solid $warningBorder !important'
       },
       CRITICO: {
         animation: `${pulseBorderRed} 1s infinite`,
-        borderLeft: '4px solid $dangerBorder !important'
       }
     },
     isOffline: {
       true: {
         backgroundImage: '$offlineBg',
-        borderColor: '#94A3B8',
-        borderLeft: '4px solid #64748B',
         opacity: 0.85
       }
     }
   }
 });
 
-// Columna izquierda con información del puesto y operario
+// Barra indicadora vertical izquierda (Aspecto nativo premium)
+const StatusIndicatorBar = styled('div', {
+  position: 'absolute',
+  left: 0,
+  top: 0,
+  bottom: 0,
+  width: '5px',
+  transition: 'all 0.25s ease',
+  
+  variants: {
+    status: {
+      ASIGNADO: {
+        backgroundColor: '$accent'
+      },
+      EN_TRANSITO: {
+        backgroundColor: '$transitBorder'
+      },
+      DISPONIBLE_BOLSON: {
+        backgroundColor: '$successBorder'
+      },
+      BAJA_TEMPORAL: {
+        backgroundColor: '$dangerBorder'
+      },
+      POOL_ARRANQUE: {
+        backgroundColor: '$infoBorder'
+      },
+      VACANTE: {
+        backgroundColor: '#94A3B8'
+      },
+      ALERTA_VACANTE: {
+        backgroundColor: '$dangerBorder'
+      }
+    },
+    fatigue: {
+      NORMAL: {},
+      SUGERIDO: {
+        backgroundColor: '$warningBorder !important'
+      },
+      CRITICO: {
+        backgroundColor: '$dangerBorder !important'
+      }
+    }
+  }
+});
+
+// ZONA A: Avatar circular con iniciales o placeholder
+const AvatarCircle = styled('div', {
+  width: '$avatarSize', // 36px
+  height: '$avatarSize',
+  borderRadius: '50%',
+  backgroundColor: '$chipAccentBg',
+  color: '$chipAccentText',
+  fontSize: '$fonts$sizeMeta',
+  fontWeight: '$fonts$weightBold',
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  flexShrink: 0
+});
+
+const VacantAvatarCircle = styled('div', {
+  width: '$avatarSize', // 36px
+  height: '$avatarSize',
+  borderRadius: '50%',
+  backgroundColor: '#F1F5F9',
+  color: '#94A3B8',
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  flexShrink: 0
+});
+
+// ZONA B: Información del puesto
 const InfoSection = styled('div', {
   display: 'flex',
   flexDirection: 'column',
   justifyContent: 'center',
-  maxWidth: '72%'
+  flex: 1,
+  padding: '0 12px',
+  minWidth: 0
 });
 
-// Identificación del Puesto
+// Título del puesto
 const SlotTitle = styled('div', {
-  fontSize: '13px',
-  fontWeight: 600,
+  fontSize: '$fonts$sizeBody',
+  fontWeight: '$fonts$weightSemibold',
   color: '$textPrimary',
-  marginBottom: '3px',
   display: 'flex',
   alignItems: 'center',
-  gap: '6px'
+  gap: '6px',
+  minWidth: 0
 });
 
-// Nombre y rol del operario
+// Punto de estado para mayor legibilidad
+const StatusDot = styled('span', {
+  width: '6px',
+  height: '6px',
+  borderRadius: '50%',
+  display: 'inline-block',
+  flexShrink: 0,
+
+  variants: {
+    status: {
+      ASIGNADO: {
+        backgroundColor: '$statusOkDot'
+      },
+      VACANTE: {
+        backgroundColor: '#CBD5E1'
+      },
+      EN_TRANSITO: {
+        backgroundColor: '$transitBorder'
+      },
+      BAJA_TEMPORAL: {
+        backgroundColor: '$dangerBorder'
+      },
+      POOL_ARRANQUE: {
+        backgroundColor: '$infoBorder'
+      },
+      ALERTA_VACANTE: {
+        backgroundColor: '$dangerBorder'
+      }
+    }
+  }
+});
+
+// Información del operario asignado
 const WorkerInfo = styled('div', {
-  fontSize: '11px',
+  fontSize: '$fonts$sizeMeta',
   color: '$textSecondary',
   display: 'flex',
   alignItems: 'center',
   gap: '4px',
   whiteSpace: 'nowrap',
   overflow: 'hidden',
-  textOverflow: 'ellipsis'
+  textOverflow: 'ellipsis',
+  marginTop: '2px'
 });
 
-// Micro-copia explicativa para transparentar los motores de planta
+// Micro-copia contextual
 const ContextMicroCopy = styled('span', {
   fontSize: '10px',
   fontWeight: 500,
   color: '$textSecondary',
-  marginTop: '2px',
+  marginTop: '1px',
   fontStyle: 'italic',
   display: 'block',
   whiteSpace: 'nowrap',
@@ -157,72 +225,118 @@ const ContextMicroCopy = styled('span', {
   textOverflow: 'ellipsis'
 });
 
-// Columna derecha con acciones y badges
+// ZONA C: Columna derecha para acciones y chips
 const ActionSection = styled('div', {
   display: 'flex',
   flexDirection: 'column',
   alignItems: 'flex-end',
   justifyContent: 'center',
-  gap: '4px'
+  gap: '4px',
+  flexShrink: 0
 });
 
-// Badge de rol
+// Chip de rol
 const RoleBadge = styled('span', {
-  fontSize: '9px',
-  fontWeight: 700,
-  padding: '3px 8px',
-  borderRadius: '4px',
-  textTransform: 'uppercase',
-  backgroundColor: '#FFFFFF',
-  color: '$textSecondary',
-  border: '1px solid $border',
-  letterSpacing: '0.3px',
-  boxShadow: '0 1px 2px rgba(0,0,0,0.02)'
-});
-
-// Badge de fatiga ergonómica (Modo Claro Premium - Sin Emojis)
-const FatigueBadge = styled('span', {
-  fontSize: '9px',
-  fontWeight: 700,
-  padding: '2.5px 7px',
-  borderRadius: '4px',
-  textTransform: 'uppercase',
+  height: '$chipHeight', // 24px
   display: 'inline-flex',
   alignItems: 'center',
-  gap: '4px',
-  letterSpacing: '0.2px',
-  boxShadow: '0 1px 2px rgba(0,0,0,0.02)',
-  fontFamily: 'monospace',
-  fontVariantNumeric: 'tabular-nums',
+  justifyContent: 'center',
+  padding: '0 8px',
+  fontSize: '$fonts$sizeMeta',
+  fontWeight: '$fonts$weightSemibold',
+  borderRadius: '6px',
+  backgroundColor: '$chipNeutralBg',
+  color: '$chipNeutralText',
+  textTransform: 'uppercase',
+  maxWidth: '96px',
+  whiteSpace: 'nowrap',
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
   
   variants: {
-    state: {
-      SUGERIDO: {
-        backgroundColor: '$warningBg',
-        color: '$warningBorder',
-        border: '1px solid $warningBorder',
-      },
-      CRITICO: {
-        backgroundColor: '$dangerBg',
-        color: '$dangerBorder',
-        border: '1px solid $dangerBorder',
-        animation: `${pulseRed} 1s infinite`
+    critical: {
+      true: {
+        backgroundColor: '$chipDangerBg',
+        color: '$chipDangerText'
       }
     }
   }
 });
 
-// Track contenedor de la barra de progreso de fatiga (Absoluto al borde inferior)
+// Botón de escaneo / asignación rápida (Chip neutral compacto de 22px de alto)
+const ScanButton = styled('button', {
+  height: '22px',
+  padding: '0 8px',
+  fontSize: '10px',
+  fontWeight: 600,
+  backgroundColor: '#F1F5F9',
+  color: '#475569',
+  border: '1px solid #E2E8F0',
+  borderRadius: '6px',
+  cursor: 'pointer',
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  gap: '4px',
+  transition: 'all 0.15s ease',
+  boxSizing: 'border-box',
+
+  '&:hover': {
+    backgroundColor: '#E2E8F0',
+    color: '#0F172A'
+  },
+  '&:active': {
+    transform: 'scale(0.95)'
+  }
+});
+
+const OfflineBadge = styled('span', {
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: '4px',
+  fontSize: '10px',
+  fontWeight: 700,
+  color: '#EF4444',
+  backgroundColor: '#FEE2E2',
+  padding: '2px 6px',
+  borderRadius: '4px',
+  border: '1px solid #FCA5A5'
+});
+
+const RelevoDirectButton = styled('button', {
+  padding: '4px 8px',
+  fontSize: '9px',
+  fontWeight: 700,
+  backgroundColor: '$warningBorder',
+  color: '#FFFFFF',
+  border: 'none',
+  borderRadius: '4px',
+  cursor: 'pointer',
+  display: 'flex',
+  alignItems: 'center',
+  gap: '3px',
+  boxShadow: '0 1px 2px rgba(234, 179, 8, 0.1)',
+  transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
+  textTransform: 'uppercase',
+
+  '&:hover': {
+    backgroundColor: '#CA8A04'
+  },
+  '&:active': {
+    transform: 'scale(0.93)'
+  }
+});
+
+// Track de fatiga
 const FatigueProgressTrack = styled('div', {
   position: 'absolute',
   bottom: 0,
   left: 0,
   right: 0,
-  height: '4px',
+  height: '3px',
   backgroundColor: '#E2E8F0',
 });
 
-// Relleno dinámico de la barra de progreso
 const FatigueProgressBar = styled('div', {
   height: '100%',
   transition: 'width 0.4s cubic-bezier(0.4, 0, 0.2, 1)',
@@ -242,80 +356,25 @@ const FatigueProgressBar = styled('div', {
   }
 });
 
-// Botón de escaneo premium vectorial
-const ScanButton = styled('button', {
-  padding: '6px 12px',
-  fontSize: '11px',
-  fontWeight: 600,
-  backgroundColor: '$accent',
-  color: '#FFFFFF',
-  border: 'none',
-  borderRadius: '6px',
-  cursor: 'pointer',
-  display: 'flex',
-  alignItems: 'center',
-  gap: '6px',
-  boxShadow: '0 2px 4px rgba(15, 23, 42, 0.06)',
-  transition: 'all 0.15s ease',
+// --- HELPER FUNCTIONS ---
 
-  '&:hover': {
-    backgroundColor: '#1D4ED8',
-    boxShadow: '0 4px 8px rgba(15, 23, 42, 0.1)'
+const getInitials = (name) => {
+  if (!name) return "";
+  const parts = name.split(" ").filter(Boolean);
+  if (parts.length >= 2) {
+    return (parts[0][0] + parts[1][0]).toUpperCase();
   }
-});
+  return name.slice(0, 2).toUpperCase();
+};
 
-const OfflineBadge = styled('span', {
-  display: 'inline-flex',
-  alignItems: 'center',
-  gap: '4px',
-  fontSize: '10px',
-  fontWeight: 700,
-  color: '#EF4444',
-  backgroundColor: '#FEE2E2',
-  padding: '2px 6px',
-  borderRadius: '4px',
-  border: '1px solid #FCA5A5'
-});
-
-const RelevoDirectButton = styled('button', {
-  padding: '6px 10px',
-  fontSize: '10px',
-  fontWeight: 700,
-  backgroundColor: '$warningBorder',
-  color: '#FFFFFF',
-  border: 'none',
-  borderRadius: '6px',
-  cursor: 'pointer',
-  display: 'flex',
-  alignItems: 'center',
-  gap: '4px',
-  boxShadow: '0 2px 4px rgba(234, 179, 8, 0.15)',
-  transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
-  textTransform: 'uppercase',
-
-  '&:hover': {
-    backgroundColor: '#CA8A04',
-    boxShadow: '0 4px 8px rgba(234, 179, 8, 0.25)'
-  },
-  '&:active': {
-    transform: 'scale(0.93)'
-  }
-});
+const isCriticalRole = (role) => {
+  if (!role) return false;
+  const upper = role.toUpperCase();
+  return upper.includes("AVERIERO") || upper.includes("TECNICO") || upper.includes("TÉCNICO") || upper.includes("OPERADOR A");
+};
 
 // --- COMPONENT IMPLEMENTATION ---
 
-/**
- * SlotCard Component - Tarjeta de celda operativa del HUD (altura estricta de 80px)
- * Estética: Premium SaaS Light. Prohibido el uso de emojis.
- * 
- * @param {string} slotId Identificador del puesto
- * @param {string} slotName Nombre descriptivo (ej: "Alineadora de SKU")
- * @param {object} worker Datos del trabajador asignado (opcional)
- * @param {string} status Estado del puesto
- * @param {boolean} isOffline Indica si la app está en modo offline (activa UI defensiva)
- * @param {function} onActionClick Callback de interacción (ej: abrir scanner)
- * @param {function} onRelevoClick Callback directo para solicitar relevo ergonómico
- */
 export default function SlotCard({ 
   slotId, 
   slotName, 
@@ -351,7 +410,9 @@ export default function SlotCard({
     }
 
     const calculateElapsed = () => {
-      const diffMs = Date.now() - asignadoTime;
+      const offset = getServerTimeOffset();
+      const correctedNow = Date.now() + offset;
+      const diffMs = correctedNow - asignadoTime;
       const mins = Math.max(0, Math.floor(diffMs / 60000));
       setElapsedMinutes(mins);
     };
@@ -364,7 +425,6 @@ export default function SlotCard({
   const fatigueState = React.useMemo(() => {
     if (status !== 'ASIGNADO' || !asignadoTime) return 'NORMAL';
     
-    // El sistema de fatiga NO aplica para operadores ni supervisores (puestos fijos críticos), solo puestos varios
     const esFijo = ["Operador A", "Averiero", "Operador C"].includes(tipoPuesto);
     if (esFijo) return 'NORMAL';
 
@@ -409,17 +469,31 @@ export default function SlotCard({
   return (
     <CardContainer 
       id={`slot-card-${slotId}`}
-      status={status} 
       fatigue={status === 'ASIGNADO' && !esFijoPuesto ? fatigueState : 'NORMAL'}
       isOffline={isOffline}
       onClick={() => onActionClick && onActionClick(slotId)}
     >
+      <StatusIndicatorBar status={status} fatigue={status === 'ASIGNADO' && !esFijoPuesto ? fatigueState : 'NORMAL'} />
+      
+      {/* ZONA A: Avatar circular con iniciales o silueta */}
+      {worker ? (
+        <AvatarCircle>{getInitials(worker.name)}</AvatarCircle>
+      ) : (
+        <VacantAvatarCircle>
+          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/>
+            <circle cx="12" cy="7" r="4"/>
+          </svg>
+        </VacantAvatarCircle>
+      )}
+
+      {/* ZONA B: Información del Puesto y Operario */}
       <InfoSection>
         <SlotTitle>
           <span>{slotName}</span>
+          <StatusDot status={status} />
           {isOffline && (
             <OfflineBadge>
-              {/* Icono de advertencia vectorial */}
               <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                 <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/>
                 <line x1="12" y1="9" x2="12" y2="13"/>
@@ -433,8 +507,8 @@ export default function SlotCard({
         <WorkerInfo>
           {worker ? (
             <>
-              <strong style={{ color: '#0F172A' }}>{worker.name}</strong>
-              <span style={{ fontFamily: 'monospace' }}>({worker.id})</span>
+              <strong style={{ color: '#0F172A', fontWeight: 600 }}>{worker.name}</strong>
+              <span style={{ fontFamily: 'monospace', color: '#64748B', fontSize: '11px' }}>({worker.id})</span>
             </>
           ) : (
             <span style={{ color: '#94A3B8', fontWeight: 500 }}>Puesto Desocupado</span>
@@ -448,10 +522,11 @@ export default function SlotCard({
         )}
       </InfoSection>
 
+      {/* ZONA C: Badge de Rol y Estado de Relevo */}
       <ActionSection>
         {worker ? (
           <>
-            <RoleBadge>{worker.role}</RoleBadge>
+            <RoleBadge critical={isCriticalRole(worker.role)}>{worker.role}</RoleBadge>
             {relevistaInTransit ? (
               <RelevoDirectButton
                 id={`relevo-direct-${slotId}`}
@@ -482,8 +557,7 @@ export default function SlotCard({
           <ScanButton 
             id={`scan-slot-${slotId}-button`}
           >
-            {/* Scan Viewfinder Icon */}
-            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
               <path d="M3 7V5a2 2 0 0 1 2-2h2" />
               <path d="M17 3h2a2 2 0 0 1 2 2v2" />
               <path d="M21 17v2a2 2 0 0 1-2 2h-2" />

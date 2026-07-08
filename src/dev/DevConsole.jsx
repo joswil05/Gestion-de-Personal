@@ -2497,6 +2497,7 @@ export default function DevConsole() {
         const titularPuesto = workerToPuestoMap[w.id] || "Soporte Varios";
         insertBatch.set(doc(db, "trabajadores", w.id), {
           ...w,
+          status: "INACTIVO",
           puestoTitular: titularPuesto
         });
       });
@@ -2546,8 +2547,8 @@ export default function DevConsole() {
         }
         
         batch.update(doc(db, "trabajadores", worker.id), {
-          status: isPresent ? "POOL_ARRANQUE" : "INACTIVO",
-          physicalLineLocation: targetLine,
+          status: "INACTIVO",
+          physicalLineLocation: isPresent ? targetLine : null,
           currentSlotId: null,
           lineaDestinoId: null
         });
@@ -2796,6 +2797,9 @@ export default function DevConsole() {
         </TabButton>
         <TabButton id="tab-btn-monitor" active={currentTab === 'monitor'} onClick={() => setCurrentTab('monitor')}>
           📊 Monitor en Vivo de Planta
+        </TabButton>
+        <TabButton id="tab-btn-qrs" active={currentTab === 'qrs'} onClick={() => setCurrentTab('qrs')}>
+          🎟️ Gafetes QR Roster
         </TabButton>
       </TabNav>
 
@@ -3659,11 +3663,61 @@ export default function DevConsole() {
                   const worker = realtimeWorkers.find(w => w.id === selectedWorkerId);
                   if (!worker) return null;
                   return (
-                    <div style={{ fontSize: '11px', backgroundColor: '#FFFFFF', border: '1px solid #E2E8F0', padding: '8px', borderRadius: '6px', lineHeight: 1.4 }}>
-                      🏷️ <strong>Rol:</strong> {worker.role} <br/>
-                      📋 <strong>Celda actual:</strong> {worker.currentSlotId || 'Ninguna'} <br/>
-                      📍 <strong>Locación física:</strong> {worker.physicalLineLocation || 'Fuera'} <br/>
-                      🩹 <strong>Restricciones:</strong> [{worker.medicalRestrictions?.join(', ') || 'Ninguna'}]
+                    <div style={{ 
+                      fontSize: '11px', 
+                      backgroundColor: '#FFFFFF', 
+                      border: '1px solid #E2E8F0', 
+                      padding: '12px', 
+                      borderRadius: '6px', 
+                      lineHeight: 1.4,
+                      display: 'flex',
+                      flexDirection: 'column',
+                      alignItems: 'center',
+                      gap: '8px'
+                    }}>
+                      <div style={{ width: '100%' }}>
+                        🏷️ <strong>Rol:</strong> {worker.role} <br/>
+                        📋 <strong>Celda actual:</strong> {worker.currentSlotId || 'Ninguna'} <br/>
+                        📍 <strong>Locación física:</strong> {worker.physicalLineLocation || 'Fuera'} <br/>
+                        🩹 <strong>Restricciones:</strong> [{worker.medicalRestrictions?.join(', ') || 'Ninguna'}]
+                      </div>
+                      
+                      <div style={{ 
+                        borderTop: '1px dashed #CBD5E1', 
+                        paddingTop: '10px', 
+                        width: '100%', 
+                        display: 'flex', 
+                        flexDirection: 'column', 
+                        alignItems: 'center', 
+                        gap: '6px' 
+                      }}>
+                        <span style={{ fontSize: '9px', fontWeight: 800, color: '#475569', textTransform: 'uppercase' }}>
+                          Gafete de Identificación QR (Escaneable)
+                        </span>
+                        
+                        <div style={{ 
+                          padding: '6px', 
+                          border: '2px solid #334155', 
+                          borderRadius: '8px', 
+                          backgroundColor: '#FFFFFF',
+                          boxShadow: '0 4px 12px rgba(0,0,0,0.05)',
+                          display: 'flex',
+                          justifyContent: 'center',
+                          alignItems: 'center'
+                        }}>
+                          <img 
+                            src={`https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${worker.id}`} 
+                            alt={`Código QR de ${worker.name}`}
+                            style={{ width: '200px', height: '200px', display: 'block' }}
+                          />
+                        </div>
+                        <span style={{ fontSize: '9.5px', fontFamily: 'monospace', color: '#1E293B', fontWeight: 700 }}>
+                          {worker.id}
+                        </span>
+                        <p style={{ fontSize: '8.5px', color: '#94A3B8', margin: 0, textAlign: 'center', lineHeight: 1.2 }}>
+                          Abre la cámara del lector QR en la tablet de planta y apunta a esta imagen para simular el escaneo real de gafete de {worker.name}.
+                        </p>
+                      </div>
                     </div>
                   );
                 })()}
@@ -3806,6 +3860,140 @@ export default function DevConsole() {
           </HeatmapLegend>
         </HeatmapContainer>
       </LayoutGrid>
+
+      {/* TAB DE GAFETES QR DEL ROSTER */}
+      <div style={{ display: currentTab === 'qrs' ? 'block' : 'none', marginTop: '16px' }}>
+        <div style={{ padding: '16px', border: '1px solid #E2E8F0', borderRadius: '12px', backgroundColor: '#FFFFFF', boxShadow: '0 4px 6px rgba(0,0,0,0.05)' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1.5px solid #F1F5F9', paddingBottom: '12px', marginBottom: '16px' }}>
+            <div>
+              <h2 style={{ fontSize: '18px', fontWeight: 800, color: '#1E293B', margin: 0 }}>
+                🎟️ Panel de Gafetes QR de Operarios y Liderazgo
+              </h2>
+              <p style={{ fontSize: '12px', color: '#64748B', margin: '4px 0 0 0' }}>
+                Escanea los códigos QR de los trabajadores directamente desde esta pantalla usando la cámara de tu teléfono o tablet.
+              </p>
+            </div>
+            
+            {/* Filtros rápidos */}
+            <div style={{ display: 'flex', gap: '8px' }}>
+              <select 
+                style={{ fontSize: '11px', padding: '6px 12px', borderRadius: '6px', border: '1px solid #CBD5E1', backgroundColor: '#F8FAFC', fontWeight: 600, color: '#475569', cursor: 'pointer' }}
+                id="qr-role-filter"
+                defaultValue="todos"
+                onChange={(e) => {
+                  const val = e.target.value;
+                  const cards = document.querySelectorAll('.qr-worker-card');
+                  cards.forEach(card => {
+                    const role = card.getAttribute('data-role');
+                    const isLeadership = ["supervisor", "jefe", "coordinador", "coordinadora", "analista", "analista de procesos", "jefe de turno"].includes(role);
+                    if (val === 'todos') {
+                      card.style.display = 'flex';
+                    } else if (val === 'liderazgo') {
+                      card.style.display = isLeadership ? 'flex' : 'none';
+                    } else if (val === 'operarios') {
+                      card.style.display = !isLeadership ? 'flex' : 'none';
+                    }
+                  });
+                }}
+              >
+                <option value="todos">Mostrar Todos</option>
+                <option value="liderazgo">Solo Liderazgo / Administrativos</option>
+                <option value="operarios">Solo Operarios / Varios</option>
+              </select>
+            </div>
+          </div>
+
+          <div style={{ 
+            display: 'grid', 
+            gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', 
+            gap: '16px',
+            maxHeight: '70vh',
+            overflowY: 'auto',
+            padding: '8px 4px'
+          }}>
+            {realtimeWorkers.map(w => {
+              const roleLower = (w.role || "").trim().toLowerCase();
+              const isLeadership = ["supervisor", "jefe", "coordinador", "coordinadora", "analista", "analista de procesos", "jefe de turno"].includes(roleLower);
+              
+              return (
+                <div 
+                  key={w.id} 
+                  className="qr-worker-card"
+                  data-role={roleLower}
+                  style={{ 
+                    border: '1.5px solid #E2E8F0', 
+                    borderRadius: '10px', 
+                    padding: '12px', 
+                    backgroundColor: '#F8FAFC',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    gap: '8px',
+                    transition: 'all 0.2s ease',
+                    boxShadow: '0 2px 4px rgba(0,0,0,0.02)'
+                  }}
+                >
+                  <span style={{ 
+                    fontSize: '9px', 
+                    fontWeight: 800, 
+                    padding: '3px 8px', 
+                    borderRadius: '12px',
+                    backgroundColor: isLeadership ? '#FEF3C7' : '#DBEAFE',
+                    color: isLeadership ? '#D97706' : '#2563EB',
+                    alignSelf: 'stretch',
+                    textAlign: 'center',
+                    textTransform: 'uppercase'
+                  }}>
+                    {w.role}
+                  </span>
+
+                  <strong style={{ fontSize: '12px', color: '#1E293B', textAlign: 'center', height: '32px', display: 'flex', alignItems: 'center', justifyContent: 'center', lineHeight: 1.2 }}>
+                    {w.name}
+                  </strong>
+
+                  <div style={{ 
+                    padding: '6px', 
+                    border: '1.5px solid #CBD5E1', 
+                    borderRadius: '8px', 
+                    backgroundColor: '#FFFFFF',
+                    display: 'flex',
+                    justifyContent: 'center',
+                    alignItems: 'center'
+                  }}>
+                    <img 
+                      src={`https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${w.id}`} 
+                      alt={`QR de ${w.name}`}
+                      style={{ width: '200px', height: '200px', display: 'block' }}
+                      loading="lazy"
+                    />
+                  </div>
+
+                  <span style={{ fontSize: '9px', fontFamily: 'monospace', color: '#64748B', fontWeight: 700 }}>
+                    {w.id}
+                  </span>
+
+                  <span style={{ 
+                    fontSize: '9px', 
+                    fontWeight: 700, 
+                    color: w.status === 'ASIGNADO' ? '#EF4444' : '#10B981',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '4px'
+                  }}>
+                    <span style={{ 
+                      width: '6px', 
+                      height: '6px', 
+                      borderRadius: '50%', 
+                      backgroundColor: w.status === 'ASIGNADO' ? '#EF4444' : '#10B981' 
+                    }}/>
+                    {w.status === 'ASIGNADO' ? 'Asignado' : 'Disponible'}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </div>
 
     </ConsoleContainer>
   );

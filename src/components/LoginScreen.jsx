@@ -3,6 +3,7 @@ import { styled } from '../styles/theme';
 import { db } from '../services/firebaseService';
 import { doc, getDoc } from 'firebase/firestore';
 import { triggerNativeHapticFeedback } from '../skills/capacitor-android-bridge';
+import { REAL_SUPERVISORS } from '../dev/realDataSeed';
 
 // --- STITCHES STYLED LOGIN COMPONENTS ---
 
@@ -170,11 +171,13 @@ export default function LoginScreen({ onLoginSuccess }) {
   const [selectedLine, setSelectedLine] = useState("L4");
   const [selectedRole, setSelectedRole] = useState("SUPERVISOR"); // "SUPERVISOR" | "COORDINADOR"
   const [activeLines, setActiveLines] = useState(["L4", "L1", "L2", "L6", "L7", "L5", "L3", "L8", "L9", "L10"]);
+  const [supervisorsAssignment, setSupervisorsAssignment] = useState({});
   const [errorText, setErrorText] = useState("");
+  const [warningText, setWarningText] = useState("");
 
   // Cargar líneas planificadas y prioritarias desde Firestore al montar
   useEffect(() => {
-    const fetchActiveLines = async () => {
+    const fetchConfigData = async () => {
       try {
         const globalPriorityDoc = await getDoc(doc(db, "config", "global_priority"));
         if (globalPriorityDoc.exists()) {
@@ -187,10 +190,60 @@ export default function LoginScreen({ onLoginSuccess }) {
       } catch (err) {
         console.warn("[LoginScreen] Error consultando config/global_priority, usando fallback:", err);
       }
+
+      try {
+        const supsDoc = await getDoc(doc(db, "config", "supervisors_assignment"));
+        if (supsDoc.exists()) {
+          setSupervisorsAssignment(supsDoc.data());
+        }
+      } catch (err) {
+        console.warn("[LoginScreen] Error consultando config/supervisors_assignment:", err);
+      }
     };
 
-    fetchActiveLines();
+    fetchConfigData();
   }, []);
+
+  // Escuchar cambio en el rol o la línea seleccionada para auto-completar supervisor
+  useEffect(() => {
+    if (selectedRole === "SUPERVISOR" && selectedLine) {
+      const assignment = supervisorsAssignment[selectedLine];
+      if (assignment && assignment.workerId) {
+        // Encontrar en REAL_SUPERVISORS para setear el workerId
+        const match = REAL_SUPERVISORS.find(s => s.id === assignment.workerId);
+        if (match) {
+          setSupervisorName(match.id);
+          setWarningText("");
+        } else {
+          setSupervisorName("");
+        }
+      } else {
+        setSupervisorName("");
+      }
+    } else {
+      setSupervisorName("");
+    }
+  }, [selectedLine, selectedRole, supervisorsAssignment]);
+
+  const handleSupervisorSelect = (e) => {
+    const val = e.target.value;
+    setSupervisorName(val);
+    setErrorText("");
+
+    if (!val) {
+      setWarningText("");
+      return;
+    }
+
+    const assigned = supervisorsAssignment[selectedLine];
+    if (assigned && assigned.workerId && assigned.workerId !== val) {
+      const actualName = REAL_SUPERVISORS.find(s => s.id === val)?.shortName || val;
+      const expectedName = assigned.shortName || assigned.name;
+      setWarningText(`Aviso: El coordinador asignó a "${expectedName}" a esta línea. Estás ingresando como "${actualName}".`);
+    } else {
+      setWarningText("");
+    }
+  };
 
   const handleSubmit = (e) => {
     e.preventDefault();
@@ -199,21 +252,29 @@ export default function LoginScreen({ onLoginSuccess }) {
     const trimmedName = supervisorName.trim();
     if (!trimmedName) {
       triggerNativeHapticFeedback('error');
-      setErrorText(selectedRole === "COORDINADOR" ? "Por favor, introduce tu nombre de coordinador." : "Por favor, introduce tu nombre de supervisor.");
+      setErrorText(selectedRole === "COORDINADOR" ? "Por favor, introduce tu nombre de coordinador." : "Por favor, selecciona un supervisor.");
       return;
+    }
+
+    let finalName = trimmedName;
+    if (selectedRole === "SUPERVISOR") {
+      const foundSup = REAL_SUPERVISORS.find(s => s.id === trimmedName);
+      if (foundSup) {
+        finalName = foundSup.name;
+      }
     }
 
     triggerNativeHapticFeedback('confirm');
     const finalLine = selectedRole === "COORDINADOR" ? "COORDINADOR" : selectedLine;
-    console.log(`[Login] Acceso concedido: ${trimmedName} (${selectedRole}) -> ${finalLine}`);
+    console.log(`[Login] Acceso concedido: ${finalName} (${selectedRole}) -> ${finalLine}`);
 
     // Asentar en localStorage
-    localStorage.setItem("supervisorName", trimmedName);
+    localStorage.setItem("supervisorName", finalName);
     localStorage.setItem("supervisorLineId", finalLine);
     localStorage.setItem("userRole", selectedRole);
 
     if (onLoginSuccess) {
-      onLoginSuccess(trimmedName, finalLine, selectedRole);
+      onLoginSuccess(finalName, finalLine, selectedRole);
     }
   };
 
@@ -253,19 +314,40 @@ export default function LoginScreen({ onLoginSuccess }) {
             </SelectDropdown>
           </FormField>
 
-          <FormField>
-            <FormLabel htmlFor="supervisor-name-input">
-              {selectedRole === "COORDINADOR" ? "Nombre del Coordinador" : "Nombre del Supervisor"}
-            </FormLabel>
-            <InputText 
-              type="text" 
-              id="supervisor-name-input"
-              placeholder={selectedRole === "COORDINADOR" ? "Ej. Ing. Sofía Reyes" : "Ej. Ing. Carlos Mendoza"} 
-              value={supervisorName}
-              onChange={(e) => setSupervisorName(e.target.value)}
-              autoFocus
-            />
-          </FormField>
+          {selectedRole === "COORDINADOR" ? (
+            <FormField>
+              <FormLabel htmlFor="supervisor-name-input">Nombre del Coordinador</FormLabel>
+              <InputText 
+                type="text" 
+                id="supervisor-name-input"
+                placeholder="Ej. Ing. Sofía Reyes" 
+                value={supervisorName}
+                onChange={(e) => setSupervisorName(e.target.value)}
+                autoFocus
+              />
+            </FormField>
+          ) : (
+            <FormField>
+              <FormLabel htmlFor="supervisor-select">Seleccionar Supervisor</FormLabel>
+              <SelectDropdown
+                id="supervisor-select"
+                value={supervisorName}
+                onChange={handleSupervisorSelect}
+              >
+                <option value="">── Seleccionar Supervisor ──</option>
+                {REAL_SUPERVISORS.map(sup => {
+                  const assignedLine = Object.entries(supervisorsAssignment).find(
+                    ([, val]) => val?.workerId === sup.id
+                  );
+                  return (
+                    <option key={sup.id} value={sup.id}>
+                      {sup.shortName}{assignedLine ? ` (Asignado a ${assignedLine[0]})` : ' (Disponible)'}
+                    </option>
+                  );
+                })}
+              </SelectDropdown>
+            </FormField>
+          )}
 
           {selectedRole !== "COORDINADOR" && (
             <FormField>
@@ -273,7 +355,10 @@ export default function LoginScreen({ onLoginSuccess }) {
               <SelectDropdown 
                 id="supervisor-line-select"
                 value={selectedLine} 
-                onChange={(e) => setSelectedLine(e.target.value)}
+                onChange={(e) => {
+                  setSelectedLine(e.target.value);
+                  setErrorText("");
+                }}
               >
                 {activeLines.map(lineId => (
                   <option key={lineId} value={lineId}>
@@ -282,6 +367,12 @@ export default function LoginScreen({ onLoginSuccess }) {
                 ))}
               </SelectDropdown>
             </FormField>
+          )}
+
+          {warningText && (
+            <div style={{ color: '#D97706', fontSize: '11px', fontWeight: 600, textAlign: 'center', marginTop: '4px', padding: '6px 8px', backgroundColor: '#FEF3C7', borderRadius: '6px', border: '1px solid #FCD34D' }}>
+              {warningText}
+            </div>
           )}
 
           {errorText && (

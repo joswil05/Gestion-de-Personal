@@ -33,7 +33,13 @@ export function StopTimerProvider({ children, supervisorLineId }) {
         if (data.activeParo) {
           const startedAt = data.activeParo.startedAt;
           // Convertir Timestamp a milisegundos
-          const startMs = startedAt?.toDate ? startedAt.toDate().getTime() : (startedAt?.seconds ? startedAt.seconds * 1000 : new Date(startedAt).getTime());
+          let startMs = Date.now();
+          if (startedAt) {
+            const ms = startedAt.toDate ? startedAt.toDate().getTime() : (startedAt.seconds ? startedAt.seconds * 1000 : new Date(startedAt).getTime());
+            if (!isNaN(ms)) {
+              startMs = ms;
+            }
+          }
           
           setActiveParo(data.activeParo);
           
