@@ -1,0 +1,1085 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SAD — SmartAssign · Documento de Arquitectura de Software</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+  <script>
+    mermaid.initialize({
+      startOnLoad: true,
+      theme: 'base',
+      themeVariables: {
+        primaryColor: '#EFF6FF',
+        primaryBorderColor: '#2563EB',
+        primaryTextColor: '#1E3A8A',
+        secondaryColor: '#FFF7ED',
+        secondaryBorderColor: '#EA580C',
+        secondaryTextColor: '#7C2D12',
+        tertiaryColor: '#F0FDF4',
+        tertiaryBorderColor: '#16A34A',
+        tertiaryTextColor: '#14532D',
+        lineColor: '#64748B',
+        fontSize: '13px',
+        fontFamily: 'Inter, sans-serif'
+      },
+      flowchart: { curve: 'basis', padding: 16, htmlLabels: true },
+      sequence: { mirrorActors: false, messageAlign: 'center', actorFontWeight: 700, messageFontSize: 12 },
+      c4: { fontSize: 12, c4ShapeInRow: 3 }
+    });
+  </script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --blue-50: #EFF6FF; --blue-100: #DBEAFE; --blue-600: #2563EB; --blue-800: #1E40AF; --blue-900: #1E3A8A;
+      --slate-50: #F8FAFC; --slate-100: #F1F5F9; --slate-200: #E2E8F0;
+      --slate-300: #CBD5E1; --slate-400: #94A3B8; --slate-500: #64748B;
+      --slate-600: #475569; --slate-700: #334155; --slate-800: #1E293B; --slate-900: #0F172A;
+      --green-50: #F0FDF4; --green-600: #16A34A;
+      --orange-50: #FFF7ED; --orange-600: #EA580C;
+      --red-50: #FEF2F2; --red-600: #DC2626;
+    }
+
+    body {
+      font-family: 'Inter', sans-serif;
+      color: var(--slate-800);
+      background: #FFFFFF;
+      line-height: 1.7;
+      font-size: 14px;
+      counter-reset: figure-counter table-counter;
+    }
+
+    code, .mono {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px;
+      background: var(--slate-100);
+      padding: 1px 5px;
+      border-radius: 3px;
+    }
+
+    /* ========== PORTADA ========== */
+    .cover {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      padding: 60px 80px;
+      background: #FFFFFF;
+      border-bottom: 6px solid var(--blue-600);
+      page-break-after: always;
+    }
+    .cover-top { flex: 1; display: flex; flex-direction: column; justify-content: center; }
+    .cover-line {
+      width: 64px; height: 4px;
+      background: var(--blue-600);
+      margin-bottom: 24px;
+    }
+    .cover h1 {
+      font-size: 36px;
+      font-weight: 800;
+      color: var(--slate-900);
+      letter-spacing: -0.03em;
+      line-height: 1.2;
+      margin-bottom: 8px;
+    }
+    .cover .doc-type {
+      font-size: 16px;
+      font-weight: 600;
+      color: var(--blue-600);
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      margin-bottom: 24px;
+    }
+    .cover .doc-desc {
+      font-size: 15px;
+      color: var(--slate-500);
+      max-width: 560px;
+      line-height: 1.7;
+    }
+    .cover-meta-table {
+      border-collapse: collapse;
+      width: 420px;
+      font-size: 13px;
+    }
+    .cover-meta-table td {
+      padding: 8px 0;
+      border-bottom: 1px solid var(--slate-200);
+      vertical-align: top;
+    }
+    .cover-meta-table td:first-child {
+      font-weight: 700;
+      color: var(--slate-500);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      font-size: 11px;
+      width: 140px;
+      padding-top: 10px;
+    }
+    .cover-meta-table td:last-child {
+      color: var(--slate-800);
+      font-weight: 500;
+    }
+
+    /* ========== CONTENIDO ========== */
+    .content {
+      max-width: 780px;
+      margin: 0 auto;
+      padding: 48px 40px 80px;
+    }
+
+    /* ========== ENCABEZADOS NUMERADOS ========== */
+    h2 {
+      font-size: 20px;
+      font-weight: 800;
+      color: var(--slate-900);
+      margin: 48px 0 6px;
+      padding-bottom: 8px;
+      border-bottom: 2px solid var(--slate-200);
+      letter-spacing: -0.01em;
+      page-break-after: avoid;
+    }
+    h2:first-of-type { margin-top: 0; }
+    h3 {
+      font-size: 15px;
+      font-weight: 700;
+      color: var(--slate-800);
+      margin: 28px 0 8px;
+      page-break-after: avoid;
+    }
+    h4 {
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--slate-600);
+      margin: 20px 0 6px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    p { margin-bottom: 12px; }
+
+    /* ========== TABLA DE CONTENIDO ========== */
+    .toc {
+      page-break-after: always;
+    }
+    .toc h2 { border-bottom: none; margin-bottom: 20px; }
+    .toc-list {
+      list-style: none;
+      padding: 0;
+    }
+    .toc-list li {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+      padding: 7px 0;
+      border-bottom: 1px dotted var(--slate-300);
+      font-size: 14px;
+    }
+    .toc-list li .toc-num {
+      font-weight: 700;
+      color: var(--blue-600);
+      flex-shrink: 0;
+      min-width: 32px;
+    }
+    .toc-list li .toc-title { flex: 1; color: var(--slate-700); font-weight: 500; }
+    .toc-list li .toc-page { color: var(--slate-400); font-weight: 600; font-size: 12px; }
+    .toc-list li.toc-sub {
+      padding-left: 32px;
+      font-size: 13px;
+      border-bottom-color: var(--slate-200);
+    }
+    .toc-list li.toc-sub .toc-num { color: var(--slate-500); }
+
+    /* ========== CONTROL DE CAMBIOS ========== */
+    .revision-table { margin-bottom: 32px; }
+
+    /* ========== TABLAS ========== */
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 12px 0 24px;
+      font-size: 13px;
+      page-break-inside: avoid;
+    }
+    thead { background: var(--slate-50); }
+    th {
+      font-weight: 700;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--slate-500);
+      padding: 10px 14px;
+      text-align: left;
+      border-bottom: 2px solid var(--slate-300);
+    }
+    td {
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--slate-100);
+      color: var(--slate-700);
+      vertical-align: top;
+      line-height: 1.5;
+    }
+    tr:hover td { background: var(--slate-50); }
+    td strong { color: var(--slate-900); font-weight: 600; }
+    table caption {
+      caption-side: bottom;
+      text-align: left;
+      font-size: 11px;
+      color: var(--slate-400);
+      padding-top: 6px;
+      font-style: italic;
+    }
+    table caption::before {
+      counter-increment: table-counter;
+      content: "Tabla " counter(table-counter) ". ";
+      font-weight: 700;
+      color: var(--slate-500);
+      font-style: normal;
+    }
+
+    /* ========== FIGURAS ========== */
+    .diagram-wrapper {
+      background: var(--slate-50);
+      border: 1px solid var(--slate-200);
+      border-radius: 8px;
+      padding: 28px 20px;
+      margin: 16px 0 8px;
+      overflow-x: auto;
+      page-break-inside: avoid;
+    }
+    .diagram-wrapper .mermaid {
+      display: flex;
+      justify-content: center;
+    }
+    .figure-caption {
+      font-size: 11px;
+      color: var(--slate-400);
+      margin: 4px 0 24px;
+      font-style: italic;
+    }
+    .figure-caption::before {
+      counter-increment: figure-counter;
+      content: "Figura " counter(figure-counter) ". ";
+      font-weight: 700;
+      color: var(--slate-500);
+      font-style: normal;
+    }
+
+    /* ========== CALLOUTS ========== */
+    .callout {
+      border-left: 4px solid;
+      padding: 14px 18px;
+      margin: 16px 0;
+      font-size: 13px;
+      line-height: 1.6;
+      border-radius: 0 6px 6px 0;
+    }
+    .callout-title {
+      font-weight: 700;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 4px;
+    }
+    .callout-note {
+      border-color: var(--blue-600);
+      background: var(--blue-50);
+    }
+    .callout-note .callout-title { color: var(--blue-600); }
+    .callout-warn {
+      border-color: var(--orange-600);
+      background: var(--orange-50);
+    }
+    .callout-warn .callout-title { color: var(--orange-600); }
+    .callout-critical {
+      border-color: var(--red-600);
+      background: var(--red-50);
+    }
+    .callout-critical .callout-title { color: var(--red-600); }
+
+    /* ========== LISTAS ========== */
+    ul, ol { padding-left: 24px; margin-bottom: 12px; }
+    li { margin-bottom: 4px; }
+
+    /* ========== BADGES DE ESTADO ========== */
+    .st {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 700;
+      font-family: 'JetBrains Mono', monospace;
+    }
+    .st-green { background: #DCFCE7; color: #166534; }
+    .st-blue { background: #DBEAFE; color: #1E40AF; }
+    .st-yellow { background: #FEF3C7; color: #92400E; }
+    .st-gray { background: var(--slate-100); color: var(--slate-600); }
+    .st-red { background: #FEE2E2; color: #991B1B; }
+
+    /* ========== SEPARADOR ========== */
+    hr {
+      border: none;
+      height: 1px;
+      background: var(--slate-200);
+      margin: 40px 0;
+    }
+    .page-break { page-break-before: always; }
+
+    /* ========== PIE DE PÁGINA ========== */
+    .doc-footer {
+      max-width: 780px;
+      margin: 0 auto;
+      padding: 20px 40px 40px;
+      border-top: 1px solid var(--slate-200);
+      display: flex;
+      justify-content: space-between;
+      font-size: 11px;
+      color: var(--slate-400);
+    }
+
+    /* ========== SIMBOLOGÍA UML ========== */
+    .legend {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px 24px;
+      margin: 12px 0 24px;
+      font-size: 12px;
+    }
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .legend-sym {
+      width: 32px; height: 18px;
+      border-radius: 3px;
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 9px;
+      font-weight: 700;
+    }
+    .sym-actor { background: #FFF; border: 2px solid var(--slate-700); border-radius: 50%; width: 18px; height: 18px; }
+    .sym-system { background: var(--blue-50); border: 2px solid var(--blue-600); }
+    .sym-external { background: var(--slate-100); border: 2px dashed var(--slate-400); }
+    .sym-db { background: var(--green-50); border: 2px solid var(--green-600); border-radius: 3px 3px 8px 8px; }
+    .sym-arrow-solid { background: none; border: none; width: 40px; border-top: 2px solid var(--slate-700); position: relative; }
+    .sym-arrow-dash { background: none; border: none; width: 40px; border-top: 2px dashed var(--slate-400); }
+
+    /* ========== PRINT ========== */
+    @media print {
+      body { font-size: 11pt; }
+      .cover { min-height: auto; padding: 50px 60px; page-break-after: always; }
+      .content { padding: 20px 30px; max-width: 100%; }
+      .diagram-wrapper { break-inside: avoid; padding: 16px; }
+      table { break-inside: avoid; font-size: 10pt; }
+      h2 { break-after: avoid; }
+      h3, h4 { break-after: avoid; }
+      .page-break { page-break-before: always; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ========================= PORTADA ========================= -->
+<div class="cover">
+  <div class="cover-top">
+    <div class="cover-line"></div>
+    <div class="doc-type">Documento de Arquitectura de Software (SAD)</div>
+    <h1>SmartAssign</h1>
+    <p class="doc-desc">
+      Sistema de gestión inteligente de personal y asignación de turnos para planta industrial de licores.
+      Aplicación web y móvil empaquetada con Capacitor, con backend exclusivo en Firebase Firestore.
+    </p>
+  </div>
+  <table class="cover-meta-table">
+    <tr><td>Proyecto</td><td>SmartAssign — Gestión de Personal</td></tr>
+    <tr><td>Versión</td><td>3.5.0</td></tr>
+    <tr><td>Fecha</td><td>8 de julio de 2026</td></tr>
+    <tr><td>Clasificación</td><td>Confidencial — Uso interno</td></tr>
+    <tr><td>Estándar</td><td>Basado en ISO/IEC 42010 · Modelo C4 · Notación UML 2.5</td></tr>
+    <tr><td>Autor</td><td>Equipo de Desarrollo SmartAssign</td></tr>
+  </table>
+</div>
+
+<!-- ========================= CONTENIDO ========================= -->
+<div class="content">
+
+<!-- ===== TABLA DE CONTENIDO ===== -->
+<div class="toc">
+  <h2>Tabla de Contenido</h2>
+  <ul class="toc-list">
+    <li><span class="toc-num">1</span><span class="toc-title">Introducción</span></li>
+    <li class="toc-sub"><span class="toc-num">1.1</span><span class="toc-title">Propósito del documento</span></li>
+    <li class="toc-sub"><span class="toc-num">1.2</span><span class="toc-title">Alcance del sistema</span></li>
+    <li class="toc-sub"><span class="toc-num">1.3</span><span class="toc-title">Restricciones arquitectónicas</span></li>
+    <li class="toc-sub"><span class="toc-num">1.4</span><span class="toc-title">Control de versiones</span></li>
+    <li><span class="toc-num">2</span><span class="toc-title">Vista de Contexto (C4 — Nivel 1)</span></li>
+    <li><span class="toc-num">3</span><span class="toc-title">Vista de Contenedores (C4 — Nivel 2)</span></li>
+    <li><span class="toc-num">4</span><span class="toc-title">Vista de Componentes (C4 — Nivel 3)</span></li>
+    <li class="toc-sub"><span class="toc-num">4.1</span><span class="toc-title">Componentes de la interfaz de usuario</span></li>
+    <li class="toc-sub"><span class="toc-num">4.2</span><span class="toc-title">Componentes del motor de lógica</span></li>
+    <li><span class="toc-num">5</span><span class="toc-title">Vista de Despliegue (UML)</span></li>
+    <li><span class="toc-num">6</span><span class="toc-title">Vista de Procesos</span></li>
+    <li class="toc-sub"><span class="toc-num">6.1</span><span class="toc-title">Diagrama de secuencia — Asignación por QR</span></li>
+    <li class="toc-sub"><span class="toc-num">6.2</span><span class="toc-title">Diagrama de estados — Ciclo de vida del operario</span></li>
+    <li><span class="toc-num">7</span><span class="toc-title">Vista de Datos</span></li>
+    <li class="toc-sub"><span class="toc-num">7.1</span><span class="toc-title">Modelo lógico de datos (colecciones Firestore)</span></li>
+    <li class="toc-sub"><span class="toc-num">7.2</span><span class="toc-title">Reglas de seguridad</span></li>
+    <li><span class="toc-num">8</span><span class="toc-title">Decisiones arquitectónicas y justificación</span></li>
+    <li><span class="toc-num">9</span><span class="toc-title">Glosario de términos</span></li>
+    <li><span class="toc-num">10</span><span class="toc-title">Referencias</span></li>
+  </ul>
+</div>
+
+<!-- =========================================================== -->
+<!--                   1. INTRODUCCIÓN                           -->
+<!-- =========================================================== -->
+<div class="page-break"></div>
+<h2>1. Introducción</h2>
+
+<h3>1.1 Propósito del documento</h3>
+<p>
+  El presente Documento de Arquitectura de Software (SAD) describe la estructura técnica del sistema <strong>SmartAssign</strong>, siguiendo las guías del estándar <strong>ISO/IEC 42010:2022</strong> (descripción de arquitectura de sistemas) y utilizando el <strong>Modelo C4</strong> (Context, Containers, Components, Code) para organizar las vistas arquitectónicas. La notación gráfica se basa en <strong>UML 2.5</strong>.
+</p>
+<p>
+  Este documento está dirigido a: arquitectos de software, analistas de sistemas, supervisores de ingeniería, y equipos de desarrollo y mantenimiento.
+</p>
+
+<h3>1.2 Alcance del sistema</h3>
+<p>
+  SmartAssign es una aplicación que automatiza la asignación de personal operativo a celdas de trabajo en una planta industrial de licores. El sistema gestiona:
+</p>
+<ul>
+  <li>Inicio de turnos con pre-asignación automática de operarios fijos (Operador A, Averiero, Operador C).</li>
+  <li>Asignación manual mediante escaneo QR del gafete del operario.</li>
+  <li>Validación de restricciones médicas, incompatibilidades entre compañeros y reglas de fatiga ergonómica (24h).</li>
+  <li>Relevos ergonómicos en cascada con tránsito inter-líneas por prioridad.</li>
+  <li>Monitoreo en tiempo real del estado de la planta desde múltiples terminales simultáneas.</li>
+</ul>
+
+<h3>1.3 Restricciones arquitectónicas</h3>
+<div class="callout callout-critical">
+  <div class="callout-title">Restricción Absoluta</div>
+  <p>Toda la base de datos y la arquitectura en la nube funcionan exclusivamente con <strong>Firebase (Firestore)</strong>. No se utiliza SQL, C#, ni backend propio. La lógica de negocio se ejecuta en el cliente mediante transacciones atómicas del SDK Firebase v10+.</p>
+</div>
+<table>
+  <thead><tr><th>ID</th><th>Restricción</th><th>Justificación</th></tr></thead>
+  <tbody>
+    <tr><td><strong>RA-01</strong></td><td>Backend exclusivo Firebase Firestore</td><td>Infraestructura existente; equipo sin backend developers dedicados</td></tr>
+    <tr><td><strong>RA-02</strong></td><td>Lógica de negocio en cliente (JavaScript)</td><td>Sin Firebase Cloud Functions en el plan actual; transacciones atómicas del SDK</td></tr>
+    <tr><td><strong>RA-03</strong></td><td>Empaquetado nativo con Capacitor</td><td>Reutilización del código React para Android sin reescritura nativa</td></tr>
+    <tr><td><strong>RA-04</strong></td><td>Operación en planta con WiFi intermitente</td><td>Zonas muertas de cobertura en nave industrial; requiere caché offline</td></tr>
+  </tbody>
+  <caption>Restricciones arquitectónicas del sistema.</caption>
+</table>
+
+<h3>1.4 Control de versiones del documento</h3>
+<table class="revision-table">
+  <thead><tr><th>Versión</th><th>Fecha</th><th>Descripción del cambio</th></tr></thead>
+  <tbody>
+    <tr><td>1.0</td><td>2026-03-15</td><td>Creación inicial — MVP con asignación básica</td></tr>
+    <tr><td>2.0</td><td>2026-05-01</td><td>Integración Firebase real, caché offline, relevos ergonómicos</td></tr>
+    <tr><td>3.0</td><td>2026-06-10</td><td>Motor de intercepción en caliente, panel coordinador, KPIs</td></tr>
+    <tr><td>3.5</td><td>2026-07-08</td><td>Guard de conectividad, reglas Firestore, documentación formal</td></tr>
+  </tbody>
+  <caption>Historial de revisiones del documento.</caption>
+</table>
+
+<!-- =========================================================== -->
+<!--          2. VISTA DE CONTEXTO (C4 — Nivel 1)                -->
+<!-- =========================================================== -->
+<hr>
+<div class="page-break"></div>
+<h2>2. Vista de Contexto (C4 — Nivel 1)</h2>
+<p>
+  El diagrama de contexto muestra el sistema SmartAssign como una caja negra y su relación con los actores externos (usuarios) y sistemas externos con los que interactúa.
+</p>
+
+<h4>Simbología del diagrama de contexto</h4>
+<div class="legend">
+  <div class="legend-item"><div class="legend-sym sym-actor"></div><span>Actor / Usuario</span></div>
+  <div class="legend-item"><div class="legend-sym sym-system">SYS</div><span>Sistema principal</span></div>
+  <div class="legend-item"><div class="legend-sym sym-external">EXT</div><span>Sistema externo</span></div>
+  <div class="legend-item"><div class="legend-sym sym-arrow-solid"></div><span>Flujo de datos (directo)</span></div>
+</div>
+
+<div class="diagram-wrapper">
+  <pre class="mermaid">
+graph TB
+    classDef person fill:#FFFFFF,stroke:#1E293B,stroke-width:2px,color:#0F172A
+    classDef system fill:#EFF6FF,stroke:#2563EB,stroke-width:2px,color:#1E3A8A
+    classDef external fill:#F8FAFC,stroke:#94A3B8,stroke-width:2px,stroke-dasharray:5 5,color:#475569
+
+    SUP["👷 Supervisor de Línea\n(Usuario primario)"]
+    COORD["⚙️ Coordinador General\n(Usuario administrativo)"]
+    OPER["👤 Operario\n(Usuario pasivo — Gafete QR)"]
+
+    SA["📦 SmartAssign\n\nSistema de gestión inteligente\nde personal y turnos"]
+
+    FIREBASE["☁️ Firebase / Firestore\n(Plataforma en la nube)"]
+    SHEETS["📊 Programa de Producción\n(Datos de entrada SKU)"]
+
+    SUP -->|"Escanea gafetes QR\nMonitorea tablero\nGestiona relevos"| SA
+    COORD -->|"Configura turnos\nAsigna SKU por línea\nMonitorea KPIs"| SA
+    OPER -.->|"Gafete QR escaneado"| SA
+
+    SA -->|"Lee y escribe datos\nen tiempo real"| FIREBASE
+    SHEETS -.->|"Alimenta plan de\nproducción diario"| SA
+
+    class SUP,COORD,OPER person
+    class SA system
+    class FIREBASE,SHEETS external
+  </pre>
+</div>
+<div class="figure-caption">Diagrama de contexto del sistema SmartAssign (C4 — Nivel 1).</div>
+
+<table>
+  <thead><tr><th>Elemento</th><th>Tipo</th><th>Descripción</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Supervisor de Línea</strong></td><td>Actor primario</td><td>Opera el HUD en planta. Escanea gafetes QR, gestiona relevos, monitorea el estado de su línea en tiempo real.</td></tr>
+    <tr><td><strong>Coordinador General</strong></td><td>Actor administrativo</td><td>Configura turnos, asigna SKU por línea, revisa KPIs globales y gestiona ausencias.</td></tr>
+    <tr><td><strong>Operario</strong></td><td>Actor pasivo</td><td>No interactúa directamente. Su gafete QR es escaneado por el supervisor.</td></tr>
+    <tr><td><strong>Firebase / Firestore</strong></td><td>Sistema externo</td><td>Base de datos NoSQL en la nube. Almacena y sincroniza los datos del turno en tiempo real.</td></tr>
+    <tr><td><strong>Programa de Producción</strong></td><td>Sistema externo</td><td>Fuente de datos para el plan diario de producción (SKU por línea).</td></tr>
+  </tbody>
+  <caption>Descripción de los elementos del diagrama de contexto.</caption>
+</table>
+
+<!-- =========================================================== -->
+<!--         3. VISTA DE CONTENEDORES (C4 — Nivel 2)             -->
+<!-- =========================================================== -->
+<hr>
+<div class="page-break"></div>
+<h2>3. Vista de Contenedores (C4 — Nivel 2)</h2>
+<p>
+  El diagrama de contenedores descompone el sistema SmartAssign en los principales bloques ejecutables y muestra las tecnologías utilizadas en cada uno, así como las relaciones de comunicación.
+</p>
+
+<div class="diagram-wrapper">
+  <pre class="mermaid">
+graph TB
+    classDef person fill:#FFFFFF,stroke:#1E293B,stroke-width:2px,color:#0F172A
+    classDef container fill:#EFF6FF,stroke:#2563EB,stroke-width:2px,color:#1E3A8A
+    classDef logic fill:#FFF7ED,stroke:#EA580C,stroke-width:2px,color:#7C2D12
+    classDef db fill:#F0FDF4,stroke:#16A34A,stroke-width:2px,color:#14532D
+    classDef external fill:#F8FAFC,stroke:#94A3B8,stroke-width:2px,stroke-dasharray:5 5,color:#475569
+
+    SUP["👷 Supervisor"] & COORD["⚙️ Coordinador"]
+
+    subgraph BOUNDARY ["SmartAssign (Límite del Sistema)"]
+        direction TB
+        SPA["📱 Aplicación SPA\n\nReact 18 · Stitches\nCapacitor (Android)\n\nServe: Vite Dev / APK"]
+        ENGINE["⚡ Motor de Lógica\n\nfirebaseService.js\n\nTransacciones atómicas\nFiltros de seguridad"]
+        GUARD["📡 Guard de Conectividad\n\nstate-connectivity-guard.js\n\nCapacitor Network API"]
+    end
+
+    subgraph CLOUD ["Firebase (Nube)"]
+        direction LR
+        FS_DB[("🗄️ Firestore\n\nBase de datos NoSQL\nSincronización real-time")]
+        FS_RULES["🔒 Security Rules\n\nfirestore.rules\nValidación de estados"]
+    end
+
+    SUP -->|"HTTPS / WebSocket"| SPA
+    COORD -->|"HTTPS / WebSocket"| SPA
+    SPA -->|"Importa módulos"| ENGINE
+    SPA -->|"Importa módulos"| GUARD
+    ENGINE -->|"SDK Firebase v10\nrunTransaction()\nwriteBatch()\nonSnapshot()"| FS_DB
+    FS_RULES -.->|"Valida cada\nescritura"| FS_DB
+    GUARD -.->|"Bloquea operaciones\ncuando WiFi se pierde"| SPA
+
+    class SUP,COORD person
+    class SPA container
+    class ENGINE,GUARD logic
+    class FS_DB,FS_RULES db
+  </pre>
+</div>
+<div class="figure-caption">Diagrama de contenedores del sistema SmartAssign (C4 — Nivel 2).</div>
+
+<table>
+  <thead><tr><th>Contenedor</th><th>Tecnología</th><th>Responsabilidad</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Aplicación SPA</strong></td><td>React 18, Stitches CSS-in-JS, Capacitor</td><td>Interfaz de usuario. Se distribuye como Web (Vite), APK (Capacitor) y Tableta Industrial.</td></tr>
+    <tr><td><strong>Motor de Lógica</strong></td><td>JavaScript (ES Modules)</td><td>Ejecuta 29 nodos de decisión: inyección de turno, asignación transaccional, filtros de seguridad, relevos en cascada.</td></tr>
+    <tr><td><strong>Guard de Conectividad</strong></td><td>Capacitor Network Plugin</td><td>Detecta pérdida de WiFi en planta y activa el modo defensivo (bloquea QR, congela transferencias).</td></tr>
+    <tr><td><strong>Firestore</strong></td><td>Firebase Firestore (NoSQL)</td><td>Almacena 4 colecciones, sincroniza en tiempo real mediante <code>onSnapshot()</code>, soporta caché offline con IndexedDB.</td></tr>
+    <tr><td><strong>Security Rules</strong></td><td>Firestore Rules Language</td><td>Valida en servidor la máquina de estados: solo permite transiciones legales en <code>trabajadores</code> y <code>puestos</code>.</td></tr>
+  </tbody>
+  <caption>Descripción de los contenedores del sistema.</caption>
+</table>
+
+<!-- =========================================================== -->
+<!--         4. VISTA DE COMPONENTES (C4 — Nivel 3)              -->
+<!-- =========================================================== -->
+<hr>
+<div class="page-break"></div>
+<h2>4. Vista de Componentes (C4 — Nivel 3)</h2>
+
+<h3>4.1 Componentes de la interfaz de usuario</h3>
+<p>
+  La aplicación SPA se compone de los siguientes módulos React, organizados por rol de usuario y función.
+</p>
+
+<div class="diagram-wrapper">
+  <pre class="mermaid">
+graph TD
+    classDef entry fill:#FAF5FF,stroke:#7C3AED,stroke-width:2px,color:#4C1D95
+    classDef screen fill:#EFF6FF,stroke:#2563EB,stroke-width:2px,color:#1E3A8A
+    classDef component fill:#F0FDF4,stroke:#16A34A,stroke-width:1px,color:#14532D
+    classDef provider fill:#FEF3C7,stroke:#D97706,stroke-width:2px,color:#78350F
+
+    APP["App.jsx\n«entry point»"] --> LOGIN["LoginScreen\n«autenticación»"]
+    LOGIN -->|"rol = SUPERVISOR"| PORTAL["SupervisorPortal\n«contenedor»"]
+    LOGIN -->|"rol = COORDINADOR"| COORD["PanelCoordinador\n«contenedor»"]
+
+    PORTAL --> STP["StopTimerProvider\n«context provider»"]
+    STP --> HUD["HudPlanta\n«dashboard»"]
+    STP --> SKU["LineaSku\n«vista SKU»"]
+    STP --> REL["RelevosNotificaciones\n«alertas»"]
+    PORTAL --> TAB["TabBar\n«navegación»"]
+
+    HUD --> SLOT["SlotCard\n«celda unitaria»"]
+    HUD --> QR["QR Scanner\n«html5-qrcode»"]
+    SKU --> SLOT
+
+    class APP,LOGIN entry
+    class PORTAL,COORD screen
+    class HUD,SKU,REL,TAB,SLOT,QR component
+    class STP provider
+  </pre>
+</div>
+<div class="figure-caption">Diagrama de componentes de la interfaz de usuario (C4 — Nivel 3).</div>
+
+<table>
+  <thead><tr><th>Componente</th><th>Archivo</th><th>Responsabilidad</th></tr></thead>
+  <tbody>
+    <tr><td><strong>LoginScreen</strong></td><td><code>LoginScreen.jsx</code></td><td>Autenticación del supervisor/coordinador. Validación de rol y selección de línea. Persistencia en <code>localStorage</code>.</td></tr>
+    <tr><td><strong>HudPlanta</strong></td><td><code>HudPlanta.jsx</code></td><td>Dashboard principal del supervisor. Escáner QR nativo, matchmaking automático de vacantes, visualización de slots.</td></tr>
+    <tr><td><strong>LineaSku</strong></td><td><code>LineaSku.jsx</code></td><td>Vista de puestos activos filtrada por el SKU asignado a la línea de producción.</td></tr>
+    <tr><td><strong>RelevosNotificaciones</strong></td><td><code>RelevosNotificaciones.jsx</code></td><td>Alertas de fatiga, confirmación de arribos de operarios en tránsito, cadenas de relevo.</td></tr>
+    <tr><td><strong>PanelCoordinador</strong></td><td><code>PanelCoordinador.jsx</code></td><td>Configuración de turnos, asignación de SKU, mapa global, KPIs/OEE, gestión de ausencias.</td></tr>
+    <tr><td><strong>SlotCard</strong></td><td><code>SlotCard.jsx</code></td><td>Componente unitario que representa una celda operativa con estado visual reactivo y badge de fatiga.</td></tr>
+    <tr><td><strong>StopTimerProvider</strong></td><td><code>StopTimerContext.jsx</code></td><td>Context provider de React para el cronómetro de paro técnico compartido entre componentes.</td></tr>
+  </tbody>
+  <caption>Inventario de componentes de la interfaz de usuario.</caption>
+</table>
+
+<h3>4.2 Componentes del motor de lógica</h3>
+
+<div class="diagram-wrapper">
+  <pre class="mermaid">
+graph LR
+    classDef motor fill:#FFF7ED,stroke:#EA580C,stroke-width:2px,color:#7C2D12
+    classDef filter fill:#FEF2F2,stroke:#DC2626,stroke-width:1px,color:#7F1D1D
+    classDef ok fill:#F0FDF4,stroke:#16A34A,stroke-width:2px,color:#14532D
+    classDef fail fill:#FEE2E2,stroke:#DC2626,stroke-width:2px,color:#991B1B
+
+    M1["Motor 1\ninitializeTurnoWithSheets()\n«inyección de turno»"] --> M2["Motor 2\nassignWorkerTransaction()\n«asignación atómica»"]
+
+    M2 --> F1["canWorkerOccupiedSlot()\n«restricción médica»"]
+    M2 --> F2["Incompatibilidades\n«entre compañeros»"]
+    M2 --> F3["Regla 24h\n«fatiga ergonómica»"]
+    M2 --> F4["Exclusión mutua\n«concurrencia»"]
+
+    F1 & F2 & F3 & F4 --> PASS{"¿Pasa todos\nlos filtros?"}
+    PASS -->|"Sí"| COMMIT["Commit\nFirestore"]
+    PASS -->|"No"| ROLL["Rollback\nTransacción"]
+
+    class M1,M2 motor
+    class F1,F2,F3,F4 filter
+    class COMMIT ok
+    class ROLL fail
+  </pre>
+</div>
+<div class="figure-caption">Diagrama de componentes del motor de lógica (C4 — Nivel 3).</div>
+
+<table>
+  <thead><tr><th>Función</th><th>Categoría</th><th>Descripción</th></tr></thead>
+  <tbody>
+    <tr><td><code>initializeTurnoWithSheets()</code></td><td>Motor 1</td><td>Inyecta el turno al inicio de jornada. Ancla operadores fijos a puestos críticos. Aplica <em>Rastro Dual</em> si un titular está ausente.</td></tr>
+    <tr><td><code>assignWorkerTransaction()</code></td><td>Motor 2</td><td>Transacción atómica con <code>runTransaction()</code>. Evalúa 10 condiciones antes de escribir: parámetros, duplicados, fase, estado, ocupación, autorización, intercepción, restricciones, fatiga, puesto anterior.</td></tr>
+    <tr><td><code>canWorkerOccupiedSlot()</code></td><td>Filtro</td><td>Valida género y restricciones médicas (esfuerzo físico, carga pesada) del operario contra los requisitos del puesto.</td></tr>
+    <tr><td><code>requestErgonomicRelevo()</code></td><td>Cascada</td><td>Inicia un relevo ergonómico. Busca un relevista disponible en el Bolsón (L8) y coordina el tránsito entre líneas.</td></tr>
+    <tr><td><code>getRelocationDestination()</code></td><td>Cascada</td><td>Determina a dónde reubicar al operario relevado: mismo puesto (L7), reubicación local, tránsito inter-línea o regreso al Bolsón.</td></tr>
+  </tbody>
+  <caption>Funciones principales del motor de lógica de negocio.</caption>
+</table>
+
+<!-- =========================================================== -->
+<!--             5. VISTA DE DESPLIEGUE (UML)                    -->
+<!-- =========================================================== -->
+<hr>
+<div class="page-break"></div>
+<h2>5. Vista de Despliegue</h2>
+<p>
+  El diagrama de despliegue UML muestra los nodos físicos donde se ejecutan los artefactos del sistema y las conexiones de red entre ellos.
+</p>
+
+<div class="diagram-wrapper">
+  <pre class="mermaid">
+graph TB
+    classDef node fill:#F8FAFC,stroke:#334155,stroke-width:2px,color:#1E293B
+    classDef artifact fill:#EFF6FF,stroke:#2563EB,stroke-width:1px,color:#1E3A8A
+    classDef cloud fill:#F0FDF4,stroke:#16A34A,stroke-width:2px,color:#14532D
+
+    subgraph PLANTA ["«nodo» Planta Industrial"]
+        direction TB
+        subgraph TERM1 ["«dispositivo» Tablet Supervisor"]
+            APK1["«artefacto»\nSmartAssign.apk\nAndroid + Capacitor"]
+        end
+        subgraph TERM2 ["«dispositivo» Kiosko Planta"]
+            WEB1["«artefacto»\nindex.html\nWeb Browser"]
+        end
+        subgraph WIFI ["«infraestructura»\nRed WiFi Industrial"]
+        end
+    end
+
+    subgraph OFICINA ["«nodo» Oficina Administrativa"]
+        subgraph PC ["«dispositivo» PC Coordinador"]
+            WEB2["«artefacto»\nindex.html\nWeb Browser"]
+        end
+    end
+
+    subgraph GCP ["«nodo» Google Cloud Platform"]
+        subgraph FB ["«servicio» Firebase"]
+            FSDB[("«base de datos»\nFirestore\n4 colecciones")]
+            CDN["«servicio»\nFirebase Hosting / CDN"]
+        end
+    end
+
+    APK1 -->|"HTTPS / WSS\n(Firebase SDK)"| FSDB
+    WEB1 -->|"HTTPS / WSS\n(Firebase SDK)"| FSDB
+    WEB2 -->|"HTTPS / WSS\n(Firebase SDK)"| FSDB
+    CDN -.->|"Sirve assets\nestáticos"| WEB1
+    CDN -.->|"Sirve assets\nestáticos"| WEB2
+    WIFI -.-> APK1
+    WIFI -.-> WEB1
+
+    class PLANTA,OFICINA,GCP node
+    class APK1,WEB1,WEB2 artifact
+    class FSDB,CDN,FB cloud
+  </pre>
+</div>
+<div class="figure-caption">Diagrama de despliegue UML del sistema SmartAssign.</div>
+
+<!-- =========================================================== -->
+<!--              6. VISTA DE PROCESOS                           -->
+<!-- =========================================================== -->
+<hr>
+<div class="page-break"></div>
+<h2>6. Vista de Procesos</h2>
+
+<h3>6.1 Diagrama de secuencia — Asignación por escaneo QR</h3>
+<p>
+  El siguiente diagrama UML de secuencia muestra la interacción entre los participantes durante el proceso de asignación de un operario mediante escaneo de gafete QR.
+</p>
+
+<div class="diagram-wrapper">
+  <pre class="mermaid">
+sequenceDiagram
+    autonumber
+    actor SUP as Supervisor de Línea
+    participant UI as HudPlanta
+    participant ENGINE as firebaseService.js
+    participant DB as Firestore
+
+    SUP->>UI: Escanea gafete QR
+    UI->>UI: findBestSlotForWorker()
+    
+    alt Vacante compatible encontrada
+        UI->>ENGINE: assignWorkerTransaction(workerId, puestoId, lineId)
+        
+        ENGINE->>DB: runTransaction() — lectura atómica
+        DB-->>ENGINE: Datos actuales de trabajador y puesto
+        
+        ENGINE->>ENGINE: Validar filtros (médico, fatiga, exclusión)
+        
+        alt Filtros OK
+            ENGINE->>DB: runTransaction() — escritura atómica
+            Note over DB: puestos/{id}.status = ASIGNADO<br/>trabajadores/{id}.status = ASIGNADO
+            DB-->>ENGINE: Commit confirmado + serverTimestamp
+            ENGINE-->>UI: { success: true }
+            UI->>SUP: Toast confirmación + haptic feedback
+            DB--)UI: onSnapshot() actualiza SlotCard
+        else Filtro rechazado
+            ENGINE-->>UI: throw Error (causa específica)
+            UI->>SUP: Toast de error + diagnóstico
+        end
+    else Sin vacante compatible
+        UI->>SUP: Drawer de diagnóstico de incompatibilidades
+    end
+  </pre>
+</div>
+<div class="figure-caption">Diagrama de secuencia UML — Proceso de asignación por escaneo QR.</div>
+
+<h3>6.2 Diagrama de estados — Ciclo de vida del operario</h3>
+<p>
+  El siguiente diagrama UML de máquina de estados describe las transiciones válidas en el ciclo de vida de un operario dentro del sistema.
+</p>
+
+<div class="diagram-wrapper">
+  <pre class="mermaid">
+stateDiagram-v2
+    [*] --> INACTIVO: Registro inicial
+
+    state "Ciclo Operativo del Turno" as TURNO {
+        POOL_ARRANQUE --> ASIGNADO: Escaneo QR / Motor 1
+        POOL_ARRANQUE --> DISPONIBLE_BOLSON: Sin puesto asignado
+
+        ASIGNADO --> EN_TRANSITO: Relevo ergonómico
+        ASIGNADO --> DISPONIBLE_BOLSON: Liberado / Paro técnico
+        ASIGNADO --> BAJA_TEMPORAL: Lesión menor en turno
+
+        DISPONIBLE_BOLSON --> ASIGNADO: Asignación directa
+        DISPONIBLE_BOLSON --> EN_TRANSITO: Intercepción prioritaria
+
+        EN_TRANSITO --> ASIGNADO: Supervisor confirma arribo
+        EN_TRANSITO --> DISPONIBLE_BOLSON: Rechazo de relevo
+
+        BAJA_TEMPORAL --> DISPONIBLE_BOLSON: Reincorporación
+    }
+
+    INACTIVO --> POOL_ARRANQUE: Marca asistencia
+
+    ASIGNADO --> INACTIVO: Fin de turno
+    DISPONIBLE_BOLSON --> INACTIVO: Fin de turno
+    EN_TRANSITO --> INACTIVO: Fin de turno
+
+    state "Ausencias de Largo Plazo" as AUSENCIA {
+        VACACIONES
+        PERMISOS
+        CONSULTAS_MEDICAS
+        SUBSIDIOS
+        ACCIDENTE_LABORAL
+    }
+
+    INACTIVO --> VACACIONES
+    INACTIVO --> PERMISOS
+    INACTIVO --> CONSULTAS_MEDICAS
+    INACTIVO --> SUBSIDIOS
+    INACTIVO --> ACCIDENTE_LABORAL
+  </pre>
+</div>
+<div class="figure-caption">Diagrama de máquina de estados UML — Ciclo de vida del operario.</div>
+
+<table>
+  <thead><tr><th>Estado</th><th>Descripción</th></tr></thead>
+  <tbody>
+    <tr><td><span class="st st-gray">INACTIVO</span></td><td>Registrado en el sistema pero sin turno activo. Estado inicial y terminal del ciclo.</td></tr>
+    <tr><td><span class="st st-yellow">POOL_ARRANQUE</span></td><td>Marcó asistencia al inicio de jornada. Elegible para asignación automática o manual.</td></tr>
+    <tr><td><span class="st st-green">ASIGNADO</span></td><td>Ocupando activamente una celda de trabajo. Estado principal de operación.</td></tr>
+    <tr><td><span class="st st-yellow">DISPONIBLE_BOLSON</span></td><td>En el Bolsón (Línea 8), disponible para ser reasignado a cualquier línea con déficit.</td></tr>
+    <tr><td><span class="st st-blue">EN_TRANSITO</span></td><td>Moviéndose físicamente de una línea a otra. Requiere confirmación de arribo por el supervisor destino.</td></tr>
+    <tr><td><span class="st st-red">BAJA_TEMPORAL</span></td><td>Fuera de operación por lesión menor o motivo temporal durante el turno.</td></tr>
+  </tbody>
+  <caption>Descripción de los estados del operario.</caption>
+</table>
+
+<!-- =========================================================== -->
+<!--                  7. VISTA DE DATOS                          -->
+<!-- =========================================================== -->
+<hr>
+<div class="page-break"></div>
+<h2>7. Vista de Datos</h2>
+
+<h3>7.1 Modelo lógico de datos (colecciones Firestore)</h3>
+<p>
+  El sistema utiliza 4 colecciones NoSQL en Firestore. Las relaciones se modelan mediante campos de referencia (<em>foreign keys lógicas</em>) almacenados como strings.
+</p>
+
+<div class="diagram-wrapper">
+  <pre class="mermaid">
+erDiagram
+    TRABAJADORES {
+        string id PK "Clave primaria"
+        string nombre "Nombre completo"
+        string role "Operador A/B/C, Averiero, Estibador"
+        string status "11 estados validos"
+        string currentSlotId FK "Puesto actual ocupado"
+        string physicalLineLocation "Linea fisica L1-L10"
+        string lineaDestinoId "Destino en transito"
+        string gender "M o F"
+        object restriccionesMedicas "Ficha medica"
+        string lastActivity "Actividad del turno anterior"
+        timestamp updatedAt "serverTimestamp"
+    }
+
+    PUESTOS {
+        string id PK "Clave primaria"
+        string lineId FK "Linea de produccion"
+        string tipoPuesto "Tipo de puesto operativo"
+        string activityName "Actividad asociada"
+        string status "VACANTE ASIGNADO ALERTA SUSPENDIDO"
+        string idWorkerCurrent FK "Operario actual"
+        string idWorkerOriginal "Titular planificado"
+        string microCopiaContextual "Texto contextual UI"
+        boolean requiresGender "Requiere genero especifico"
+        timestamp asignadoEnSegundoVirtual "Momento de asignacion"
+    }
+
+    CONFIG {
+        string id PK "Clave del documento"
+        array priorityOrder "Orden de prioridad de lineas"
+        object skuPlan "SKU por linea"
+        array activeLines "Lineas activas"
+        string status "Estado del turno"
+        timestamp shiftStartTimestamp "Inicio del turno"
+    }
+
+    PROGRAMA_PRODUCCION {
+        string id PK "fecha_YYYY-MM-DD"
+        object lines "SKU planificado por linea"
+    }
+
+    TRABAJADORES ||--o| PUESTOS : "ocupa"
+    PUESTOS ||--o| TRABAJADORES : "titular original"
+    PUESTOS }o--|| CONFIG : "pertenece a linea"
+    CONFIG ||--|{ PROGRAMA_PRODUCCION : "planifica SKU"
+  </pre>
+</div>
+<div class="figure-caption">Diagrama entidad-relación del modelo lógico de datos (notación Crow's Foot).</div>
+
+<h3>7.2 Reglas de seguridad de Firestore</h3>
+<p>
+  Las reglas de seguridad (<code>firestore.rules</code>) implementan una validación de máquina de estados en el servidor, garantizando que ningún cliente pueda escribir un estado inválido.
+</p>
+
+<table>
+  <thead><tr><th>Colección</th><th>Lectura</th><th>Escritura</th><th>Validación</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><code>trabajadores</code></td>
+      <td>Libre</td>
+      <td>Condicional</td>
+      <td><code>status</code> debe ser uno de 11 valores: <span class="st st-gray">INACTIVO</span>, <span class="st st-yellow">POOL_ARRANQUE</span>, <span class="st st-green">ASIGNADO</span>, <span class="st st-blue">EN_TRANSITO</span>, <span class="st st-yellow">DISPONIBLE_BOLSON</span>, <span class="st st-red">BAJA_TEMPORAL</span>, y 5 estados de ausencia.</td>
+    </tr>
+    <tr>
+      <td><code>puestos</code></td>
+      <td>Libre</td>
+      <td>Condicional</td>
+      <td><code>status</code> debe ser uno de 4 valores: <code>VACANTE</code>, <code>ASIGNADO</code>, <code>ALERTA_VACANTE</code>, <code>SUSPENDIDO</code>.</td>
+    </tr>
+    <tr>
+      <td><code>config</code></td>
+      <td>Libre</td>
+      <td>Libre</td>
+      <td>Sin restricción (red interna de planta, sin acceso público).</td>
+    </tr>
+    <tr>
+      <td><code>programa_produccion</code></td>
+      <td>Libre</td>
+      <td>Libre</td>
+      <td>Sin restricción (solo el coordinador tiene acceso funcional).</td>
+    </tr>
+  </tbody>
+  <caption>Matriz de permisos y validaciones de seguridad en Firestore.</caption>
+</table>
+
+<!-- =========================================================== -->
+<!--           8. DECISIONES ARQUITECTÓNICAS                     -->
+<!-- =========================================================== -->
+<hr>
+<div class="page-break"></div>
+<h2>8. Decisiones Arquitectónicas y Justificación</h2>
+<p>
+  Las siguientes decisiones de diseño fueron tomadas considerando las restricciones del proyecto, el contexto industrial y los recursos disponibles del equipo.
+</p>
+
+<table>
+  <thead><tr><th>ID</th><th>Decisión</th><th>Alternativa descartada</th><th>Justificación</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><strong>AD-01</strong></td>
+      <td>Lógica de negocio en cliente con transacciones Firestore</td>
+      <td>Cloud Functions de Firebase</td>
+      <td>El plan actual de Firebase no incluye Cloud Functions. Las transacciones atómicas del SDK (<code>runTransaction</code>) garantizan integridad ACID sin backend dedicado.</td>
+    </tr>
+    <tr>
+      <td><strong>AD-02</strong></td>
+      <td>Caché persistente con IndexedDB multitab</td>
+      <td>Sin caché (solo online)</td>
+      <td>La planta industrial tiene zonas con WiFi intermitente. El caché <code>persistentLocalCache</code> permite operación degradada sin perder datos.</td>
+    </tr>
+    <tr>
+      <td><strong>AD-03</strong></td>
+      <td>Empaquetado Android con Capacitor</td>
+      <td>React Native / Flutter</td>
+      <td>Capacitor permite reutilizar el 100% del código React existente. El equipo ya domina React; no se justifica aprender un framework nativo.</td>
+    </tr>
+    <tr>
+      <td><strong>AD-04</strong></td>
+      <td>Sincronización en tiempo real con <code>onSnapshot()</code></td>
+      <td>Polling periódico con <code>getDocs()</code></td>
+      <td>Los tableros de planta requieren actualización instantánea. <code>onSnapshot()</code> proporciona latencia de ~200ms vs. polling de 5-15s.</td>
+    </tr>
+    <tr>
+      <td><strong>AD-05</strong></td>
+      <td>CSS-in-JS con Stitches (zero-runtime)</td>
+      <td>TailwindCSS / CSS Modules</td>
+      <td>Stitches genera CSS en tiempo de compilación (zero-runtime overhead), ideal para dispositivos Android de gama media en la planta.</td>
+    </tr>
+    <tr>
+      <td><strong>AD-06</strong></td>
+      <td>Guard de conectividad como módulo separado</td>
+      <td>Lógica inline en cada componente</td>
+      <td>Centralizar la detección de red en un solo módulo evita duplicación y garantiza comportamiento uniforme en toda la UI.</td>
+    </tr>
+  </tbody>
+  <caption>Registro de decisiones arquitectónicas (ADR).</caption>
+</table>
+
+<!-- =========================================================== -->
+<!--                    9. GLOSARIO                              -->
+<!-- =========================================================== -->
+<hr>
+<div class="page-break"></div>
+<h2>9. Glosario de Términos</h2>
+
+<table>
+  <thead><tr><th>Término</th><th>Definición</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Bolsón (L8)</strong></td><td>Línea 8 de la planta. Funciona como <em>pool</em> de operarios disponibles que no están asignados a ninguna línea productiva.</td></tr>
+    <tr><td><strong>Celda operativa / Slot</strong></td><td>Puesto de trabajo individual dentro de una línea de producción (ej. "L4-Llenado-01").</td></tr>
+    <tr><td><strong>Intercepción en caliente</strong></td><td>Mecanismo que redirige a un operario recién escaneado hacia una línea de mayor prioridad que tiene vacantes, en lugar de asignarlo a la línea actual.</td></tr>
+    <tr><td><strong>Rastro Dual</strong></td><td>Patrón de registro que mantiene la referencia al titular planificado (<code>idWorkerOriginal</code>) cuando un reemplazo ocupa su puesto por ausencia.</td></tr>
+    <tr><td><strong>Relevo ergonómico</strong></td><td>Sustitución de un operario que ha superado el umbral de esfuerzo físico continuo, para prevenir fatiga y lesiones.</td></tr>
+    <tr><td><strong>Cascadeo</strong></td><td>Cadena recursiva de reubicaciones: cuando un operario es relevado, el sistema busca dónde reubicar al relevado, potencialmente generando otra reubicación.</td></tr>
+    <tr><td><strong>SKU</strong></td><td><em>Stock Keeping Unit</em>. Código de producto que determina qué puestos se activan en cada línea y con qué configuración.</td></tr>
+    <tr><td><strong>Fase de Arranque</strong></td><td>Primeros 10 minutos del turno. El aislamiento impide desvíos de operarios entre líneas para garantizar estabilidad inicial.</td></tr>
+    <tr><td><strong>Fase de Marcha</strong></td><td>Periodo posterior al arranque donde se habilitan las interceptaciones en caliente y los relevos inter-líneas.</td></tr>
+    <tr><td><strong>Guard de Conectividad</strong></td><td>Módulo que detecta la pérdida de WiFi y activa el modo defensivo: bloquea escaneo QR y congela transferencias inter-líneas.</td></tr>
+  </tbody>
+  <caption>Glosario de términos del dominio SmartAssign.</caption>
+</table>
+
+<!-- =========================================================== -->
+<!--                   10. REFERENCIAS                           -->
+<!-- =========================================================== -->
+<hr>
+<h2>10. Referencias</h2>
+
+<table>
+  <thead><tr><th>ID</th><th>Referencia</th></tr></thead>
+  <tbody>
+    <tr><td>[1]</td><td>ISO/IEC 42010:2022 — <em>Systems and software engineering — Architecture description</em></td></tr>
+    <tr><td>[2]</td><td>Brown, S. (2018). <em>The C4 Model for Visualising Software Architecture</em>. c4model.com</td></tr>
+    <tr><td>[3]</td><td>OMG (2017). <em>Unified Modeling Language (UML) Version 2.5.1</em>. omg.org/spec/UML/2.5.1</td></tr>
+    <tr><td>[4]</td><td>Firebase Documentation. <em>Cloud Firestore — Perform transactions and batched writes</em>. firebase.google.com</td></tr>
+    <tr><td>[5]</td><td>Capacitor Documentation. <em>Network Plugin API</em>. capacitorjs.com</td></tr>
+    <tr><td>[6]</td><td>Código fuente del proyecto: <code>github.com/joswil05/Gestion-de-Personal</code></td></tr>
+  </tbody>
+  <caption>Documentos y estándares de referencia.</caption>
+</table>
+
+</div>
+
+<!-- ========================= PIE DE PÁGINA ========================= -->
+<div class="doc-footer">
+  <span>SAD — SmartAssign · Documento de Arquitectura de Software v3.5</span>
+  <span>Confidencial — Julio 2026</span>
+</div>
+
+</body>
+</html>
