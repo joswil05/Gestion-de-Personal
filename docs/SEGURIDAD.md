@@ -9,7 +9,7 @@ SmartAssign utiliza **Firebase Authentication Anónimo enriquecido con Custom Cl
 - Al presionar *"Ingresar a la Terminal"*, la aplicación crea una sesión anónima en Firebase Auth (`signInAnonymously(auth)`).
 - Invoca la Cloud Function `assignUserClaims` enviando el rol y datos de la sesión:
   - **Coordinador:** Requiere la validación del PIN maestro (`9900` por defecto o configurado en backend). Incluye rate-limiting (máximo 5 intentos fallidos, bloqueo temporal de 15 min en `pin_attempts`).
-  - **Supervisor:** Valida que la identidad y línea correspondan a la asignación oficial.
+  - **Supervisor:** Se efectúa una **validación server-side estricta**. Se verifica contra la lista blanca oficial (`AUTHORIZED_SUPERVISORS_WHITELIST`) y contra la asignación registrada en `config/supervisors_assignment`. Si el `supervisorName` es inventado o no coincide con el plan oficial, la función lanza `HttpsError('permission-denied', 'Supervisor no autorizado para esta línea.')` con rate-limiting en `pin_attempts`, y **NUNCA** llama a `setCustomUserClaims()`.
 - Una vez verificados los datos en el servidor, Firebase Admin SDK estampa los **Custom Claims** (`request.auth.token.role` y `request.auth.token.lineId`).
 - El cliente invoca `user.getIdToken(true)` para refrescar el token JWT firmado criptográficamente.
 

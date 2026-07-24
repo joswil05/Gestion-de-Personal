@@ -5,21 +5,34 @@ if (!admin.apps.length) {
   admin.initializeApp();
 }
 
-const db = admin.firestore();
-
 // PIN maestro de Coordinador (por defecto 9900 o configurado en environment)
 const MASTER_COORDINADOR_PIN = process.env.COORDINADOR_PIN || "9900";
 const MAX_FAILED_ATTEMPTS = 5;
 const LOCKOUT_DURATION_MS = 15 * 60 * 1000; // 15 minutos
 
+// Lista oficial de IDs y nombres de supervisores autorizados en planta
+const AUTHORIZED_SUPERVISORS_WHITELIST = [
+  { id: "WORKER_001", name: "Juan Pérez", shortName: "Juan P." },
+  { id: "WORKER_002", name: "María López", shortName: "María L." },
+  { id: "WORKER_003", name: "Carlos Ruiz", shortName: "Carlos R." },
+  { id: "WORKER_004", name: "Ana Martínez", shortName: "Ana M." },
+  { id: "WORKER_005", name: "Luis Gómez", shortName: "Luis G." },
+  { id: "WORKER_006", name: "Elena Torres", shortName: "Elena T." },
+  { id: "WORKER_007", name: "Roberto Diaz", shortName: "Roberto D." },
+  { id: "WORKER_008", name: "Patricia Hernandez", shortName: "Patricia H." },
+  { id: "WORKER_009", name: "Fernando Castro", shortName: "Fernando C." },
+  { id: "WORKER_010", name: "Sofia Morales", shortName: "Sofia M." }
+];
+
 /**
- * Cloud Function Callable: assignUserClaims
- * Enriquece la sesión anónima o autenticada del usuario con custom claims (role y lineId).
- * NUNCA confía ciegamente en role/lineId enviados por el cliente.
+ * Lógica interna de la Cloud Function Callable assignUserClaims.
+ * NUNCA confía ciegamente en role/lineId/supervisorName enviados por el cliente.
  */
-exports.assignUserClaims = functions.https.onCall(async (data, context) => {
+async function assignUserClaimsHandler(data, context) {
+  const db = admin.firestore();
+
   // 1. Verificar que la llamada esté autenticada en Firebase Auth
-  if (!context.auth) {
+  if (!context || !context.auth) {
     throw new functions.https.HttpsError(
       "unauthenticated",
       "La solicitud debe ser realizada por un cliente autenticado."
@@ -37,28 +50,27 @@ exports.assignUserClaims = functions.https.onCall(async (data, context) => {
   }
 
   const attemptRef = db.collection("pin_attempts").doc(uid);
+  const attemptSnap = await attemptRef.get();
+  let failedAttempts = 0;
+  let lockoutUntil = 0;
+
+  if (attemptSnap.exists) {
+    const attemptData = attemptSnap.data();
+    failedAttempts = attemptData.failedAttempts || 0;
+    lockoutUntil = attemptData.lockoutUntil || 0;
+  }
+
+  const now = Date.now();
+  if (lockoutUntil > now) {
+    const remainingMin = Math.ceil((lockoutUntil - now) / 60000);
+    throw new functions.https.HttpsError(
+      "resource-exhausted",
+      `Demasiados intentos fallidos. Cuenta bloqueada por ${remainingMin} minuto(s).`
+    );
+  }
 
   // 2. Procesamiento para Rol COORDINADOR
   if (role === "COORDINADOR" || role === "coordinador") {
-    const attemptSnap = await attemptRef.get();
-    let failedAttempts = 0;
-    let lockoutUntil = 0;
-
-    if (attemptSnap.exists) {
-      const attemptData = attemptSnap.data();
-      failedAttempts = attemptData.failedAttempts || 0;
-      lockoutUntil = attemptData.lockoutUntil || 0;
-    }
-
-    const now = Date.now();
-    if (lockoutUntil > now) {
-      const remainingMin = Math.ceil((lockoutUntil - now) / 60000);
-      throw new functions.https.HttpsError(
-        "resource-exhausted",
-        `Demasiados intentos fallidos. Cuenta bloqueada por ${remainingMin} minuto(s).`
-      );
-    }
-
     // Validar PIN de Coordinador
     if (!pin || pin !== MASTER_COORDINADOR_PIN) {
       failedAttempts += 1;
@@ -109,20 +121,57 @@ exports.assignUserClaims = functions.https.onCall(async (data, context) => {
       );
     }
 
-    // Validar autorización server-side consultando la colección de control en Firestore
-    const supsDoc = await db.collection("config").doc("supervisors_assignment").get();
-    let isAuthorized = true; // Por defecto validar que exista o coincida si ya fue asignado
+    // A. Verificar que el supervisorName sea un supervisor reconocido en la lista blanca
+    const isRecognizedSupervisor = AUTHORIZED_SUPERVISORS_WHITELIST.some(s => 
+      s.id === supervisorName || s.name === supervisorName || s.shortName === supervisorName
+    );
 
-    if (supsDoc.exists) {
+    let isAuthorized = isRecognizedSupervisor;
+
+    // B. Consultar asignación oficial en Firestore (config/supervisors_assignment)
+    const supsDoc = await db.collection("config").doc("supervisors_assignment").get();
+    if (supsDoc.exists && isAuthorized) {
       const assignments = supsDoc.data();
       const lineAssigned = assignments[lineId];
-      // Si la línea tiene un supervisor asignado oficialmente en el plan, validar coincidencia
-      if (lineAssigned && lineAssigned.workerId && lineAssigned.name) {
-        if (lineAssigned.workerId !== supervisorName && lineAssigned.name !== supervisorName) {
-          console.warn(`[assignUserClaims] Advertencia: Supervisor '${supervisorName}' ingresando a '${lineId}' asignada a '${lineAssigned.name}'.`);
+      // Si la línea tiene un supervisor asignado oficialmente en el plan, validar coincidencia estricta
+      if (lineAssigned && (lineAssigned.workerId || lineAssigned.name)) {
+        const matchesAssignment = 
+          lineAssigned.workerId === supervisorName ||
+          lineAssigned.name === supervisorName ||
+          lineAssigned.shortName === supervisorName;
+        
+        if (!matchesAssignment) {
+          isAuthorized = false;
         }
       }
     }
+
+    // C. Rechazo estricto si no pasa la autorización server-side
+    if (!isAuthorized) {
+      failedAttempts += 1;
+      let newLockout = 0;
+      if (failedAttempts >= MAX_FAILED_ATTEMPTS) {
+        newLockout = now + LOCKOUT_DURATION_MS;
+      }
+
+      await attemptRef.set({
+        failedAttempts,
+        lockoutUntil: newLockout,
+        lastAttemptTimestamp: admin.firestore.FieldValue.serverTimestamp()
+      }, { merge: true });
+
+      throw new functions.https.HttpsError(
+        "permission-denied",
+        "Supervisor no autorizado para esta línea."
+      );
+    }
+
+    // Resetear contador tras éxito de autorización
+    await attemptRef.set({
+      failedAttempts: 0,
+      lockoutUntil: 0,
+      lastSuccessTimestamp: admin.firestore.FieldValue.serverTimestamp()
+    }, { merge: true });
 
     // Otorgar Custom Claims de Supervisor restringido a SU línea
     await admin.auth().setCustomUserClaims(uid, {
@@ -142,4 +191,7 @@ exports.assignUserClaims = functions.https.onCall(async (data, context) => {
     "invalid-argument",
     "Rol no reconocido."
   );
-});
+}
+
+exports.assignUserClaimsHandler = assignUserClaimsHandler;
+exports.assignUserClaims = functions.https.onCall(assignUserClaimsHandler);

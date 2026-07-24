@@ -8,6 +8,8 @@
     "dev": "vite",
     "build": "vite build && node scripts/verify-build.js",
     "check-build": "node scripts/verify-build.js",
+    "test:security": "node scripts/test-security-suite.js",
+    "test:unit-functions": "node functions/test-standalone.cjs",
     "preview": "vite preview"
   },
   "repository": {
