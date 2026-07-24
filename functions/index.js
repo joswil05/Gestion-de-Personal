@@ -10,23 +10,10 @@ const MASTER_COORDINADOR_PIN = process.env.COORDINADOR_PIN || "9900";
 const MAX_FAILED_ATTEMPTS = 5;
 const LOCKOUT_DURATION_MS = 15 * 60 * 1000; // 15 minutos
 
-// Lista oficial de IDs y nombres de supervisores autorizados en planta
-const AUTHORIZED_SUPERVISORS_WHITELIST = [
-  { id: "WORKER_001", name: "Juan Pérez", shortName: "Juan P." },
-  { id: "WORKER_002", name: "María López", shortName: "María L." },
-  { id: "WORKER_003", name: "Carlos Ruiz", shortName: "Carlos R." },
-  { id: "WORKER_004", name: "Ana Martínez", shortName: "Ana M." },
-  { id: "WORKER_005", name: "Luis Gómez", shortName: "Luis G." },
-  { id: "WORKER_006", name: "Elena Torres", shortName: "Elena T." },
-  { id: "WORKER_007", name: "Roberto Diaz", shortName: "Roberto D." },
-  { id: "WORKER_008", name: "Patricia Hernandez", shortName: "Patricia H." },
-  { id: "WORKER_009", name: "Fernando Castro", shortName: "Fernando C." },
-  { id: "WORKER_010", name: "Sofia Morales", shortName: "Sofia M." }
-];
-
 /**
  * Lógica interna de la Cloud Function Callable assignUserClaims.
  * NUNCA confía ciegamente en role/lineId/supervisorName enviados por el cliente.
+ * Implementa seguridad FAIL-CLOSED y consulta dinámica en Firestore.
  */
 async function assignUserClaimsHandler(data, context) {
   const db = admin.firestore();
@@ -71,7 +58,6 @@ async function assignUserClaimsHandler(data, context) {
 
   // 2. Procesamiento para Rol COORDINADOR
   if (role === "COORDINADOR" || role === "coordinador") {
-    // Validar PIN de Coordinador
     if (!pin || pin !== MASTER_COORDINADOR_PIN) {
       failedAttempts += 1;
       let newLockout = 0;
@@ -112,7 +98,7 @@ async function assignUserClaimsHandler(data, context) {
     };
   }
 
-  // 3. Procesamiento para Rol SUPERVISOR
+  // 3. Procesamiento para Rol SUPERVISOR (Lógica FAIL-CLOSED Estricta)
   if (role === "SUPERVISOR" || role === "supervisor") {
     if (!lineId || !supervisorName) {
       throw new functions.https.HttpsError(
@@ -121,33 +107,43 @@ async function assignUserClaimsHandler(data, context) {
       );
     }
 
-    // A. Verificar que el supervisorName sea un supervisor reconocido en la lista blanca
-    const isRecognizedSupervisor = AUTHORIZED_SUPERVISORS_WHITELIST.some(s => 
-      s.id === supervisorName || s.name === supervisorName || s.shortName === supervisorName
-    );
-
-    let isAuthorized = isRecognizedSupervisor;
-
-    // B. Consultar asignación oficial en Firestore (config/supervisors_assignment)
-    const supsDoc = await db.collection("config").doc("supervisors_assignment").get();
-    if (supsDoc.exists && isAuthorized) {
-      const assignments = supsDoc.data();
-      const lineAssigned = assignments[lineId];
-      // Si la línea tiene un supervisor asignado oficialmente en el plan, validar coincidencia estricta
-      if (lineAssigned && (lineAssigned.workerId || lineAssigned.name)) {
-        const matchesAssignment = 
-          lineAssigned.workerId === supervisorName ||
-          lineAssigned.name === supervisorName ||
-          lineAssigned.shortName === supervisorName;
-        
-        if (!matchesAssignment) {
-          isAuthorized = false;
+    // A. Consultar si el supervisor existe en la colección personal_autorizado (gestionada por el coordinador)
+    //    o en el semillero oficial de trabajadores.
+    let isAuthorizedSupervisor = false;
+    const personalDoc = await db.collection("personal_autorizado").doc(supervisorName).get();
+    if (personalDoc.exists) {
+      isAuthorizedSupervisor = true;
+    } else {
+      // Fallback a consulta por ID o nombre de trabajador en personal_autorizado
+      const personalQuery = await db.collection("personal_autorizado")
+        .where("workerId", "==", supervisorName)
+        .limit(1)
+        .get();
+      if (!personalQuery.empty) {
+        isAuthorizedSupervisor = true;
+      } else {
+        // Consultar semillero de trabajadores oficial
+        const workerDoc = await db.collection("trabajadores").doc(supervisorName).get();
+        if (workerDoc.exists) {
+          isAuthorizedSupervisor = true;
+        } else {
+          // Lista blanca de supervisores reales de planta
+          const REAL_SUPERVISOR_IDS = [
+            "WORKER_365515", // Axel Tercero
+            "WORKER_99590",  // Jairo Carrión
+            "WORKER_359224", // Nubia Luna
+            "WORKER_10432",  // Roberto Lira
+            "WORKER_351516", // Anielka Cruz
+            "WORKER_99708"   // Fabricio Espinoza
+          ];
+          if (REAL_SUPERVISOR_IDS.includes(supervisorName)) {
+            isAuthorizedSupervisor = true;
+          }
         }
       }
     }
 
-    // C. Rechazo estricto si no pasa la autorización server-side
-    if (!isAuthorized) {
+    if (!isAuthorizedSupervisor) {
       failedAttempts += 1;
       let newLockout = 0;
       if (failedAttempts >= MAX_FAILED_ATTEMPTS) {
@@ -162,18 +158,60 @@ async function assignUserClaimsHandler(data, context) {
 
       throw new functions.https.HttpsError(
         "permission-denied",
-        "Supervisor no autorizado para esta línea."
+        "Supervisor no registrado en la lista de personal autorizado."
       );
     }
 
-    // Resetear contador tras éxito de autorización
+    // B. LÓGICA FAIL-CLOSED ESTRICTA PARA LA LÍNEA SOLICITADA:
+    // Consultar el plan oficial registrado en config/supervisors_assignment
+    const supsDoc = await db.collection("config").doc("supervisors_assignment").get();
+    let isLineAuthorized = false;
+
+    if (supsDoc.exists) {
+      const assignments = supsDoc.data();
+      const lineAssigned = assignments[lineId];
+
+      // Si la línea tiene un supervisor asignado en el plan del coordinador:
+      if (lineAssigned && (lineAssigned.workerId || lineAssigned.name)) {
+        const matchesAssignment = 
+          lineAssigned.workerId === supervisorName ||
+          lineAssigned.name === supervisorName ||
+          lineAssigned.shortName === supervisorName;
+        
+        if (matchesAssignment) {
+          isLineAuthorized = true;
+        }
+      }
+    }
+
+    // FAIL-CLOSED: Si la línea NO tiene asignación registrada o el supervisor no coincide -> DENEGAR
+    if (!isLineAuthorized) {
+      failedAttempts += 1;
+      let newLockout = 0;
+      if (failedAttempts >= MAX_FAILED_ATTEMPTS) {
+        newLockout = now + LOCKOUT_DURATION_MS;
+      }
+
+      await attemptRef.set({
+        failedAttempts,
+        lockoutUntil: newLockout,
+        lastAttemptTimestamp: admin.firestore.FieldValue.serverTimestamp()
+      }, { merge: true });
+
+      throw new functions.https.HttpsError(
+        "permission-denied",
+        `Acceso denegado: La línea ${lineId} no está asignada oficialmente a ${supervisorName}. El coordinador debe autorizar el plan de la línea.`
+      );
+    }
+
+    // Resetear contador tras éxito
     await attemptRef.set({
       failedAttempts: 0,
       lockoutUntil: 0,
       lastSuccessTimestamp: admin.firestore.FieldValue.serverTimestamp()
     }, { merge: true });
 
-    // Otorgar Custom Claims de Supervisor restringido a SU línea
+    // Otorgar Custom Claims de Supervisor
     await admin.auth().setCustomUserClaims(uid, {
       role: "supervisor",
       lineId: lineId,

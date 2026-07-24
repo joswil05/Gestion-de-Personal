@@ -11,8 +11,16 @@ const mockFirestore = () => ({
           return {
             exists: true,
             data: () => ({
-              L2: { workerId: "WORKER_002", name: "María López", shortName: "María L." }
+              L2: { workerId: "WORKER_365515", name: "Axel Javier Antonio Tercero Lola", shortName: "Axel Tercero" },
+              L4: { workerId: "WORKER_99590",  name: "Jairo De Jesus Carrion Puerto",   shortName: "Jairo Carrión" }
             })
+          };
+        }
+        if (collName === "personal_autorizado") {
+          const validSups = ["WORKER_365515", "WORKER_99590", "WORKER_359224", "Axel Tercero"];
+          return {
+            exists: validSups.includes(docId),
+            data: () => ({ workerId: docId, role: "Supervisor" })
           };
         }
         if (collName === "pin_attempts") {
@@ -29,6 +37,11 @@ const mockFirestore = () => ({
         }
         return true;
       }
+    }),
+    where: () => ({
+      limit: () => ({
+        get: async () => ({ empty: true })
+      })
     })
   })
 });
@@ -104,7 +117,7 @@ async function runUnitTests() {
   }
 
   // -------------------------------------------------------------
-  // Test 3 (ESCENARIO DE FALLA REPORTADO POR EL USUARIO): Supervisor INVENTADO no registrado en whitelist
+  // Test 3: Supervisor INVENTADO no registrado en personal_autorizado ni roster
   // -------------------------------------------------------------
   try {
     await assignUserClaimsHandler(
@@ -113,23 +126,23 @@ async function runUnitTests() {
     );
     assert("Test 3: Supervisor INVENTADO no registrado (Rechazo Hermético)", false, "Debería haber sido rechazado.");
   } catch (err) {
-    const ok = err.code === "permission-denied" || err.message.includes("no autorizado");
+    const ok = err.code === "permission-denied" || err.message.includes("no registrado");
     assert("Test 3: Supervisor INVENTADO no registrado (Rechazo Hermético)", ok, `Rechazado correctamente: ${err.message}`);
   }
 
   // -------------------------------------------------------------
-  // Test 4: Supervisor legítimo de Whitelist (WORKER_002 en L2)
+  // Test 4: Supervisor legítimo de Whitelist en línea asignada (WORKER_365515 en L2)
   // -------------------------------------------------------------
   try {
     const res = await assignUserClaimsHandler(
-      { role: "SUPERVISOR", lineId: "L2", supervisorName: "WORKER_002" }, // María López
+      { role: "SUPERVISOR", lineId: "L2", supervisorName: "WORKER_365515" }, // Axel Tercero
       { auth: { uid: "test_uid_valid_sup" } }
     );
     const claims = customClaimsStore["test_uid_valid_sup"];
     const ok = res && res.success && res.role === "supervisor" && res.lineId === "L2" && claims && claims.role === "supervisor" && claims.lineId === "L2";
-    assert("Test 4: Supervisor legítimo de Whitelist (WORKER_002 en L2)", ok, `Claims estampados: role=${claims?.role}, lineId=${claims?.lineId}`);
+    assert("Test 4: Supervisor legítimo en línea asignada (WORKER_365515 en L2)", ok, `Claims estampados: role=${claims?.role}, lineId=${claims?.lineId}`);
   } catch (err) {
-    assert("Test 4: Supervisor legítimo de Whitelist", false, `Fallo inesperado: ${err.message}`);
+    assert("Test 4: Supervisor legítimo en línea asignada", false, `Fallo inesperado: ${err.message}`);
   }
 
   // -------------------------------------------------------------
@@ -169,6 +182,20 @@ async function runUnitTests() {
   } catch (err) {
     const ok = err.code === "resource-exhausted" || err.message.includes("bloqueada");
     assert("Test 6: Rate Limiting (Bloqueo tras 5 intentos fallidos)", ok, `Bloqueado correctamente: ${err.message}`);
+  }
+
+  // -------------------------------------------------------------
+  // Test 7 (REQUERIDO): Lógica FAIL-CLOSED para línea SIN entrada en supervisors_assignment (ej. L9)
+  // -------------------------------------------------------------
+  try {
+    await assignUserClaimsHandler(
+      { role: "SUPERVISOR", lineId: "L9", supervisorName: "WORKER_365515" }, // Supervisor legítimo pero solicitando línea L9 no asignada
+      { auth: { uid: "test_uid_unassigned_line" } }
+    );
+    assert("Test 7: FAIL-CLOSED en línea L9 sin asignación previa en config", false, "Debería haber sido rechazado por permission-denied.");
+  } catch (err) {
+    const ok = err.code === "permission-denied" && err.message.includes("no está asignada oficialmente");
+    assert("Test 7: FAIL-CLOSED en línea L9 sin asignación previa en config", ok, `Rechazado correctamente: ${err.message}`);
   }
 
   console.log("\n=================================================");
