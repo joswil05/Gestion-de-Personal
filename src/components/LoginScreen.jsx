@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { styled } from '../styles/theme';
 import { db } from '../services/firebaseService';
-import { doc, getDoc } from 'firebase/firestore';
+import { doc, getDoc, collection, onSnapshot } from 'firebase/firestore';
 import { triggerNativeHapticFeedback } from '../skills/capacitor-android-bridge';
 import { REAL_SUPERVISORS } from '../dev/realDataSeed';
 import { loginWithRoleAndLine } from '../services/authService';
@@ -205,6 +205,7 @@ export default function LoginScreen({ onLoginSuccess }) {
     };
 
     fetchConfigData();
+    return () => unsubAuth();
   }, []);
 
   // Escuchar cambio en el rol o la línea seleccionada para auto-completar supervisor
@@ -212,10 +213,9 @@ export default function LoginScreen({ onLoginSuccess }) {
     if (selectedRole === "SUPERVISOR" && selectedLine) {
       const assignment = supervisorsAssignment[selectedLine];
       if (assignment && assignment.workerId) {
-        // Encontrar en REAL_SUPERVISORS para setear el workerId
-        const match = REAL_SUPERVISORS.find(s => s.id === assignment.workerId);
+        const match = authorizedSupervisors.find(s => s.id === assignment.workerId || s.workerId === assignment.workerId);
         if (match) {
-          setSupervisorName(match.id);
+          setSupervisorName(match.id || match.workerId);
           setWarningText("");
         } else {
           setSupervisorName("");
@@ -226,7 +226,7 @@ export default function LoginScreen({ onLoginSuccess }) {
     } else {
       setSupervisorName("");
     }
-  }, [selectedLine, selectedRole, supervisorsAssignment]);
+  }, [selectedLine, selectedRole, supervisorsAssignment, authorizedSupervisors]);
 
   const handleSupervisorSelect = (e) => {
     const val = e.target.value;
@@ -367,13 +367,14 @@ export default function LoginScreen({ onLoginSuccess }) {
                 onChange={handleSupervisorSelect}
               >
                 <option value="">── Seleccionar Supervisor ──</option>
-                {REAL_SUPERVISORS.map(sup => {
+                {authorizedSupervisors.map(sup => {
+                  const supId = sup.id || sup.workerId;
                   const assignedLine = Object.entries(supervisorsAssignment).find(
-                    ([, val]) => val?.workerId === sup.id
+                    ([, val]) => val?.workerId === supId
                   );
                   return (
-                    <option key={sup.id} value={sup.id}>
-                      {sup.shortName}{assignedLine ? ` (Asignado a ${assignedLine[0]})` : ' (Disponible)'}
+                    <option key={supId} value={supId}>
+                      {sup.shortName || sup.name}{assignedLine ? ` (Asignado a ${assignedLine[0]})` : ' (Disponible)'}
                     </option>
                   );
                 })}

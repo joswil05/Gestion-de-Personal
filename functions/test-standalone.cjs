@@ -17,6 +17,7 @@ const mockFirestore = () => ({
           };
         }
         if (collName === "personal_autorizado") {
+          // ÚNICA FUENTE DE VERDAD: Colección personal_autorizado en Firestore
           const validSups = ["WORKER_365515", "WORKER_99590", "WORKER_359224", "Axel Tercero"];
           return {
             exists: validSups.includes(docId),
@@ -117,21 +118,21 @@ async function runUnitTests() {
   }
 
   // -------------------------------------------------------------
-  // Test 3: Supervisor INVENTADO no registrado en personal_autorizado ni roster
+  // Test 3: Supervisor INVENTADO no registrado en personal_autorizado (Colección Firestore)
   // -------------------------------------------------------------
   try {
     await assignUserClaimsHandler(
       { role: "SUPERVISOR", lineId: "L2", supervisorName: "SUPERVISOR_INVENTADO_HACKER" },
       { auth: { uid: "test_uid_fake_sup" } }
     );
-    assert("Test 3: Supervisor INVENTADO no registrado (Rechazo Hermético)", false, "Debería haber sido rechazado.");
+    assert("Test 3: Supervisor INVENTADO no registrado (Rechazo por personal_autorizado)", false, "Debería haber sido rechazado.");
   } catch (err) {
-    const ok = err.code === "permission-denied" || err.message.includes("no registrado");
-    assert("Test 3: Supervisor INVENTADO no registrado (Rechazo Hermético)", ok, `Rechazado correctamente: ${err.message}`);
+    const ok = err.code === "permission-denied" && err.message.includes("personal autorizado");
+    assert("Test 3: Supervisor INVENTADO no registrado (Rechazo por personal_autorizado)", ok, `Rechazado correctamente: ${err.message}`);
   }
 
   // -------------------------------------------------------------
-  // Test 4: Supervisor legítimo de Whitelist en línea asignada (WORKER_365515 en L2)
+  // Test 4: Supervisor legítimo en personal_autorizado y línea asignada (WORKER_365515 en L2)
   // -------------------------------------------------------------
   try {
     const res = await assignUserClaimsHandler(
@@ -140,9 +141,9 @@ async function runUnitTests() {
     );
     const claims = customClaimsStore["test_uid_valid_sup"];
     const ok = res && res.success && res.role === "supervisor" && res.lineId === "L2" && claims && claims.role === "supervisor" && claims.lineId === "L2";
-    assert("Test 4: Supervisor legítimo en línea asignada (WORKER_365515 en L2)", ok, `Claims estampados: role=${claims?.role}, lineId=${claims?.lineId}`);
+    assert("Test 4: Supervisor legítimo en personal_autorizado y línea asignada", ok, `Claims estampados: role=${claims?.role}, lineId=${claims?.lineId}`);
   } catch (err) {
-    assert("Test 4: Supervisor legítimo en línea asignada", false, `Fallo inesperado: ${err.message}`);
+    assert("Test 4: Supervisor legítimo en personal_autorizado y línea asignada", false, `Fallo inesperado: ${err.message}`);
   }
 
   // -------------------------------------------------------------
@@ -185,11 +186,11 @@ async function runUnitTests() {
   }
 
   // -------------------------------------------------------------
-  // Test 7 (REQUERIDO): Lógica FAIL-CLOSED para línea SIN entrada en supervisors_assignment (ej. L9)
+  // Test 7: Lógica FAIL-CLOSED para línea SIN entrada en supervisors_assignment (ej. L9)
   // -------------------------------------------------------------
   try {
     await assignUserClaimsHandler(
-      { role: "SUPERVISOR", lineId: "L9", supervisorName: "WORKER_365515" }, // Supervisor legítimo pero solicitando línea L9 no asignada
+      { role: "SUPERVISOR", lineId: "L9", supervisorName: "WORKER_365515" },
       { auth: { uid: "test_uid_unassigned_line" } }
     );
     assert("Test 7: FAIL-CLOSED en línea L9 sin asignación previa en config", false, "Debería haber sido rechazado por permission-denied.");

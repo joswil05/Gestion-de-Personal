@@ -107,39 +107,19 @@ async function assignUserClaimsHandler(data, context) {
       );
     }
 
-    // A. Consultar si el supervisor existe en la colección personal_autorizado (gestionada por el coordinador)
-    //    o en el semillero oficial de trabajadores.
+    // A. ÚNICA FUENTE DE VERDAD: Consultar la colección personal_autorizado en Firestore (administrada solo por el Coordinador)
     let isAuthorizedSupervisor = false;
     const personalDoc = await db.collection("personal_autorizado").doc(supervisorName).get();
     if (personalDoc.exists) {
       isAuthorizedSupervisor = true;
     } else {
-      // Fallback a consulta por ID o nombre de trabajador en personal_autorizado
+      // Búsqueda alternativa por workerId o nombre corto dentro de personal_autorizado
       const personalQuery = await db.collection("personal_autorizado")
         .where("workerId", "==", supervisorName)
         .limit(1)
         .get();
       if (!personalQuery.empty) {
         isAuthorizedSupervisor = true;
-      } else {
-        // Consultar semillero de trabajadores oficial
-        const workerDoc = await db.collection("trabajadores").doc(supervisorName).get();
-        if (workerDoc.exists) {
-          isAuthorizedSupervisor = true;
-        } else {
-          // Lista blanca de supervisores reales de planta
-          const REAL_SUPERVISOR_IDS = [
-            "WORKER_365515", // Axel Tercero
-            "WORKER_99590",  // Jairo Carrión
-            "WORKER_359224", // Nubia Luna
-            "WORKER_10432",  // Roberto Lira
-            "WORKER_351516", // Anielka Cruz
-            "WORKER_99708"   // Fabricio Espinoza
-          ];
-          if (REAL_SUPERVISOR_IDS.includes(supervisorName)) {
-            isAuthorizedSupervisor = true;
-          }
-        }
       }
     }
 

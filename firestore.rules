@@ -94,5 +94,11 @@ service cloud.firestore {
       allow read: if isAuthenticated();
       allow write: if isCoordinador();
     }
+
+    // Colección de Personal Autorizado (Gestión de Alta/Baja de Supervisores por Coordinador)
+    match /personal_autorizado/{workerId} {
+      allow read: if isAuthenticated();
+      allow write: if isCoordinador();
+    }
   }
 }

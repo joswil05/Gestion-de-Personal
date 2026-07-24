@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { styled, keyframes } from '../styles/theme';
 import { db, puestosColl, trabajadoresColl, initializeTurnoWithSheets, programNextDayShift, assignPuestosLive, executeCoordinatorSuggestion, getHistorialDia, saveHistorialDia, getProgramaProduccionPorFecha, canWorkerOccupiedSlot, assignSupervisorToLine } from '../services/firebaseService';
 import { REAL_SUPERVISORS } from '../dev/realDataSeed';
-import { collection, doc, onSnapshot, getDocs, updateDoc, setDoc, query, where, getDoc, writeBatch, serverTimestamp } from 'firebase/firestore';
+import { collection, doc, onSnapshot, getDocs, updateDoc, setDoc, deleteDoc, query, where, getDoc, writeBatch, serverTimestamp } from 'firebase/firestore';
 import { triggerNativeHapticFeedback } from '../skills/capacitor-android-bridge';
 
 // --- KEYFRAMES & MICRO-ANIMATIONS ---
@@ -1690,21 +1690,54 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
     L10: "INACTIVO"
   });
 
+  const [authorizedSupervisors, setAuthorizedSupervisors] = useState(REAL_SUPERVISORS);
+  const [showAuthSupervisorsModal, setShowAuthSupervisorsModal] = useState(false);
+  const [newSupWorkerId, setNewSupWorkerId] = useState("");
+  const [newSupName, setNewSupName] = useState("");
+  const [newSupShortName, setNewSupShortName] = useState("");
+
+  // Escuchar colección personal_autorizado en tiempo real (Fuente de verdad)
+  useEffect(() => {
+    const unsubPersonal = onSnapshot(collection(db, "personal_autorizado"), (snapshot) => {
+      if (!snapshot.empty) {
+        const list = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+        setAuthorizedSupervisors(list);
+      } else {
+        // Auto-poblar semillero inicial si la colección en Firestore está vacía
+        REAL_SUPERVISORS.forEach(async (sup) => {
+          await setDoc(doc(db, "personal_autorizado", sup.id), {
+            workerId: sup.id,
+            name: sup.name,
+            shortName: sup.shortName,
+            role: "Supervisor",
+            createdAt: serverTimestamp()
+          });
+        });
+        setAuthorizedSupervisors(REAL_SUPERVISORS);
+      }
+    }, (err) => {
+      console.warn("[PanelCoordinador] Error escuchando personal_autorizado:", err);
+    });
+
+    return () => unsubPersonal();
+  }, []);
 
   // Supervisores reales del sistema — enriquecidos con asignaciones actuales
   const availableSupervisors = useMemo(() => {
-    return REAL_SUPERVISORS.map(sup => {
+    return authorizedSupervisors.map(sup => {
+      const supId = sup.id || sup.workerId;
       // Buscar si ya está asignado a alguna línea
       const assignedLine = Object.entries(supervisors).find(
-        ([, val]) => val?.workerId === sup.id
+        ([, val]) => val?.workerId === supId
       );
       return {
         ...sup,
+        id: supId,
         assignedLine: assignedLine ? assignedLine[0] : null,
         isAvailable: !assignedLine || assignedLine[0] === editingLineId
       };
     });
-  }, [supervisors, editingLineId]);
+  }, [supervisors, editingLineId, authorizedSupervisors]);
 
   // 1. Escuchar la colección config reactivamente
   useEffect(() => {
@@ -2653,12 +2686,46 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
     }
   };
 
+  const handleAddAuthorizedSupervisor = async (e) => {
+    e.preventDefault();
+    if (!newSupWorkerId.trim() || !newSupName.trim()) return;
+    try {
+      const id = newSupWorkerId.trim();
+      const name = newSupName.trim();
+      const shortName = newSupShortName.trim() || name;
+      await setDoc(doc(db, "personal_autorizado", id), {
+        workerId: id,
+        name: name,
+        shortName: shortName,
+        role: "Supervisor",
+        createdAt: serverTimestamp()
+      });
+      setNewSupWorkerId("");
+      setNewSupName("");
+      setNewSupShortName("");
+      triggerNativeHapticFeedback('confirm');
+      alert(`Supervisor ${name} (${id}) dado de alta exitosamente en personal_autorizado.`);
+    } catch (err) {
+      alert(`Error al dar de alta supervisor: ${err.message}`);
+    }
+  };
+
+  const handleDeleteAuthorizedSupervisor = async (supId, name) => {
+    if (!window.confirm(`¿Dar de baja al supervisor "${name}" (${supId})? Se revocarán sus accesos.`)) return;
+    try {
+      await deleteDoc(doc(db, "personal_autorizado", supId));
+      triggerNativeHapticFeedback('confirm');
+    } catch (err) {
+      alert(`Error al dar de baja supervisor: ${err.message}`);
+    }
+  };
+
   const handleSaveSupervisor = async () => {
     if (!editingLineId || !tempSupervisorName) return;
     triggerNativeHapticFeedback('short');
     try {
       // tempSupervisorName ahora contiene el workerId del supervisor seleccionado
-      const selectedSup = REAL_SUPERVISORS.find(s => s.id === tempSupervisorName);
+      const selectedSup = authorizedSupervisors.find(s => s.id === tempSupervisorName || s.workerId === tempSupervisorName);
       if (!selectedSup) {
         // Si es "Sin Asignar" — limpiar asignación
         const newAssignments = { ...supervisors };
@@ -2669,7 +2736,7 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
         return;
       }
 
-      await assignSupervisorToLine(editingLineId, selectedSup.id, selectedSup.name, selectedSup.shortName);
+      await assignSupervisorToLine(editingLineId, selectedSup.id || selectedSup.workerId, selectedSup.name, selectedSup.shortName || selectedSup.name);
       setEditingLineId(null);
     } catch (err) {
       alert(`Error al asignar supervisor: ${err.message}`);
@@ -2816,6 +2883,29 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
           </TimelineControlWrapper>
 
           <ProfileArea>
+            <button
+              onClick={() => {
+                triggerNativeHapticFeedback('short');
+                setShowAuthSupervisorsModal(true);
+              }}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '4px',
+                padding: '5px 10px',
+                backgroundColor: '#EFF6FF',
+                color: '#2563EB',
+                border: '1px solid #BFDBFE',
+                borderRadius: '8px',
+                fontSize: '11px',
+                fontWeight: 700,
+                cursor: 'pointer'
+              }}
+              title="Gestionar Personal Autorizado (Supervisores en Nómina)"
+              id="btn-manage-authorized-supervisors"
+            >
+              👥 Supervisores
+            </button>
             <span style={{ fontSize: '12px', fontWeight: 700, color: '#1E293B', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '100px' }}>{coordinatorName}</span>
             <LogoutBtn onClick={onLogout} title="Cerrar terminal de coordination" id="coordinator-logout-btn">
               <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
@@ -4960,6 +5050,156 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
         </ModalOverlay>
       )}
 
+      {/* --- MODAL GESTIÓN DE PERSONAL AUTORIZADO (SUPERVISORES EN NÓMINA) --- */}
+      {showAuthSupervisorsModal && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          backgroundColor: 'rgba(15, 23, 42, 0.6)',
+          backdropFilter: 'blur(4px)',
+          zIndex: 9999,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          padding: '16px'
+        }}>
+          <div style={{
+            backgroundColor: '#FFFFFF',
+            borderRadius: '16px',
+            padding: '24px',
+            maxWidth: '580px',
+            width: '100%',
+            maxHeight: '85vh',
+            overflowY: 'auto',
+            boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)',
+            border: '1px solid #E2E8F0'
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '16px', borderBottom: '1px solid #E2E8F0', paddingBottom: '12px' }}>
+              <div>
+                <h2 style={{ margin: 0, fontSize: '16px', fontWeight: 800, color: '#1E293B' }}>👥 Gestión de Personal Autorizado (Supervisores)</h2>
+                <p style={{ margin: '4px 0 0 0', fontSize: '11px', color: '#64748B' }}>
+                  Administración en tiempo real de la colección <code>personal_autorizado</code> en Firestore. Alta y baja sin tocar código ni redeploy de Cloud Functions.
+                </p>
+              </div>
+              <button 
+                onClick={() => setShowAuthSupervisorsModal(false)}
+                style={{ background: 'none', border: 'none', fontSize: '18px', fontWeight: 'bold', cursor: 'pointer', color: '#64748B', padding: '4px' }}
+              >✕</button>
+            </div>
+
+            {/* Formulario de Alta */}
+            <form onSubmit={handleAddAuthorizedSupervisor} style={{
+              backgroundColor: '#F8FAFC',
+              padding: '14px',
+              borderRadius: '12px',
+              border: '1px solid #E2E8F0',
+              marginBottom: '20px',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '10px'
+            }}>
+              <strong style={{ fontSize: '12px', color: '#1E293B' }}>+ Dar de Alta Nuevo Supervisor en Nómina</strong>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '8px' }}>
+                <div>
+                  <label style={{ fontSize: '10px', fontWeight: 700, color: '#475569', display: 'block', marginBottom: '2px' }}>ID / Ficha *</label>
+                  <input 
+                    type="text"
+                    placeholder="ej. WORKER_99999"
+                    value={newSupWorkerId}
+                    onChange={e => setNewSupWorkerId(e.target.value)}
+                    required
+                    style={{ width: '100%', padding: '6px 8px', borderRadius: '6px', border: '1px solid #CBD5E1', fontSize: '11px', boxSizing: 'border-box' }}
+                  />
+                </div>
+                <div>
+                  <label style={{ fontSize: '10px', fontWeight: 700, color: '#475569', display: 'block', marginBottom: '2px' }}>Nombre Completo *</label>
+                  <input 
+                    type="text"
+                    placeholder="Nombre Completo"
+                    value={newSupName}
+                    onChange={e => setNewSupName(e.target.value)}
+                    required
+                    style={{ width: '100%', padding: '6px 8px', borderRadius: '6px', border: '1px solid #CBD5E1', fontSize: '11px', boxSizing: 'border-box' }}
+                  />
+                </div>
+                <div>
+                  <label style={{ fontSize: '10px', fontWeight: 700, color: '#475569', display: 'block', marginBottom: '2px' }}>Nombre Corto</label>
+                  <input 
+                    type="text"
+                    placeholder="ej. Juan P."
+                    value={newSupShortName}
+                    onChange={e => setNewSupShortName(e.target.value)}
+                    style={{ width: '100%', padding: '6px 8px', borderRadius: '6px', border: '1px solid #CBD5E1', fontSize: '11px', boxSizing: 'border-box' }}
+                  />
+                </div>
+              </div>
+              <button 
+                type="submit"
+                style={{
+                  alignSelf: 'flex-end',
+                  padding: '6px 14px',
+                  backgroundColor: '#16A34A',
+                  color: '#FFFFFF',
+                  border: 'none',
+                  borderRadius: '6px',
+                  fontSize: '11px',
+                  fontWeight: 700,
+                  cursor: 'pointer'
+                }}
+              >
+                + Dar de Alta
+              </button>
+            </form>
+
+            {/* Tabla de Supervisores Autorizados */}
+            <div style={{ overflowX: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '11px' }}>
+                <thead>
+                  <tr style={{ backgroundColor: '#F1F5F9', borderBottom: '2px solid #E2E8F0', textAlign: 'left' }}>
+                    <th style={{ padding: '8px' }}>Ficha / ID</th>
+                    <th style={{ padding: '8px' }}>Nombre Completo</th>
+                    <th style={{ padding: '8px' }}>Nombre Corto</th>
+                    <th style={{ padding: '8px', textAlign: 'right' }}>Estado / Acción</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {authorizedSupervisors.map(sup => {
+                    const id = sup.id || sup.workerId;
+                    return (
+                      <tr key={id} style={{ borderBottom: '1px solid #E2E8F0' }}>
+                        <td style={{ padding: '8px', fontFamily: 'monospace', fontWeight: 700, color: '#2563EB' }}>{id}</td>
+                        <td style={{ padding: '8px', fontWeight: 600, color: '#1E293B' }}>{sup.name}</td>
+                        <td style={{ padding: '8px', color: '#475569' }}>{sup.shortName || sup.name}</td>
+                        <td style={{ padding: '8px', textAlign: 'right' }}>
+                          <button
+                            onClick={() => handleDeleteAuthorizedSupervisor(id, sup.name)}
+                            style={{
+                              padding: '4px 8px',
+                              backgroundColor: '#FEE2E2',
+                              color: '#DC2626',
+                              border: '1px solid #FCA5A5',
+                              borderRadius: '4px',
+                              fontSize: '10px',
+                              fontWeight: 700,
+                              cursor: 'pointer'
+                            }}
+                            title="Dar de baja en personal_autorizado"
+                          >
+                            Dar de Baja
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
 
     </PanelContainer>
   );
