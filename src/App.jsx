@@ -1,18 +1,23 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, lazy, Suspense } from 'react';
 import { injectGlobalStyles, styled, keyframes } from './styles/theme';
 import TabBar from './components/TabBar';
 import HudPlanta from './components/HudPlanta';
 import LineaSku from './components/LineaSku';
-import DevConsole from './dev/DevConsole';
 import { initializeConnectivityGuard } from './skills/state-connectivity-guard';
 import { triggerNativeHapticFeedback } from './skills/capacitor-android-bridge';
 import { doc, getDoc, updateDoc } from 'firebase/firestore';
 import { db, endLineParoTransaction, syncServerTimeOffset } from './services/firebaseService';
+import { logoutUser } from './services/authService';
 
 import LoginScreen from './components/LoginScreen';
 import PanelCoordinador from './components/PanelCoordinador';
 import RelevosNotificaciones from './components/RelevosNotificaciones';
 import { StopTimerProvider, useStopTimer } from './components/StopTimerContext';
+
+// Tree-shaking de DevConsole en build de producción
+const DevConsole = (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.DEV)
+  ? lazy(() => import('./dev/DevConsole'))
+  : null;
 
 // --- STITCHES STYLED LAYOUT CONTAINERS ---
 
@@ -357,8 +362,13 @@ export default function App() {
   }, []);
 
   // 4. Salida / Cierre de sesión de Terminal
-  const handleLogout = () => {
+  const handleLogout = async () => {
     triggerNativeHapticFeedback('short');
+    try {
+      await logoutUser();
+    } catch (e) {
+      console.warn("[App] Error al cerrar sesión en Auth:", e.message);
+    }
     localStorage.removeItem("supervisorName");
     localStorage.removeItem("supervisorLineId");
     localStorage.removeItem("userRole");
@@ -367,8 +377,8 @@ export default function App() {
     setUserRole("SUPERVISOR");
   };
 
-  // 5. ENRUTAMIENTO DEL TEST HARNESS (/dev-console)
-  if (pathname === '/dev-console') {
+  // 5. ENRUTAMIENTO DEL TEST HARNESS (/dev-console) - Excluido de producción vía tree-shaking
+  if (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.DEV && pathname === '/dev-console' && DevConsole) {
     return (
       <AppViewport id="qa-test-harness-viewport">
         {isOffline && (
@@ -383,7 +393,9 @@ export default function App() {
             </OfflineBanner>
           </StickyBannerContainer>
         )}
-        <DevConsole />
+        <Suspense fallback={<div style={{ padding: 20, color: '#38BDF8', fontFamily: 'sans-serif' }}>Cargando Test Harness...</div>}>
+          <DevConsole />
+        </Suspense>
       </AppViewport>
     );
   }

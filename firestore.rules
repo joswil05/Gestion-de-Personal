@@ -2,37 +2,97 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // Reglas para la colección de trabajadores (validar máquina de estados)
-    match /trabajadores/{trabajadorId} {
-      allow read: if true;
-      allow write: if request.resource.data.status in [
+    // Auxiliar: Verificar si el usuario está autenticado
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    // Auxiliar: Verificar si es Coordinador General
+    function isCoordinador() {
+      return isAuthenticated() && request.auth.token.role == 'coordinador';
+    }
+
+    // Auxiliar: Verificar si es Supervisor de la línea específica
+    function isSupervisorOfLine(lineId) {
+      return isAuthenticated() && 
+             request.auth.token.role == 'supervisor' && 
+             request.auth.token.lineId == lineId;
+    }
+
+    // Validación de máquina de estados permitidos para trabajadores
+    function isValidTrabajadorStatus() {
+      return request.resource.data.status in [
         'INACTIVO', 'POOL_ARRANQUE', 'ASIGNADO', 'EN_TRANSITO', 
         'DISPONIBLE_BOLSON', 'BAJA_TEMPORAL', 'VACACIONES', 
         'PERMISOS', 'CONSULTAS_MEDICAS', 'SUBSIDIOS', 'ACCIDENTE_LABORAL'
       ];
     }
 
-    // Reglas para la colección de puestos (validar estados permitidos)
-    match /puestos/{puestoId} {
-      allow read: if true;
-      allow write: if request.resource.data.status in [
+    // Validación de estados permitidos para puestos
+    function isValidPuestoStatus() {
+      return request.resource.data.status in [
         'VACANTE', 'ASIGNADO', 'ALERTA_VACANTE', 'SUSPENDIDO'
       ];
     }
 
-    // Reglas para la colección de programa de producción
-    match /programa_produccion/{programaId} {
-      allow read, write: if true;
+    // Colección de Trabajadores
+    match /trabajadores/{trabajadorId} {
+      allow read: if isAuthenticated();
+      allow write: if isValidTrabajadorStatus() && (
+        isCoordinador() || (
+          isAuthenticated() && request.auth.token.role == 'supervisor' && (
+            // 1. Modificar operario ya ubicado físicamente en su línea
+            resource.data.physicalLineLocation == request.auth.token.lineId ||
+            // 2. Asignar destino solo a personal libre (Bolsón / Pool de Arranque / Inactivo)
+            (
+              request.resource.data.lineaDestinoId == request.auth.token.lineId &&
+              resource.data.status in ['DISPONIBLE_BOLSON', 'POOL_ARRANQUE', 'INACTIVO']
+            ) ||
+            // 3. Confirmar llegada física solo si fue despachado previamente a su línea
+            (
+              request.resource.data.physicalLineLocation == request.auth.token.lineId &&
+              resource.data.lineaDestinoId == request.auth.token.lineId
+            )
+          )
+        )
+      );
     }
 
-    // Reglas para la colección de configuración global y de líneas
+    // Colección de Puestos
+    match /puestos/{puestoId} {
+      allow read: if isAuthenticated();
+      allow write: if isValidPuestoStatus() && (
+        isCoordinador() || (
+          resource != null && isSupervisorOfLine(resource.data.lineId)
+        ) || (
+          resource == null && isSupervisorOfLine(request.resource.data.lineId)
+        )
+      );
+    }
+
+    // Colección de Configuración
     match /config/{configId} {
-      allow read, write: if true;
-      
-      // Permitir acceso recursivo para cualquier configuración interna
-      match /{document=**} {
-        allow read, write: if true;
-      }
+      allow read: if isAuthenticated();
+      allow write: if isCoordinador() || (
+        isAuthenticated() && request.auth.token.role == 'supervisor' && (
+          configId == 'time_sync' ||
+          configId == 'shift_status' ||
+          configId == 'global_priority' ||
+          configId == 'production_reports' ||
+          configId == ('line_' + request.auth.token.lineId)
+        )
+      );
+    }
+
+    // Colección de Programa de Producción e Historial
+    match /programa_produccion/{programaId} {
+      allow read: if isAuthenticated();
+      allow write: if isCoordinador();
+    }
+
+    match /historial_dias/{historialId} {
+      allow read: if isAuthenticated();
+      allow write: if isCoordinador();
     }
   }
 }

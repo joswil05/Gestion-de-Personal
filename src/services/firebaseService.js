@@ -12,6 +12,7 @@ import {
   initializeFirestore, 
   persistentLocalCache, 
   persistentMultipleTabManager,
+  connectFirestoreEmulator,
   collection, 
   doc, 
   getDoc, 
@@ -26,6 +27,8 @@ import {
   setDoc,
   updateDoc
 } from "firebase/firestore";
+import { getAuth, connectAuthEmulator } from "firebase/auth";
+import { getFunctions, connectFunctionsEmulator } from "firebase/functions";
 
 // 1. Configuración Oficial de Firebase (Producción)
 const firebaseConfig = {
@@ -52,6 +55,19 @@ try {
   dbInstance = getFirestore(app);
 }
 
+// Conectar a emuladores locales si VITE_USE_EMULATORS está activo
+if (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_USE_EMULATORS === 'true') {
+  console.log("[Firebase] Conectando a emuladores locales (Firestore: 8080, Auth: 9099, Functions: 5001)...");
+  try {
+    connectFirestoreEmulator(dbInstance, 'localhost', 8080);
+    connectAuthEmulator(getAuth(app), 'http://localhost:9099', { disableWarnings: true });
+    connectFunctionsEmulator(getFunctions(app), 'localhost', 5001);
+  } catch (emuErr) {
+    console.warn("[Firebase] Emuladores ya conectados o no disponibles:", emuErr.message);
+  }
+}
+
+export { app };
 export const db = dbInstance;
 
 // Referencias de colecciones esenciales

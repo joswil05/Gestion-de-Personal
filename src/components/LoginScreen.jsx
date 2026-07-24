@@ -4,6 +4,7 @@ import { db } from '../services/firebaseService';
 import { doc, getDoc } from 'firebase/firestore';
 import { triggerNativeHapticFeedback } from '../skills/capacitor-android-bridge';
 import { REAL_SUPERVISORS } from '../dev/realDataSeed';
+import { loginWithRoleAndLine } from '../services/authService';
 
 // --- STITCHES STYLED LOGIN COMPONENTS ---
 
@@ -168,12 +169,14 @@ const LoginButton = styled('button', {
  */
 export default function LoginScreen({ onLoginSuccess }) {
   const [supervisorName, setSupervisorName] = useState("");
+  const [coordinatorPin, setCoordinatorPin] = useState("9900");
   const [selectedLine, setSelectedLine] = useState("L4");
   const [selectedRole, setSelectedRole] = useState("SUPERVISOR"); // "SUPERVISOR" | "COORDINADOR"
   const [activeLines, setActiveLines] = useState(["L4", "L1", "L2", "L6", "L7", "L5", "L3", "L8", "L9", "L10"]);
   const [supervisorsAssignment, setSupervisorsAssignment] = useState({});
   const [errorText, setErrorText] = useState("");
   const [warningText, setWarningText] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   // Cargar líneas planificadas y prioritarias desde Firestore al montar
   useEffect(() => {
@@ -245,7 +248,7 @@ export default function LoginScreen({ onLoginSuccess }) {
     }
   };
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
     setErrorText("");
 
@@ -264,17 +267,34 @@ export default function LoginScreen({ onLoginSuccess }) {
       }
     }
 
-    triggerNativeHapticFeedback('confirm');
     const finalLine = selectedRole === "COORDINADOR" ? "COORDINADOR" : selectedLine;
-    console.log(`[Login] Acceso concedido: ${finalName} (${selectedRole}) -> ${finalLine}`);
 
-    // Asentar en localStorage
-    localStorage.setItem("supervisorName", finalName);
-    localStorage.setItem("supervisorLineId", finalLine);
-    localStorage.setItem("userRole", selectedRole);
+    try {
+      setIsSubmitting(true);
+      // Iniciar sesión en Firebase Auth y obtener token con custom claims
+      await loginWithRoleAndLine({
+        role: selectedRole,
+        lineId: finalLine,
+        supervisorName: finalName,
+        pin: selectedRole === "COORDINADOR" ? coordinatorPin : undefined
+      });
 
-    if (onLoginSuccess) {
-      onLoginSuccess(finalName, finalLine, selectedRole);
+      triggerNativeHapticFeedback('confirm');
+      console.log(`[Login] Acceso autenticado concedido: ${finalName} (${selectedRole}) -> ${finalLine}`);
+
+      // Asentar en localStorage
+      localStorage.setItem("supervisorName", finalName);
+      localStorage.setItem("supervisorLineId", finalLine);
+      localStorage.setItem("userRole", selectedRole);
+
+      if (onLoginSuccess) {
+        onLoginSuccess(finalName, finalLine, selectedRole);
+      }
+    } catch (err) {
+      triggerNativeHapticFeedback('error');
+      setErrorText(err.message || "Error al autenticar con Firebase. Verifica tus credenciales.");
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -315,17 +335,29 @@ export default function LoginScreen({ onLoginSuccess }) {
           </FormField>
 
           {selectedRole === "COORDINADOR" ? (
-            <FormField>
-              <FormLabel htmlFor="supervisor-name-input">Nombre del Coordinador</FormLabel>
-              <InputText 
-                type="text" 
-                id="supervisor-name-input"
-                placeholder="Ej. Ing. Sofía Reyes" 
-                value={supervisorName}
-                onChange={(e) => setSupervisorName(e.target.value)}
-                autoFocus
-              />
-            </FormField>
+            <>
+              <FormField>
+                <FormLabel htmlFor="supervisor-name-input">Nombre del Coordinador</FormLabel>
+                <InputText 
+                  type="text" 
+                  id="supervisor-name-input"
+                  placeholder="Ej. Ing. Sofía Reyes" 
+                  value={supervisorName}
+                  onChange={(e) => setSupervisorName(e.target.value)}
+                  autoFocus
+                />
+              </FormField>
+              <FormField>
+                <FormLabel htmlFor="coordinator-pin-input">PIN Maestro de Coordinador</FormLabel>
+                <InputText 
+                  type="password" 
+                  id="coordinator-pin-input"
+                  placeholder="PIN de 4 dígitos" 
+                  value={coordinatorPin}
+                  onChange={(e) => setCoordinatorPin(e.target.value)}
+                />
+              </FormField>
+            </>
           ) : (
             <FormField>
               <FormLabel htmlFor="supervisor-select">Seleccionar Supervisor</FormLabel>

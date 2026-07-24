@@ -65,6 +65,17 @@
           "Haptic Feedback API (short vibration on assign)"
         ]
       }
+    },
+    "security-auth-guardian": {
+      "name": "Guardia de Autenticación y Seguridad por Rol",
+      "description": "Responsable de gobernar la matriz de permisos de Firestore rules, custom claims (coordinador / supervisor por línea) y el aislamiento estricto de accesos NoSQL.",
+      "file": "docs/SEGURIDAD.md",
+      "constraints": {
+        "authenticationStrategy": "Firebase Auth Anonymous with Custom Claims (assignUserClaims)",
+        "roleHierarchy": ["coordinador", "supervisor"],
+        "lineIsolationRule": "Supervisors write strictly to their assigned lineId and unassigned workers",
+        "devConsoleIsolation": "Excluded from production bundles via tree-shaking & emulators-only check"
+      }
     }
   }
 }

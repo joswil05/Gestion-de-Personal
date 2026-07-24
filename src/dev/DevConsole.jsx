@@ -481,9 +481,45 @@ const StepCard = styled('div', {
   }
 });
 
+import { loginWithRoleAndLine } from '../services/authService';
+
+// --- STITCHES STYLED COMPONENTS ---
+
 // --- COMPONENT IMPLEMENTATION ---
 
 export default function DevConsole() {
+  const isEmulatorsActive = (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_USE_EMULATORS === 'true');
+
+  // Auto-autenticar como Coordinador en el entorno de emulador local
+  useEffect(() => {
+    if (isEmulatorsActive) {
+      loginWithRoleAndLine({
+        role: 'COORDINADOR',
+        lineId: 'ALL',
+        supervisorName: 'QA Harness Admin',
+        pin: '9900'
+      }).catch(err => {
+        console.warn("[DevConsole] Error en auto-autenticación de QA Harness:", err.message);
+      });
+    }
+  }, [isEmulatorsActive]);
+
+  if (!isEmulatorsActive) {
+    return (
+      <ConsoleContainer id="dev-console-blocked">
+        <DiagnosticCard style={{ textAlign: 'center', borderColor: '#EF4444' }}>
+          <h2 style={{ color: '#EF4444', margin: 0 }}>Acceso Denegado a DevConsole</h2>
+          <p style={{ color: '#64748B', fontSize: '13px' }}>
+            DevConsole es una herramienta interna del QA Harness y solo puede ejecutarse en el emulador local.
+          </p>
+          <div style={{ color: '#991B1B', backgroundColor: '#FEE2E2', padding: '10px', borderRadius: '8px', fontSize: '12px', fontWeight: 600 }}>
+            Para habilitar simulaciones, configure <code>VITE_USE_EMULATORS=true</code> en su archivo <code>.env</code> local.
+          </div>
+        </DiagnosticCard>
+      </ConsoleContainer>
+    );
+  }
+
   const [currentTab, setCurrentTab] = useState('tests');
   const [activePlaybookFlow, setActivePlaybookFlow] = useState('PLANNING'); // 'PLANNING' (Día Siguiente) o 'LIVE' (Turno de Hoy)
   const [logs, setLogs] = useState([
