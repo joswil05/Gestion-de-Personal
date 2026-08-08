@@ -217,12 +217,21 @@ export default function LoginScreen({ onLoginSuccess }) {
 
     const finalLine = selectedRole === "COORDINADOR" ? "COORDINADOR" : selectedLine;
 
+    // Login real al API con JWT. Antes: (supervisorPassword || '123456') —
+    // dejar el campo vacío enviaba una contraseña fija embebida en el bundle
+    // de producción, legible por cualquiera con las herramientas de
+    // desarrollo abiertas (ver AUDIT_REPORT.md C-6, parte 1). Exigir la
+    // contraseña explícitamente en vez de rellenarla en silencio.
+    const loginPassword = selectedRole === "COORDINADOR" ? coordinatorPin : supervisorPassword;
+    if (!loginPassword) {
+      triggerNativeHapticFeedback('error');
+      setErrorText("Introduce tu contraseña.");
+      return;
+    }
+
     try {
       setIsSubmitting(true);
 
-      // Login real al API con JWT
-      const loginPassword = selectedRole === "COORDINADOR" ? coordinatorPin : (supervisorPassword || '123456');
-      
       await loginWithRoleAndLine({
         username,
         password: loginPassword
@@ -240,7 +249,11 @@ export default function LoginScreen({ onLoginSuccess }) {
       }
     } catch (err) {
       triggerNativeHapticFeedback('error');
-      setErrorText("Error al iniciar sesión local.");
+      // authService.loginWithRoleAndLine ya propaga el mensaje real del
+      // servidor ("Usuario o contraseña incorrectos", "Demasiados intentos",
+      // etc.) a propósito; antes se descartaba con un mensaje genérico que
+      // no distinguía credenciales inválidas de un servidor caído (M-10).
+      setErrorText(err.message || "No se pudo iniciar sesión.");
     } finally {
       setIsSubmitting(false);
     }
