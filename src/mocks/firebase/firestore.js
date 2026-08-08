@@ -2,7 +2,16 @@ import { io } from 'socket.io-client';
 import { getToken } from '../../services/authService';
 
 const API_URL = 'http://localhost:3001/api';
-const socket = io('http://localhost:3001');
+// El WebSocket ahora exige token (server/server.js io.use, AUDIT_REPORT.md
+// M-4). auth como función -no objeto- para que se reevalúe en cada intento
+// de conexión: este módulo se evalúa al cargar el bundle, antes de que
+// exista sesión, así que el primer intento siempre falla sin token; los
+// reintentos automáticos de socket.io-client (por defecto cada 1-5s) vuelven
+// a llamar a esta función y recogen el token real una vez el usuario inicia
+// sesión.
+const socket = io('http://localhost:3001', {
+    auth: (cb) => cb({ token: getToken() })
+});
 
 // Todas las lecturas del shim pasan por aquí. Antes, tres puntos distintos leían
 // localStorage.getItem("token") —una clave que ningún módulo escribe nunca— y un

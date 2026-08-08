@@ -10,17 +10,22 @@ const rateLimit = require('express-rate-limit');
 const { requireAuth, requireRole, requireLineOwnership } = require('./middleware/auth');
 const { canWorkerOccupiedSlot } = require('./validations/canWorkerOccupiedSlot');
 
+// Antes: origin: '*' en ambos (Express y Socket.IO) — cualquier origen podía
+// llamar a la API o conectarse al WebSocket (AUDIT_REPORT.md M-4). En dev,
+// CORS_ORIGINS no está seteado y cae al valor por defecto de Vite (5173).
+const ORIGENES_PERMITIDOS = (process.env.CORS_ORIGINS || 'http://localhost:5173').split(',').map(o => o.trim());
+
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
-    origin: '*', // En producción, cambiar por la URL del frontend
+    origin: ORIGENES_PERMITIDOS,
     methods: ['GET', 'POST']
   }
 });
 
 // Middlewares
-app.use(cors());
+app.use(cors({ origin: ORIGENES_PERMITIDOS }));
 app.use(express.json());
 
 // Configuración de la conexión a SQL Server
@@ -2425,8 +2430,28 @@ app.get('/api/supervisores', requireAuth, requireRole('COORDINADOR'), async (req
 // ==========================================
 // WEBSOCKETS (Tiempo Real)
 // ==========================================
+// Antes: sin validar token, cualquier cliente que supiera la URL podía
+// conectarse y recibir los 28 eventos de refresco (AUDIT_REPORT.md M-4).
+// Los payloads son señales ligeras (slotId, action), no datos de personal,
+// pero el canal no estaba autenticado. socket.handshake.auth.token lo
+// mandan firestore.js y coordinatorApi.js (ver comentario junto a io(...)
+// en esos archivos) mediante una función, para que se reevalúe en cada
+// intento de reconexión -el socket se crea al cargar el módulo, antes de
+// que exista sesión, así que el primer intento siempre falla y se
+// recupera solo en el siguiente intento automático tras el login-.
+io.use((socket, next) => {
+    const token = socket.handshake.auth?.token;
+    if (!token) return next(new Error('No autorizado'));
+    try {
+        socket.data.user = jwt.verify(token, process.env.JWT_SECRET);
+        next();
+    } catch (err) {
+        next(new Error('No autorizado'));
+    }
+});
+
 io.on('connection', (socket) => {
-    console.log('🔌 Nuevo cliente conectado:', socket.id);
+    console.log(`🔌 Cliente conectado: ${socket.id} (${socket.data.user?.role || '?'}, línea ${socket.data.user?.lineId || '?'})`);
 
     socket.on('disconnect', () => {
         console.log('❌ Cliente desconectado:', socket.id);
