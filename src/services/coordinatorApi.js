@@ -130,7 +130,7 @@ export async function getSupervisorsFromApi() {
 }
 
 /**
- * Obtiene el historial del día (Mock/API)
+ * Obtiene el historial del día. Real: GET /api/historial (server.js).
  */
 export async function getHistorialDia(fecha) {
   try {
@@ -146,24 +146,7 @@ export async function getHistorialDia(fecha) {
 }
 
 /**
- * Guarda el historial del día (Mock/API)
- */
-export async function saveHistorialDia(fecha, data) {
-  try {
-    const response = await fetchWithAuth(`${API_URL}/historial`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ fecha, data })
-    });
-    return response.ok;
-  } catch (error) {
-    console.error("Error en saveHistorialDia:", error);
-    return false;
-  }
-}
-
-/**
- * Obtiene el programa de producción (Mock/API)
+ * Obtiene el programa de producción. Real: GET /api/programa (server.js).
  */
 export async function getProgramaProduccionPorFecha(fecha) {
   try {
@@ -178,22 +161,15 @@ export async function getProgramaProduccionPorFecha(fecha) {
   }
 }
 
-/**
- * Inicializa el turno con Sheets (Mock/API)
- */
-export async function initializeTurnoWithSheets(lineId, config) {
-  try {
-    const response = await fetchWithAuth(`${API_URL}/turno/inicializar`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ lineId, config })
-    });
-    return response.ok;
-  } catch (error) {
-    console.error("Error en initializeTurnoWithSheets:", error);
-    return false;
-  }
-}
+// NOTA (limpieza, AUDIT_REPORT.md B-9/4.1): saveHistorialDia e
+// initializeTurnoWithSheets vivían aquí, rotuladas "(Mock/API)". No eran
+// mocks -hacían fetch real- pero apuntaban a POST /api/historial y
+// POST /api/turno/inicializar, que nunca existieron en server.js (solo
+// existe el GET de /api/historial, arriba); habrían fallado con 404 en
+// cualquier llamador. Se retiraron: ninguna de las dos tenía importadores
+// reales (initializeTurnoWithSheets se confunde de nombre con la función
+// real y viva del mismo nombre en apiService.js, que sí usan HudPlanta.jsx
+// y DevConsole.jsx).
 
 /**
  * Helper genérico de fetch autenticado que, a diferencia del resto de este

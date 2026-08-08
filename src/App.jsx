@@ -340,24 +340,23 @@ export default function App() {
   const [pathname, setPathname] = useState(window.location.pathname);
 
   // 2. Monitorear cambios de ruta para enrutamiento del DevConsole
+  // Antes sondeaba window.location.pathname cada 500ms además de escuchar
+  // popstate (AUDIT_REPORT.md B-5): popstate ya cubre toda la navegación
+  // real del navegador (atrás/adelante) y esta app no usa pushState en
+  // ningún otro punto, así que el pathname solo cambia por una carga de
+  // página completa -en cuyo caso useState ya lo lee bien al montar- o por
+  // popstate. El polling era puro gasto de CPU sin ningún caso que cubriera.
   useEffect(() => {
     const handleLocationChange = () => {
       setPathname(window.location.pathname);
     };
 
     window.addEventListener('popstate', handleLocationChange);
-    
-    const routeInterval = setInterval(() => {
-      if (window.location.pathname !== pathname) {
-        setPathname(window.location.pathname);
-      }
-    }, 500);
 
     return () => {
       window.removeEventListener('popstate', handleLocationChange);
-      clearInterval(routeInterval);
     };
-  }, [pathname]);
+  }, []);
 
   // 3. Distribución del Estado de Conectividad (Offline Guard)
   useEffect(() => {

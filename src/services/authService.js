@@ -1,7 +1,13 @@
 /**
- * Service: Mock Authentication Manager (authService.js)
- * Responsabilidad: Simular una sesión local para la migración a SQL Server,
- * dado que TI se encargará de la autenticación real más adelante.
+ * Service: Authentication Manager (authService.js)
+ * Responsabilidad: Autenticación real contra POST /api/auth/login
+ * (server/server.js) con JWT + bcrypt sobre SQL Server. Ya no es un mock
+ * -el encabezado decía "Simular una sesión local... TI se encargará de la
+ * autenticación real más adelante", pero esa autenticación real es
+ * exactamente lo que hace este archivo desde hace varias rondas
+ * (AUDIT_REPORT.md B-9)-. La sesión se persiste en sessionStorage bajo
+ * 'smartassign_mock_user' (nombre de clave heredado, no touched a
+ * propósito para no romper sesiones activas en curso).
  */
 
 import { API_URL } from '../config';
