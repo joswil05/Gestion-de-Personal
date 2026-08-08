@@ -117,12 +117,43 @@ const CRITICAL_TIPOS_PUESTO = ["Operador A", "Averiero", "Operador C"];
 // rotación) siguen sobre el mock hasta que se migren en una fase posterior.
 const REST_API_URL = "http://localhost:3001/api";
 
+const TIMEOUT_MS = 15000;
+
+// Antes un backend colgado (o una red móvil de planta con cobertura
+// intermitente) dejaba el fetch pendiente indefinidamente: sin timeout, la
+// UI quedaba en su spinner de "Guardando..." para siempre en vez de
+// mostrar un error accionable (AUDIT_REPORT.md M-9).
+async function conTimeout(url, options, ms = TIMEOUT_MS) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), ms);
+  try {
+    return await fetch(url, { ...options, signal: ctrl.signal });
+  } catch (err) {
+    if (err.name === "AbortError") throw new Error("El servidor no respondió a tiempo.");
+    throw err;
+  } finally {
+    clearTimeout(t);
+  }
+}
+
 async function apiFetch(path, options = {}) {
   const token = getToken();
   const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
   if (token) headers["Authorization"] = `Bearer ${token}`;
 
-  const response = await fetch(`${REST_API_URL}${path}`, { ...options, headers });
+  const method = (options.method || "GET").toUpperCase();
+  const url = `${REST_API_URL}${path}`;
+  let response;
+  try {
+    response = await conTimeout(url, { ...options, headers });
+  } catch (err) {
+    // Reintentar UNA vez, solo si es idempotente (GET). POST/PATCH nunca se
+    // reintentan aquí: los endpoints de asignación no son idempotentes y un
+    // reintento automático podría duplicar un movimiento de personal.
+    if (method !== "GET") throw err;
+    await new Promise(r => setTimeout(r, 1000));
+    response = await conTimeout(url, { ...options, headers });
+  }
 
   let payload = null;
   try {

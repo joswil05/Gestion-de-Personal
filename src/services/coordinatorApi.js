@@ -10,25 +10,53 @@ export const socket = io('http://localhost:3001', {
     auth: (cb) => cb({ token: getToken() })
 });
 
+const TIMEOUT_MS = 15000;
+
+// Ver el mismo helper y motivo en apiService.js (AUDIT_REPORT.md M-9): sin
+// timeout, un backend colgado dejaba el fetch pendiente para siempre en vez
+// de mostrar un error accionable en el panel del Coordinador.
+async function conTimeout(url, options, ms = TIMEOUT_MS) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), ms);
+  try {
+    return await fetch(url, { ...options, signal: ctrl.signal });
+  } catch (err) {
+    if (err.name === 'AbortError') throw new Error('El servidor no respondió a tiempo.');
+    throw err;
+  } finally {
+    clearTimeout(t);
+  }
+}
+
 async function fetchWithAuth(url, options = {}) {
   const token = getToken();
   const headers = {
     ...options.headers,
   };
-  
+
   if (token) {
     headers['Authorization'] = `Bearer ${token}`;
   }
 
-  const response = await fetch(url, { ...options, headers });
-  
+  const method = (options.method || 'GET').toUpperCase();
+  let response;
+  try {
+    response = await conTimeout(url, { ...options, headers });
+  } catch (err) {
+    // Reintentar UNA vez, solo si es idempotente (GET) — igual criterio que
+    // apiService.apiFetch: POST/PATCH nunca se reintentan aquí.
+    if (method !== 'GET') throw err;
+    await new Promise(r => setTimeout(r, 1000));
+    response = await conTimeout(url, { ...options, headers });
+  }
+
   if (response.status === 401 || response.status === 403) {
     console.error("Authentication Error: Token expirado o acceso denegado. Forzando logout.");
     await logoutUser();
     window.location.reload(); // Simple redirect a login
     throw new Error("Sesión expirada o acceso denegado.");
   }
-  
+
   return response;
 }
 
