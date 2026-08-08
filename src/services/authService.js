@@ -58,6 +58,11 @@ export async function loginWithRoleAndLine({ username, password }) {
 export async function logoutUser() {
   currentUser = null;
   sessionStorage.removeItem('smartassign_mock_user');
+  // Sin esto, App.jsx sigue viendo una sesión válida en localStorage tras el
+  // logout y vuelve a montar el panel → 401 → logout → reload, en bucle (C-5).
+  localStorage.removeItem('supervisorName');
+  localStorage.removeItem('supervisorLineId');
+  localStorage.removeItem('userRole');
   notifyListeners();
   return true;
 }

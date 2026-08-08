@@ -7,7 +7,7 @@ import { initializeConnectivityGuard } from './skills/state-connectivity-guard';
 import { triggerNativeHapticFeedback } from './skills/capacitor-android-bridge';
 import { doc, getDoc, updateDoc } from 'firebase/firestore';
 import { db, endLineParoTransaction, syncServerTimeOffset } from './services/apiService';
-import { logoutUser } from './services/authService';
+import { logoutUser, getToken } from './services/authService';
 
 import LoginScreen from './components/LoginScreen';
 import PanelCoordinador from './components/PanelCoordinador';
@@ -325,9 +325,16 @@ export default function App() {
   injectGlobalStyles();
 
   // 1. Estados principales (Sesión, Navegación, Conectividad)
-  const [supervisorName, setSupervisorName] = useState(localStorage.getItem("supervisorName") || "");
-  const [supervisorLineId, setSupervisorLineId] = useState(localStorage.getItem("supervisorLineId") || "");
-  const [userRole, setUserRole] = useState(localStorage.getItem("userRole") || "SUPERVISOR");
+  // Sólo confiar en la identidad de localStorage si además hay un token de sesión
+  // vigente (sessionStorage, vía authService.getToken()). Antes se leía localStorage
+  // sin verificar el token: tras un logout automático por 401/403
+  // (coordinatorApi.js fetchWithAuth), la identidad seguía en localStorage y el
+  // bloqueo de "sin sesión" (más abajo) nunca se activaba, produciendo un bucle
+  // 401 → logout → reload (ver AUDIT_REPORT C-5).
+  const hasValidSession = getToken() !== null;
+  const [supervisorName, setSupervisorName] = useState(hasValidSession ? (localStorage.getItem("supervisorName") || "") : "");
+  const [supervisorLineId, setSupervisorLineId] = useState(hasValidSession ? (localStorage.getItem("supervisorLineId") || "") : "");
+  const [userRole, setUserRole] = useState(hasValidSession ? (localStorage.getItem("userRole") || "SUPERVISOR") : "SUPERVISOR");
   const [currentTab, setCurrentTab] = useState('HUD'); // 'HUD' | 'PERSONAL_SKU' | 'RELEVOS'
   const [isOffline, setIsOffline] = useState(false);
   const [pathname, setPathname] = useState(window.location.pathname);
