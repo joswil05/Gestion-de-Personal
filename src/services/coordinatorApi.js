@@ -130,6 +130,25 @@ export async function getSupervisorsFromApi() {
 }
 
 /**
+ * Fija (o quita, con supervisorId null) el supervisor a cargo de una línea
+ * AHORA MISMO — distinto de la planificación T+1, que solo se aplica sola al
+ * llegar la fecha planificada. Real: POST /api/supervisores/asignar, que
+ * actualiza Supervisores.LineaAsignadaActual (server.js:644), el mismo campo
+ * que el login usa para autorizar al supervisor sobre su línea.
+ */
+export async function assignSupervisorToLine(lineId, supervisorId) {
+  const response = await fetchWithAuth(`${API_URL}/supervisores/asignar`, {
+    method: "POST",
+    body: JSON.stringify({ lineId, supervisorId: Number(supervisorId) })
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.error || "No se pudo asignar el supervisor a la línea.");
+  }
+  return await response.json();
+}
+
+/**
  * Obtiene el historial del día. Real: GET /api/historial (server.js).
  */
 export async function getHistorialDia(fecha) {

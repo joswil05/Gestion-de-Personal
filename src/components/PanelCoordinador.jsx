@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { styled, keyframes } from '../styles/theme';
-import { db, puestosColl, trabajadoresColl, getHistorialDia, getProgramaProduccionPorFecha, canWorkerOccupiedSlot, subscribeToPuestos, subscribeToTrabajadores, subscribeToLineas, getSupervisorsFromApi, getPlanificacion, guardarPlanificacion, confirmarPlanificacion, getOperariosGestion, crearOperario, actualizarOperario, darBajaOperario, reactivarOperario } from '../services/coordinatorApi';
+import { db, puestosColl, trabajadoresColl, getHistorialDia, getProgramaProduccionPorFecha, canWorkerOccupiedSlot, subscribeToPuestos, subscribeToTrabajadores, subscribeToLineas, getSupervisorsFromApi, assignSupervisorToLine, getPlanificacion, guardarPlanificacion, confirmarPlanificacion, getOperariosGestion, crearOperario, actualizarOperario, darBajaOperario, reactivarOperario } from '../services/coordinatorApi';
 import { executeCoordinatorSuggestion } from '../services/apiService';
 import { collection, doc, onSnapshot, getDocs, updateDoc, setDoc, deleteDoc, query, where, getDoc, writeBatch, serverTimestamp } from 'firebase/firestore';
 import { triggerNativeHapticFeedback } from '../skills/capacitor-android-bridge';
@@ -1842,22 +1842,40 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
     fetchSupervisors();
   }, [fetchSupervisors]);
 
-  // Supervisores reales del sistema — enriquecidos con asignaciones actuales
+  // Supervisores reales del sistema — enriquecidos con asignaciones actuales.
+  // GET /api/supervisores (getSupervisorsFromApi) ya trae assignedLine/lineId
+  // directo de Supervisores.LineaAsignadaActual (server.js:2448); antes esto
+  // se recalculaba contra el doc config/supervisors_assignment, que ningún
+  // endpoint sirve — assignedLine quedaba siempre null y todo supervisor
+  // aparecía "disponible" sin importar dónde estuviera realmente asignado.
   const availableSupervisors = useMemo(() => {
     return authorizedSupervisors.map(sup => {
       const supId = sup.id || sup.workerId;
-      // Buscar si ya está asignado a alguna línea
-      const assignedLine = Object.entries(supervisors).find(
-        ([, val]) => val?.workerId === supId
-      );
+      const assignedLine = (sup.assignedLine || sup.lineId) && (sup.assignedLine || sup.lineId) !== 'Sin Asignar'
+        ? (sup.assignedLine || sup.lineId)
+        : null;
       return {
         ...sup,
         id: supId,
-        assignedLine: assignedLine ? assignedLine[0] : null,
-        isAvailable: !assignedLine || assignedLine[0] === editingLineId
+        assignedLine,
+        isAvailable: !assignedLine || assignedLine === editingLineId
       };
     });
-  }, [supervisors, editingLineId, authorizedSupervisors]);
+  }, [editingLineId, authorizedSupervisors]);
+
+  // Mapa lineId -> supervisor asignado, derivado de la misma fuente real
+  // (reemplaza al viejo estado `supervisors`, que dependía del doc fantasma
+  // config/supervisors_assignment y por eso mostraba "Sin Asignar" siempre,
+  // incluso con supervisores realmente asignados en SQL Server).
+  const supervisorsByLine = useMemo(() => {
+    const map = {};
+    availableSupervisors.forEach(sup => {
+      if (sup.assignedLine) {
+        map[sup.assignedLine] = { workerId: sup.id, name: sup.name, shortName: sup.shortName };
+      }
+    });
+    return map;
+  }, [availableSupervisors]);
 
   // 1. Escuchar la colección config reactivamente
   useEffect(() => {
@@ -2123,12 +2141,12 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
         isLinePrep,
         deficitCount,
         sku: isSuspended ? "INACTIVO" : activeSku,
-        supervisor: supervisors[lineId]?.shortName || supervisors[lineId]?.name || (typeof supervisors[lineId] === 'string' ? supervisors[lineId] : "Sin Asignar"),
+        supervisor: supervisorsByLine[lineId]?.shortName || supervisorsByLine[lineId]?.name || "Sin Asignar",
         puestosData: linePuestos
       };
     });
     return stats;
-  }, [puestos, activeLines, skuPlan, supervisors, configDocs]);
+  }, [puestos, activeLines, skuPlan, supervisorsByLine, configDocs]);
 
   // 4.5. RESOLVER MÉTRICAS Y DATOS DEL PLAN DEL DÍA SIGUIENTE REACTIVAMENTE
   const activeLineStats = useMemo(() => {
@@ -2178,12 +2196,12 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
         isLinePrep: false,
         deficitCount: tomorrowDeficits,
         sku: skuTomorrow,
-        supervisor: supervisors[lineId]?.shortName || supervisors[lineId]?.name || (typeof supervisors[lineId] === 'string' ? supervisors[lineId] : "Sin Asignar"),
+        supervisor: supervisorsByLine[lineId]?.shortName || supervisorsByLine[lineId]?.name || "Sin Asignar",
         puestosData: tomorrowPuestosData
       };
     });
     return stats;
-  }, [viewDay, lineStats, configDocs, activeLines, puestos, supervisors]);
+  }, [viewDay, lineStats, configDocs, activeLines, puestos, supervisorsByLine]);
 
   // Obtener los informes de producción y eventos de SKU guardados en Firestore
   const productionReports = useMemo(() => {
@@ -2837,21 +2855,30 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
   };
 
   const handleSaveSupervisor = async () => {
-    /*
-     * Función deshabilitada temporalmente durante la migración (Fase B).
-     * La asignación de líneas a supervisores se trasladará a SQL Server
-     * en un bloque de trabajo futuro, ya que el endpoint actual está roto.
-     */
-    notify('error', "Función en migración a SQL Server - temporalmente no disponible.");
-    setEditingLineId(null);
-    return;
+    if (!tempSupervisorName) {
+      notify('error', "Selecciona un supervisor para asignar a esta línea.");
+      return;
+    }
+    try {
+      // Real: POST /api/supervisores/asignar, fija Supervisores.LineaAsignadaActual
+      // (el mismo campo que el login usa para autorizar la línea del supervisor).
+      // Antes esta función era un stub deshabilitado desde la migración a SQL
+      // Server: mostraba un error y no llamaba a ningún endpoint, así que ningún
+      // supervisor podía quedar realmente asignado a una línea desde esta pantalla.
+      await assignSupervisorToLine(editingLineId, tempSupervisorName);
+      notify('success', `Supervisor asignado a la línea ${editingLineId}.`);
+      setEditingLineId(null);
+      await fetchSupervisors();
+    } catch (err) {
+      notify('error', err.message || "No se pudo asignar el supervisor.");
+    }
   };
 
   const handleOpenEditSupervisor = (lineId) => {
     triggerNativeHapticFeedback('short');
     setEditingLineId(lineId);
     // Pre-seleccionar el workerId actual del supervisor asignado
-    const currentAssignment = supervisors[lineId];
+    const currentAssignment = supervisorsByLine[lineId];
     setTempSupervisorName(currentAssignment?.workerId || "");
   };
 
@@ -4368,7 +4395,7 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
       {currentTab === 'CONTROL' && (() => {
         const lineColors = { L1: "#DBEAFE", L2: "#D1FAE5", L3: "#F3E8FF", L4: "#FEE2E2", L5: "#FEF9C3", L6: "#E0E7FF", L7: "#FCE7F3" };
         const supervisorsList = availableSupervisors.map(sup => {
-          const assignedEntry = Object.entries(supervisors).find(([, val]) => val?.workerId === sup.id);
+          const assignedEntry = Object.entries(supervisorsByLine).find(([, val]) => val?.workerId === sup.id);
           const lineId = assignedEntry ? assignedEntry[0] : null;
           const initials = sup.shortName.split(' ').map(w => w[0]).join('').toUpperCase();
           return {
