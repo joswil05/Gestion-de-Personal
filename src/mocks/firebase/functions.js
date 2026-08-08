@@ -1,1 +1,0 @@
-export const getFunctions = () => {}; export const httpsCallable = () => async () => {}; export const connectFunctionsEmulator = () => {};

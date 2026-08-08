@@ -1,1 +1,0 @@
-export const getAuth = () => ({ currentUser: null }); export const signInAnonymously = async () => {}; export const signOut = async () => {}; export const onAuthStateChanged = () => {}; export const connectAuthEmulator = () => {};

@@ -179,23 +179,6 @@ export async function getProgramaProduccionPorFecha(fecha) {
 }
 
 /**
- * Asigna puestos en vivo (Mock/API)
- */
-export async function assignPuestosLive(lineId, assignments) {
-  try {
-    const response = await fetchWithAuth(`${API_URL}/puestos/asignar`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ lineId, assignments })
-    });
-    return response.ok;
-  } catch (error) {
-    console.error("Error en assignPuestosLive:", error);
-    return false;
-  }
-}
-
-/**
  * Inicializa el turno con Sheets (Mock/API)
  */
 export async function initializeTurnoWithSheets(lineId, config) {
@@ -282,27 +265,13 @@ export async function reactivarOperario(id) {
   return apiJsonFetch(`/operarios/${id}/reactivar`, { method: 'POST' });
 }
 
-/**
- * Programa el turno del siguiente día (Mock/API)
- * NOTA: rota (apunta a /api/turno/programar-siguiente, que no existe en
- * server.js). Ya no se usa desde PanelCoordinador.jsx -reemplazada por
- * guardarPlanificacion/confirmarPlanificacion, arriba-; sigue exportada
- * únicamente porque src/dev/DevConsole.jsx (herramienta de desarrollo,
- * excluida del build de producción) todavía la importa.
- */
-export async function programNextDayShift(lineId, config) {
-  try {
-    const response = await fetchWithAuth(`${API_URL}/turno/programar-siguiente`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ lineId, config })
-    });
-    return response.ok;
-  } catch (error) {
-    console.error("Error en programNextDayShift:", error);
-    return false;
-  }
-}
+// NOTA: programNextDayShift (Mock/API, apuntaba a la ruta inexistente
+// /api/turno/programar-siguiente) vivía aquí. Se eliminó (AUDIT_REPORT.md
+// Fase 4 paso 4.1): pese a lo que decía su comentario, DevConsole.jsx
+// importa su propia programNextDayShift desde apiService.js -una función
+// distinta, con el mismo nombre-, no esta; no quedaba ningún importador
+// real. El reemplazo vivo es guardarPlanificacion/confirmarPlanificacion,
+// arriba en este mismo archivo.
 
 // NOTA: executeCoordinatorSuggestion vivía aquí apuntando a
 // POST /api/sugerencias/ejecutar (ruta que nunca existió en server.js) con
@@ -346,19 +315,10 @@ export function canWorkerOccupiedSlot(workerData, puestoData) {
     return true;
 }
 
-/**
- * Asigna supervisor a una línea (Mock/API)
- */
-export async function assignSupervisorToLine(lineId, supervisorId) {
-  try {
-    const response = await fetchWithAuth(`${API_URL}/supervisores/asignar`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ lineId, supervisorId })
-    });
-    return response.ok;
-  } catch (error) {
-    console.error("Error en assignSupervisorToLine:", error);
-    return false;
-  }
-}
+// NOTA: assignSupervisorToLine vivía aquí, apuntando correctamente a
+// POST /api/supervisores/asignar con el payload real {lineId, supervisorId}
+// -a diferencia de programNextDayShift/assignPuestosLive, esta sí tenía el
+// contrato bien hecho (AUDIT_REPORT.md pedía revisarla, no descartarla a
+// ciegas)-. Se retira igual porque no tenía ningún importador real en
+// ningún componente; si se necesita reasignar un supervisor de línea desde
+// la UI, este es el endpoint correcto al que volver a cablear.

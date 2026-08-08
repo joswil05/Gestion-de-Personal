@@ -5,72 +5,36 @@
  * Versión de SDK: Firebase v10+ (Modular JS API)
  */
 
-import { initializeApp, getApp, getApps } from "firebase/app";
-import { isAppOnline } from "../skills/state-connectivity-guard.js";
 import { getToken } from "./authService";
 import { API_URL as REST_API_URL } from "../config";
 import {
-  getFirestore,
-  initializeFirestore, 
-  persistentLocalCache, 
-  persistentMultipleTabManager,
-  connectFirestoreEmulator,
-  collection, 
-  doc, 
-  getDoc, 
+  collection,
+  doc,
+  getDoc,
   getDocs,
   getDocFromServer,
   getDocsFromServer,
   query,
   where,
-  runTransaction, 
+  runTransaction,
   serverTimestamp,
   writeBatch,
   setDoc,
   updateDoc
 } from "firebase/firestore";
-import { getAuth, connectAuthEmulator } from "firebase/auth";
-import { getFunctions, connectFunctionsEmulator } from "firebase/functions";
 
-// 1. Configuración Oficial de Firebase (Producción)
-const firebaseConfig = {
-  apiKey: (typeof import.meta !== 'undefined' && import.meta.env) ? import.meta.env.VITE_FIREBASE_API_KEY : (typeof process !== 'undefined' ? process.env.VITE_FIREBASE_API_KEY : undefined),
-  authDomain: (typeof import.meta !== 'undefined' && import.meta.env) ? import.meta.env.VITE_FIREBASE_AUTH_DOMAIN : (typeof process !== 'undefined' ? process.env.VITE_FIREBASE_AUTH_DOMAIN : undefined),
-  projectId: (typeof import.meta !== 'undefined' && import.meta.env) ? import.meta.env.VITE_FIREBASE_PROJECT_ID : (typeof process !== 'undefined' ? process.env.VITE_FIREBASE_PROJECT_ID : undefined),
-  storageBucket: (typeof import.meta !== 'undefined' && import.meta.env) ? import.meta.env.VITE_FIREBASE_STORAGE_BUCKET : (typeof process !== 'undefined' ? process.env.VITE_FIREBASE_STORAGE_BUCKET : undefined),
-  messagingSenderId: (typeof import.meta !== 'undefined' && import.meta.env) ? import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID : (typeof process !== 'undefined' ? process.env.VITE_FIREBASE_MESSAGING_SENDER_ID : undefined),
-  appId: (typeof import.meta !== 'undefined' && import.meta.env) ? import.meta.env.VITE_FIREBASE_APP_ID : (typeof process !== 'undefined' ? process.env.VITE_FIREBASE_APP_ID : undefined)
-};
-
-// Inicialización de la Aplicación y Firestore con Caché Persistente Multitab (Capacitor)
-const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
-
-let dbInstance;
-try {
-  dbInstance = initializeFirestore(app, {
-    localCache: persistentLocalCache({
-      tabManager: persistentMultipleTabManager()
-    })
-  });
-} catch (e) {
-  console.warn("[Firebase] initializeFirestore already called, falling back to getFirestore:", e.message);
-  dbInstance = getFirestore(app);
-}
-
-// Conectar a emuladores locales si VITE_USE_EMULATORS está activo
-if (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_USE_EMULATORS === 'true') {
-  console.log("[Firebase] Conectando a emuladores locales (Firestore: 8080, Auth: 9099, Functions: 5001)...");
-  try {
-    connectFirestoreEmulator(dbInstance, 'localhost', 8080);
-    connectAuthEmulator(getAuth(app), 'http://localhost:9099', { disableWarnings: true });
-    connectFunctionsEmulator(getFunctions(app), 'localhost', 5001);
-  } catch (emuErr) {
-    console.warn("[Firebase] Emuladores ya conectados o no disponibles:", emuErr.message);
-  }
-}
-
-export { app };
-export const db = dbInstance;
+// db es un placeholder, no una conexión real: el paquete "firebase" ni
+// siquiera es una dependencia instalada (ver package.json). "firebase/app",
+// "firebase/auth", "firebase/functions" y "firebase/firestore" se
+// alias-ean en vite.config.js al shim REST de src/mocks/firebase/, cuyas
+// funciones (doc, collection, etc.) ignoran por completo su primer
+// argumento. Antes había ~35 líneas de initializeApp/initializeFirestore/
+// conexión a emuladores que nunca conectaban a nada real -incluido un
+// intento de emuladores detrás de VITE_USE_EMULATORS, variable que nunca
+// se define en ningún .env del proyecto- (AUDIT_REPORT.md B-2). Se
+// mantiene solo por compatibilidad de firma con los call sites de este
+// archivo que siguen llamando doc(db, ...) / collection(db, ...).
+export const db = {};
 
 // Referencias de colecciones esenciales
 export const trabajadoresColl = collection(db, "trabajadores");
