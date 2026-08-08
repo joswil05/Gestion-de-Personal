@@ -14,14 +14,17 @@ function notifyListeners() {
 const API_URL = 'http://localhost:3001/api';
 
 /**
- * Autentica al usuario contra el backend Node.js
- * @param {object} params { username, password }
+ * Autentica al usuario contra el backend Node.js.
+ * Acepta `username` (Coordinador, derivado del nombre tecleado) o
+ * `supervisorId` (Supervisor, elegido de un desplegable que ya no expone
+ * Username — ver LoginScreen.jsx y AUDIT_REPORT.md C-6 parte 2 / paso 2.3).
+ * @param {object} params { username?, supervisorId?, password }
  */
-export async function loginWithRoleAndLine({ username, password }) {
+export async function loginWithRoleAndLine({ username, supervisorId, password }) {
   const response = await fetch(`${API_URL}/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username, password })
+    body: JSON.stringify({ username, supervisorId, password })
   });
 
   if (!response.ok) {

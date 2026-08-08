@@ -6,6 +6,7 @@ const { Server } = require('socket.io');
 require('dotenv').config();
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcrypt');
+const rateLimit = require('express-rate-limit');
 const { requireAuth, requireRole, requireLineOwnership } = require('./middleware/auth');
 const { canWorkerOccupiedSlot } = require('./validations/canWorkerOccupiedSlot');
 
@@ -47,17 +48,43 @@ app.get('/api/health', (req, res) => {
     res.json({ status: 'ok', message: 'API funcionando correctamente' });
 });
 
-// Login
-app.post('/api/auth/login', async (req, res) => {
-    const { username, password } = req.body;
+// Login. Sin límite de intentos, un atacante con la lista de Username
+// (ver /api/supervisores/publico, paso 2.3) podía intentar fuerza bruta sin
+// restricción (AUDIT_REPORT.md C-6, parte 3). No se aplica globalmente
+// -otras rutas reciben polling legítimo del HUD- solo a este endpoint.
+const loginLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 10,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Demasiados intentos de inicio de sesión. Espera 15 minutos.' }
+});
+
+app.post('/api/auth/login', loginLimiter, async (req, res) => {
+    const { username, supervisorId, password } = req.body;
     try {
-        if (!username || !password) {
-            return res.status(400).json({ error: 'Username y password requeridos' });
+        if ((!username && !supervisorId) || !password) {
+            return res.status(400).json({ error: 'Username (o supervisorId) y password requeridos' });
         }
-        const result = await pool.request()
-            .input('Username', sql.NVarChar, username)
-            .query('SELECT * FROM Usuarios WHERE Username = @Username');
-        
+
+        // Dos formas de identificar al usuario: por Username (Coordinador,
+        // derivado del nombre tecleado) o por Id (Supervisor, elegido de un
+        // desplegable que ya no expone Username — ver /api/supervisores/publico
+        // y AUDIT_REPORT.md C-6 parte 2 / paso 2.3).
+        const request = pool.request();
+        let query;
+        if (supervisorId) {
+            request.input('Id', sql.Int, supervisorId);
+            // UPPER(Rol) porque la columna tiene datos sembrados con distinta
+            // capitalización ('Supervisor' y 'COORDINADOR'; ver la misma
+            // defensa en /api/supervisores/publico).
+            query = "SELECT * FROM Usuarios WHERE Id = @Id AND UPPER(Rol) = 'SUPERVISOR'";
+        } else {
+            request.input('Username', sql.NVarChar, username);
+            query = 'SELECT * FROM Usuarios WHERE Username = @Username';
+        }
+        const result = await request.query(query);
+
         if (result.recordset.length === 0) {
             return res.status(401).json({ error: 'Credenciales inválidas' });
         }
@@ -2326,25 +2353,29 @@ app.post('/api/lineas/:lineId/cerrar-turno', requireAuth, requireRole('COORDINAD
 // ==========================================
 
 // Obtener lista pública de supervisores (solo para dropdown de login)
+// Alimenta el desplegable de login del Supervisor. Es intencionalmente
+// público (nadie tiene sesión todavía en la pantalla de login), pero ya NO
+// devuelve Username: antes cualquiera podía listar las cuentas reales de
+// todos los supervisores sin autenticarse (AUDIT_REPORT.md C-6 parte 2). El
+// cliente ahora envía el Id a POST /api/auth/login (supervisorId), que
+// resuelve el Username internamente.
 app.get('/api/supervisores/publico', async (req, res) => {
     try {
         const result = await pool.request()
             .query(`
-                SELECT 
-                    Id, 
-                    Nombre, 
-                    Username 
-                FROM Usuarios 
+                SELECT
+                    Id,
+                    Nombre
+                FROM Usuarios
                 WHERE Rol = 'SUPERVISOR' OR Rol = 'Supervisor'
                 ORDER BY Nombre ASC
             `);
-            
+
         const formatted = result.recordset.map(u => ({
             id: String(u.Id),
-            name: u.Nombre,
-            username: u.Username
+            name: u.Nombre
         }));
-        
+
         res.json(formatted);
     } catch (err) {
         res.status(500).json({ error: err.message });

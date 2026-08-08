@@ -169,6 +169,7 @@ export default function LoginScreen({ onLoginSuccess }) {
   const [errorText, setErrorText] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [supervisorsList, setSupervisorsList] = useState([]);
+  const [selectedSupervisorId, setSelectedSupervisorId] = useState("");
   const [isLoadingSups, setIsLoadingSups] = useState(false);
   const [fetchError, setFetchError] = useState("");
 
@@ -197,22 +198,31 @@ export default function LoginScreen({ onLoginSuccess }) {
     e.preventDefault();
     setErrorText("");
 
-    const trimmedName = supervisorName.trim();
-    if (!trimmedName) {
-      triggerNativeHapticFeedback('error');
-      setErrorText(selectedRole === "COORDINADOR" ? "Por favor, introduce tu nombre de coordinador." : "Por favor, selecciona un supervisor.");
-      return;
-    }
+    // Identidad de login: Coordinador teclea su nombre (se deriva un
+    // username); Supervisor elige de un desplegable por id -ya no por
+    // Username, que /api/supervisores/publico dejó de exponer sin
+    // autenticación (ver AUDIT_REPORT.md C-6 parte 2 / paso 2.3)-.
+    let finalName;
+    let loginIdentity;
 
-    let finalName = trimmedName;
-    let username = trimmedName.toLowerCase().replace(/\s+/g, '.'); // fallback para Coordinador
-
-    if (selectedRole === "SUPERVISOR") {
-      const foundSup = supervisorsList.find(s => s.username === trimmedName);
-      if (foundSup) {
-        finalName = foundSup.name;
-        username = foundSup.username;
+    if (selectedRole === "COORDINADOR") {
+      const trimmedName = supervisorName.trim();
+      if (!trimmedName) {
+        triggerNativeHapticFeedback('error');
+        setErrorText("Por favor, introduce tu nombre de coordinador.");
+        return;
       }
+      finalName = trimmedName;
+      loginIdentity = { username: trimmedName.toLowerCase().replace(/\s+/g, '.') };
+    } else {
+      if (!selectedSupervisorId) {
+        triggerNativeHapticFeedback('error');
+        setErrorText("Por favor, selecciona un supervisor.");
+        return;
+      }
+      const foundSup = supervisorsList.find(s => String(s.id) === String(selectedSupervisorId));
+      finalName = foundSup ? foundSup.name : "";
+      loginIdentity = { supervisorId: Number(selectedSupervisorId) };
     }
 
     const finalLine = selectedRole === "COORDINADOR" ? "COORDINADOR" : selectedLine;
@@ -233,7 +243,7 @@ export default function LoginScreen({ onLoginSuccess }) {
       setIsSubmitting(true);
 
       await loginWithRoleAndLine({
-        username,
+        ...loginIdentity,
         password: loginPassword
       });
 
@@ -324,9 +334,9 @@ export default function LoginScreen({ onLoginSuccess }) {
                 <FormLabel htmlFor="supervisor-select">Seleccionar Supervisor</FormLabel>
                 <SelectDropdown
                   id="supervisor-select"
-                  value={supervisorName}
+                  value={selectedSupervisorId}
                   onChange={(e) => {
-                    setSupervisorName(e.target.value);
+                    setSelectedSupervisorId(e.target.value);
                     setErrorText("");
                   }}
                 >
@@ -334,7 +344,7 @@ export default function LoginScreen({ onLoginSuccess }) {
                     {isLoadingSups ? "Cargando supervisores..." : fetchError ? fetchError : "── Seleccionar Supervisor ──"}
                   </option>
                   {!isLoadingSups && !fetchError && supervisorsList.map(sup => (
-                    <option key={sup.id} value={sup.username}>
+                    <option key={sup.id} value={sup.id}>
                       {sup.name}
                     </option>
                   ))}
