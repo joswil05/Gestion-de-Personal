@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { styled } from '../styles/theme';
 import { db, puestosColl, startLineParoTransaction, endLineParoTransaction, saveMermasForLine } from '../services/apiService';
-import { doc, onSnapshot, setDoc, writeBatch, getDocs, where, query, serverTimestamp } from 'firebase/firestore';
+import { doc, onSnapshot, getDocs, where, query } from 'firebase/firestore';
 import { triggerNativeHapticFeedback } from '../skills/capacitor-android-bridge';
 import { useStopTimer } from './StopTimerContext';
 
@@ -694,7 +694,13 @@ export default function LineaSku({ supervisorLineId = "L4" }) {
           setMermaJustification(data.mermaJustification);
         }
       } else {
-        // Inicializar documento de línea si no existe
+        // Solo puede pasar si LineId no existe en la tabla Lineas (las L1-L10
+        // reales siempre existen, ver server/server.js GET /api/config/line_*).
+        // Antes esta rama llamaba setDoc contra el shim de Firestore para
+        // "crear" el documento; ya no aplica -Lineas se siembra por
+        // migración, no se crea desde el cliente-. Se conserva solo el
+        // fallback local de UI para no dejar la pantalla en blanco si algún
+        // día aparece una línea sin seedear (ver AUDIT_REPORT.md C-3).
         const initialData = {
           status: "PRODUCCION",
           sku: "SKU-990-BOST",
@@ -710,7 +716,6 @@ export default function LineaSku({ supervisorLineId = "L4" }) {
           oee: 95,
           turnStartTimestamp: new Date()
         };
-        setDoc(lineDocRef, initialData);
         setLineState(initialData);
       }
     });

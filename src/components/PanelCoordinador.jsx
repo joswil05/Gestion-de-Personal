@@ -2614,37 +2614,11 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
 
 
 
-  const handleToggleSlotLock = async (slotId) => {
-    triggerNativeHapticFeedback('short');
-    
-    const plan = configDocs["next_day_plan"];
-    if (!plan || !plan.assignments) {
-      alert("Error: No existe un plan generado para mañana para poder bloquear puestos.");
-      return;
-    }
-    
-    const assignments = { ...plan.assignments };
-    const currentAssign = assignments[slotId];
-    if (!currentAssign) {
-      alert("El puesto no forma parte de la planificación activa de mañana.");
-      return;
-    }
-    
-    const isLocked = !currentAssign.locked;
-    assignments[slotId] = {
-      ...currentAssign,
-      locked: isLocked
-    };
-    
-    try {
-      await updateDoc(doc(db, "config", "next_day_plan"), {
-        assignments: assignments,
-        updatedAt: serverTimestamp()
-      });
-    } catch (err) {
-      alert("Error al conmutar bloqueo lógico: " + err.message);
-    }
-  };
+  // handleToggleSlotLock se retiró junto con su botón (ver más abajo, columnas
+  // "Puestos Fijos Críticos" / "Puestos Varios Rotativos" del drilldown
+  // NEXT_DAY): escribía sobre configDocs["next_day_plan"], un doc de
+  // Firestore huérfano sin equivalente en el esquema SQL real. Ver
+  // AUDIT_REPORT.md C-3 / Fase 1 paso 1.5.
 
 
 
@@ -3749,40 +3723,11 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
                             <StatusPill state={state}>
                               {p.status === "SUSPENDIDO" ? "SUSPENDIDO" : (p.status === "ASIGNADO" ? "✓ CUBIERTO" : "⚠ DÉFICIT")}
                             </StatusPill>
-                            {viewDay === 'NEXT_DAY' && p.status !== "SUSPENDIDO" && (
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleToggleSlotLock(p.id);
-                                }}
-                                style={{
-                                  background: 'none',
-                                  border: 'none',
-                                  cursor: 'pointer',
-                                  padding: '6px',
-                                  display: 'flex',
-                                  alignItems: 'center',
-                                  justifyContent: 'center',
-                                  transition: 'all 0.2s ease',
-                                  color: p.locked ? '#2563EB' : '#94A3B8'
-                                }}
-                                title={p.locked ? "Bloqueado por el Coordinador (Locked)" : "Desbloqueado (Hacer clic para bloquear)"}
-                              >
-                                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill={p.locked ? "currentColor" : "none"} stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                                  {p.locked ? (
-                                    <>
-                                      <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
-                                      <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
-                                    </>
-                                  ) : (
-                                    <>
-                                      <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
-                                      <path d="M7 11V7a5 5 0 0 1 9.9-1"/>
-                                    </>
-                                  )}
-                                </svg>
-                              </button>
-                            )}
+                            {/* El botón de bloqueo (lock) por-puesto para NEXT_DAY se retiró:
+                                dependía de configDocs["next_day_plan"], un doc de Firestore
+                                huérfano tras la migración a SQL Server sin equivalente en
+                                PlanificacionLineas (que es por LÍNEA, no por puesto). Ver
+                                AUDIT_REPORT.md C-3 / Fase 1 paso 1.5. */}
                           </div>
                         </SlotDetailCard>
                       );
@@ -3847,40 +3792,11 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
                             <StatusPill state={state}>
                               {p.status === "SUSPENDIDO" ? "SUSPENDIDO" : (p.status === "ASIGNADO" ? "✓ CUBIERTO" : "⚠ DÉFICIT")}
                             </StatusPill>
-                            {viewDay === 'NEXT_DAY' && p.status !== "SUSPENDIDO" && (
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleToggleSlotLock(p.id);
-                                }}
-                                style={{
-                                  background: 'none',
-                                  border: 'none',
-                                  cursor: 'pointer',
-                                  padding: '6px',
-                                  display: 'flex',
-                                  alignItems: 'center',
-                                  justifyContent: 'center',
-                                  transition: 'all 0.2s ease',
-                                  color: p.locked ? '#2563EB' : '#94A3B8'
-                                }}
-                                title={p.locked ? "Bloqueado por el Coordinador (Locked)" : "Desbloqueado (Hacer clic para bloquear)"}
-                              >
-                                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill={p.locked ? "currentColor" : "none"} stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                                  {p.locked ? (
-                                    <>
-                                      <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
-                                      <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
-                                    </>
-                                  ) : (
-                                    <>
-                                      <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
-                                      <path d="M7 11V7a5 5 0 0 1 9.9-1"/>
-                                    </>
-                                  )}
-                                </svg>
-                              </button>
-                            )}
+                            {/* El botón de bloqueo (lock) por-puesto para NEXT_DAY se retiró:
+                                dependía de configDocs["next_day_plan"], un doc de Firestore
+                                huérfano tras la migración a SQL Server sin equivalente en
+                                PlanificacionLineas (que es por LÍNEA, no por puesto). Ver
+                                AUDIT_REPORT.md C-3 / Fase 1 paso 1.5. */}
                           </div>
                         </SlotDetailCard>
                       );
