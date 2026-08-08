@@ -42,18 +42,28 @@ app.use(express.json());
 // Configuración de la conexión a SQL Server
 const connectionString = `Server=${process.env.DB_SERVER || 'localhost'};Database=${process.env.DB_NAME || 'SmartAssignDB'};Trusted_Connection=yes;Driver={ODBC Driver 17 for SQL Server};`;
 
-// Conectar a la base de datos
+// Conectar a la base de datos. Antes: el catch solo logueaba y el servidor
+// arrancaba igual con pool=undefined; cada endpoint moría con "Cannot read
+// properties of undefined (reading 'request')" devuelto como 500, mientras
+// /api/health respondía {"status":"ok"} sin consultar la base -aparentaba
+// estar sano ante cualquier supervisor de procesos o balanceador
+// (AUDIT_REPORT.md C-8)-. Ahora: 5 reintentos con backoff antes de rendirse,
+// y si los 5 fallan el proceso aborta en vez de escuchar en un estado roto.
 let pool;
 async function connectDB() {
-    try {
-        pool = await sql.connect({ connectionString });
-        app.locals.pool = pool;
-        console.log('✅ Conectado a SQL Server (SmartAssignDB) vía Windows Auth');
-    } catch (err) {
-        console.error('❌ Error conectando a SQL Server:', err);
+    for (let intento = 1; intento <= 5; intento++) {
+        try {
+            pool = await sql.connect({ connectionString });
+            app.locals.pool = pool;
+            console.log('✅ Conectado a SQL Server (SmartAssignDB) vía Windows Auth');
+            return;
+        } catch (err) {
+            console.error(`❌ Intento ${intento}/5 de conexión a SQL Server falló:`, err.message);
+            if (intento === 5) throw err;
+            await new Promise(r => setTimeout(r, 2000 * intento));
+        }
     }
 }
-connectDB();
 
 // Antes, 15 handlers devolvían res.status(500).json({ error: err.message })
 // directo: err.message es del driver de SQL Server y puede incluir nombres
@@ -72,9 +82,19 @@ const errorServidor = (res, err, contexto) => {
 // ENDPOINTS DE LA API (REST)
 // ==========================================
 
-// Endpoint de prueba
-app.get('/api/health', (req, res) => {
-    res.json({ status: 'ok', message: 'API funcionando correctamente' });
+// Antes respondía {"status":"ok"} incondicionalmente, sin tocar la base:
+// con el servidor arriba y la base caída (o pool aún sin inicializar en el
+// primer intento de connectDB), parecía sano cuando cada otro endpoint
+// devolvía 500 (AUDIT_REPORT.md C-8). serverTime alimenta la sincronización
+// de reloj real del cliente (ver apiService.syncServerTimeOffset, paso 3.4).
+app.get('/api/health', async (req, res) => {
+    try {
+        if (!pool) throw new Error('Pool de conexión aún no inicializado.');
+        await pool.request().query('SELECT 1');
+        res.json({ status: 'ok', db: 'up', serverTime: new Date().toISOString() });
+    } catch (err) {
+        res.status(503).json({ status: 'degraded', db: 'down' });
+    }
 });
 
 // Login. Sin límite de intentos, un atacante con la lista de Username
@@ -2483,6 +2503,34 @@ io.on('connection', (socket) => {
 });
 
 const PORT = process.env.PORT || 3001;
-server.listen(PORT, () => {
-    console.log(`🚀 Servidor backend corriendo en http://localhost:${PORT}`);
+
+// Solo escuchar una vez la base respondió (o los 5 reintentos de connectDB
+// se agotaron, en cuyo caso el .catch aborta el proceso en vez de escuchar
+// en un estado roto — ver AUDIT_REPORT.md C-8, paso 3.1).
+connectDB()
+    .then(() => {
+        server.listen(PORT, () => console.log(`🚀 Servidor backend corriendo en http://localhost:${PORT}`));
+    })
+    .catch(() => {
+        console.error('💥 No se pudo conectar a SQL Server tras 5 intentos. Abortando.');
+        process.exit(1);
+    });
+
+// Manejo de errores del proceso y apagado ordenado (AUDIT_REPORT.md M-13).
+// Antes, un puerto ocupado o una promesa rechazada sin capturar no producían
+// ningún diagnóstico claro; SIGTERM/SIGINT no cerraban el pool de SQL Server
+// antes de salir.
+server.on('error', (err) => {
+    if (err.code === 'EADDRINUSE') console.error(`❌ El puerto ${PORT} ya está en uso.`);
+    else console.error('❌ Error del servidor HTTP:', err);
+    process.exit(1);
 });
+process.on('unhandledRejection', (reason) => {
+    console.error('⚠️ Promesa rechazada sin capturar:', reason);
+});
+['SIGTERM', 'SIGINT'].forEach(sig => process.on(sig, async () => {
+    console.log(`\n${sig} recibido, cerrando…`);
+    server.close();
+    try { await pool?.close(); } catch (e) {}
+    process.exit(0);
+}));
