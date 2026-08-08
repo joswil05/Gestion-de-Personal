@@ -4,6 +4,17 @@ const sql = require('mssql/msnodesqlv8');
 const http = require('http');
 const { Server } = require('socket.io');
 require('dotenv').config();
+
+// Sin esto, un JWT_SECRET ausente hacía que jwt.sign()/jwt.verify() fallaran
+// en tiempo de uso (login roto) o, peor, que jsonwebtoken firmara con
+// `undefined` como secreto -un valor adivinable por cualquiera que conozca
+// la librería- si el proceso arrancaba con una variable de entorno vacía en
+// vez de ausente. Fallar rápido y explícito al arrancar (AUDIT_REPORT.md M-14).
+if (!process.env.JWT_SECRET || process.env.JWT_SECRET.length < 32) {
+    console.error('❌ JWT_SECRET ausente o demasiado corto (mínimo 32 caracteres). Define uno en server/.env.');
+    process.exit(1);
+}
+
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcrypt');
 const rateLimit = require('express-rate-limit');
