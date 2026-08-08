@@ -1,7 +1,6 @@
 import React, { useState, useEffect, lazy, Suspense } from 'react';
 import { injectGlobalStyles, styled, keyframes } from './styles/theme';
 import TabBar from './components/TabBar';
-import HudPlanta from './components/HudPlanta';
 import LineaSku from './components/LineaSku';
 import { initializeConnectivityGuard } from './skills/state-connectivity-guard';
 import { triggerNativeHapticFeedback } from './skills/capacitor-android-bridge';
@@ -10,7 +9,6 @@ import { db, endLineParoTransaction, syncServerTimeOffset } from './services/api
 import { logoutUser, getToken } from './services/authService';
 
 import LoginScreen from './components/LoginScreen';
-import PanelCoordinador from './components/PanelCoordinador';
 import RelevosNotificaciones from './components/RelevosNotificaciones';
 import { StopTimerProvider, useStopTimer } from './components/StopTimerContext';
 
@@ -18,6 +16,24 @@ import { StopTimerProvider, useStopTimer } from './components/StopTimerContext';
 const DevConsole = (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.DEV)
   ? lazy(() => import('./dev/DevConsole'))
   : null;
+
+// División del bundle (AUDIT_REPORT.md B-8): PanelCoordinador y HudPlanta
+// nunca se renderizan a la vez -dependen de userRole, mutuamente
+// excluyente-, así que no hace falta que ambos vayan en el chunk inicial.
+// Un Supervisor nunca descarga el código del panel del Coordinador y
+// viceversa.
+const PanelCoordinador = lazy(() => import('./components/PanelCoordinador'));
+const HudPlanta = lazy(() => import('./components/HudPlanta'));
+
+// Fallback de carga mientras se descarga el chunk perezoso de PanelCoordinador
+// o HudPlanta (solo se ve una vez por sesión, mientras dura la descarga).
+function LazyLoadFallback() {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '40vh', color: '#64748B', fontFamily: 'sans-serif', fontSize: '13px' }}>
+      Cargando…
+    </div>
+  );
+}
 
 // --- STITCHES STYLED LAYOUT CONTAINERS ---
 
@@ -423,11 +439,13 @@ export default function App() {
   if (userRole === "COORDINADOR") {
     return (
       <AppViewport id="coordinator-portal-viewport">
-        <PanelCoordinador 
-          coordinatorName={supervisorName} 
-          onLogout={handleLogout} 
-          isOffline={isOffline}
-        />
+        <Suspense fallback={<LazyLoadFallback />}>
+          <PanelCoordinador
+            coordinatorName={supervisorName}
+            onLogout={handleLogout}
+            isOffline={isOffline}
+          />
+        </Suspense>
       </AppViewport>
     );
   }
@@ -572,7 +590,9 @@ function SupervisorPortal({ supervisorName, supervisorLineId, isOffline, handleL
       {/* Contenedor principal de pestañas reactivas */}
       <MainContent>
         {currentTab === 'HUD' && (
-          <HudPlanta supervisorLineId={supervisorLineId} />
+          <Suspense fallback={<LazyLoadFallback />}>
+            <HudPlanta supervisorLineId={supervisorLineId} />
+          </Suspense>
         )}
         
         {currentTab === 'PERSONAL_SKU' && (
