@@ -1377,82 +1377,127 @@ export default function HudPlanta({ supervisorLineId = "L4" }) {
     });
   }, []);
 
+  // Índice del escáner QR: el gafete físico del operario está impreso con su
+  // Ficha/Nómina heredada de Firebase (formato "WORKER_XXXXX", ver
+  // NumeroNomina/LegacyWorkerId en la BD), NO con el Id interno autoincremental
+  // de SQL Server que usa el resto del HUD para las asignaciones. Sin este
+  // índice, cada escaneo real fallaba con "operario no encontrado" aunque el
+  // trabajador existiera y estuviera disponible.
+  const workersByFicha = useMemo(() => {
+    const idx = {};
+    Object.values(workersMap).forEach(w => {
+      const fichas = [w.numeroNomina, w.legacyWorkerId].filter(Boolean);
+      fichas.forEach(f => { idx[String(f).trim().toUpperCase()] = w; });
+    });
+    return idx;
+  }, [workersMap]);
+
   // Refs para evitar reinicializaciones de cámara al cambiar estados
   const handleScanWorkerSuccessRef = useRef(null);
   const workersMapRef = useRef({});
+  const workersByFichaRef = useRef({});
   useEffect(() => {
     handleScanWorkerSuccessRef.current = handleScanWorkerSuccess;
     workersMapRef.current = workersMap;
+    workersByFichaRef.current = workersByFicha;
   });
+
+  // Resuelve lo que la cámara decodificó contra el operario real: primero por
+  // Ficha/Nómina física (lo normal), y solo si no hay match, por el Id interno
+  // (compat hacia atrás por si algún gafete quedó impreso con el Id nuevo).
+  const resolveScannedWorker = (rawText) => {
+    const typedId = (rawText || '').trim().toUpperCase();
+    return workersByFichaRef.current[typedId] || workersMapRef.current[typedId] || null;
+  };
 
   // 1.2 Efecto reactivo para solicitar acceso de hardware a la cámara al abrir el escáner QR en web
   useEffect(() => {
-    let html5QrCode = null;
-
-    if (scannerOpen && typeof window !== 'undefined') {
-      console.log("[Lector QR] Solicitando cámara en web fallback usando html5-qrcode...");
-      import('html5-qrcode').then(({ Html5Qrcode }) => {
-        const qrContainer = document.getElementById('qr-reader-container');
-        if (!qrContainer) return;
-
-        console.log("[Lector QR] Inicializando Html5Qrcode...");
-        html5QrCode = new Html5Qrcode("qr-reader-container");
-
-        html5QrCode.start(
-          { facingMode: "environment" },
-          {
-            fps: 10,
-            qrbox: (width, height) => {
-              const size = Math.min(width, height) * 0.7;
-              return { width: size, height: size };
-            }
-          },
-          async (decodedText) => {
-            if (isProcessingScanRef.current) return;
-            isProcessingScanRef.current = true; // Pause scanning immediately
-
-            try {
-              console.log("[Lector QR] Código QR decodificado con éxito:", decodedText);
-              const typedId = decodedText.trim().toUpperCase();
-              const worker = workersMapRef.current[typedId];
-              if (worker) {
-                if (handleScanWorkerSuccessRef.current) {
-                  await handleScanWorkerSuccessRef.current(worker);
-                }
-              } else {
-                triggerNativeHapticFeedback('error');
-                setNotification({ 
-                  type: 'error', 
-                  message: `No se encontró ningún operario libre con la Ficha decodificada: ${typedId}` 
-                });
-                isProcessingScanRef.current = false; // Resume on error
-              }
-            } catch (err) {
-              console.error("[Lector QR] Error en callback de lectura:", err);
-              isProcessingScanRef.current = false; // Resume on exception
-            }
-          },
-          (errorMessage) => {
-            // Ignorar errores menores del ciclo de fotogramas
-          }
-        ).catch(err => {
-          console.error("[Lector QR] Error iniciando cámara con Html5Qrcode:", err);
-          setNotification({
-            type: 'error',
-            message: 'Error de Cámara: Por favor concede permisos de cámara en tu navegador.'
-          });
-        });
-      }).catch(err => {
-        console.error("[Lector QR] Error importando html5-qrcode:", err);
-      });
+    // En plataforma nativa (APK Android), el escaneo lo hace el motor ML Kit
+    // vía initializeRearCameraQRScanner() (ver capacitor-android-bridge.js),
+    // no este fallback web. Antes este efecto no comprobaba la plataforma y
+    // abría getUserMedia igual dentro del WebView nativo: dos cámaras
+    // compitiendo por el mismo hardware al mismo tiempo.
+    if (!scannerOpen || typeof window === 'undefined' || Capacitor.isNativePlatform()) {
+      return undefined;
     }
 
-    return () => {
-      if (html5QrCode) {
-        console.log("[Lector QR] Liberando recurso de cámara de hardware...");
-        if (html5QrCode.isScanning) {
-          html5QrCode.stop().catch(err => console.error("[Lector QR] Error deteniendo scanner:", err));
+    // Flag de cancelación: el import() y html5QrCode.start() son asíncronos,
+    // así que si el usuario cierra el escáner antes de que resuelvan, la
+    // limpieza de abajo puede ejecutarse ANTES de que la cámara llegue a
+    // abrirse. Sin este flag, esa cámara quedaba encendida sin forma de
+    // detenerla (fuga de hardware) porque el cleanup ya había corrido sobre
+    // un html5QrCode que todavía era null.
+    let cancelled = false;
+    let html5QrCode = null;
+
+    console.log("[Lector QR] Solicitando cámara en web fallback usando html5-qrcode...");
+    import('html5-qrcode').then(({ Html5Qrcode }) => {
+      if (cancelled) return;
+      const qrContainer = document.getElementById('qr-reader-container');
+      if (!qrContainer) return;
+
+      console.log("[Lector QR] Inicializando Html5Qrcode...");
+      html5QrCode = new Html5Qrcode("qr-reader-container");
+
+      html5QrCode.start(
+        { facingMode: "environment" },
+        {
+          fps: 10,
+          qrbox: (width, height) => {
+            const size = Math.min(width, height) * 0.7;
+            return { width: size, height: size };
+          }
+        },
+        async (decodedText) => {
+          if (isProcessingScanRef.current) return;
+          isProcessingScanRef.current = true; // Pause scanning immediately
+
+          try {
+            console.log("[Lector QR] Código QR decodificado con éxito.");
+            const worker = resolveScannedWorker(decodedText);
+            if (worker) {
+              if (handleScanWorkerSuccessRef.current) {
+                await handleScanWorkerSuccessRef.current(worker);
+              }
+            } else {
+              triggerNativeHapticFeedback('error');
+              setNotification({
+                type: 'error',
+                message: `No se encontró ningún operario libre con la Ficha decodificada: ${decodedText.trim().toUpperCase()}`
+              });
+              isProcessingScanRef.current = false; // Resume on error
+            }
+          } catch (err) {
+            console.error("[Lector QR] Error en callback de lectura:", err);
+            isProcessingScanRef.current = false; // Resume on exception
+          }
+        },
+        (errorMessage) => {
+          // Ignorar errores menores del ciclo de fotogramas
         }
+      ).then(() => {
+        if (cancelled && html5QrCode.isScanning) {
+          // El escáner terminó de abrirse justo después de que se pidiera
+          // cerrarlo: apagarlo inmediatamente en vez de dejarlo encendido.
+          html5QrCode.stop().catch(() => {});
+        }
+      }).catch(err => {
+        if (cancelled) return;
+        console.error("[Lector QR] Error iniciando cámara con Html5Qrcode:", err);
+        setNotification({
+          type: 'error',
+          message: 'Error de Cámara: Por favor concede permisos de cámara en tu navegador.'
+        });
+      });
+    }).catch(err => {
+      console.error("[Lector QR] Error importando html5-qrcode:", err);
+    });
+
+    return () => {
+      cancelled = true;
+      if (html5QrCode && html5QrCode.isScanning) {
+        console.log("[Lector QR] Liberando recurso de cámara de hardware...");
+        html5QrCode.stop().catch(err => console.error("[Lector QR] Error deteniendo scanner:", err));
       }
     };
   }, [scannerOpen]);
@@ -2066,15 +2111,14 @@ export default function HudPlanta({ supervisorLineId = "L4" }) {
     const cameraRes = await initializeRearCameraQRScanner();
     if (cameraRes.success) {
       if (cameraRes.native && cameraRes.scanResult) {
-        const typedId = cameraRes.scanResult.trim().toUpperCase();
-        const worker = workersMap[typedId];
+        const worker = resolveScannedWorker(cameraRes.scanResult);
         if (worker) {
           await handleScanWorkerSuccess(worker);
         } else {
           triggerNativeHapticFeedback('error');
-          setNotification({ 
-            type: 'error', 
-            message: `No se encontró ningún operario libre con la Ficha decodificada: ${typedId}` 
+          setNotification({
+            type: 'error',
+            message: `No se encontró ningún operario libre con la Ficha decodificada: ${cameraRes.scanResult.trim().toUpperCase()}`
           });
           isProcessingScanRef.current = false;
         }

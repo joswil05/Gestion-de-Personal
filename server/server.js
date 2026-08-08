@@ -198,7 +198,7 @@ app.post('/api/auth/login', loginLimiter, async (req, res) => {
 // Obtener operarios libres (Pool) - Accesible para cualquier rol autenticado
 app.get('/api/operarios/pool', requireAuth, async (req, res) => {
     try {
-        const selectCols = "Id, NombreCompleto, NumeroNomina, TurnoBase, PuestoBase, EstadoActual, LastActivity, Sexo, UpdatedAt, MedicalRestrictions, CurrentSlotId, PhysicalLineLocation, LineaDestinoId, TargetSlotId, DobleTurnoActivo";
+        const selectCols = "Id, NombreCompleto, NumeroNomina, LegacyWorkerId, TurnoBase, PuestoBase, EstadoActual, LastActivity, Sexo, UpdatedAt, MedicalRestrictions, CurrentSlotId, PhysicalLineLocation, LineaDestinoId, TargetSlotId, DobleTurnoActivo";
         const query = `
             SELECT ${selectCols} FROM Operarios
             WHERE EstadoActual IN ('POOL_ARRANQUE', 'DISPONIBLE_BOLSON') AND Activo = 1
@@ -223,7 +223,14 @@ app.get('/api/operarios/pool', requireAuth, async (req, res) => {
                 physicalLineLocation: w.PhysicalLineLocation,
                 lineaDestinoId: w.LineaDestinoId,
                 targetSlotId: w.TargetSlotId ? w.TargetSlotId.toString() : null,
-                dobleTurnoActivo: !!w.DobleTurnoActivo
+                dobleTurnoActivo: !!w.DobleTurnoActivo,
+                // El gafete físico del operario está impreso con NumeroNomina (el
+                // identificador heredado de la era Firebase, formato "WORKER_XXXXX"),
+                // no con el Id interno autoincremental de SQL Server. El escáner QR
+                // del HUD necesita este campo en camelCase para poder resolver contra
+                // lo que la cámara realmente decodifica.
+                numeroNomina: w.NumeroNomina || null,
+                legacyWorkerId: w.LegacyWorkerId || null
             };
         });
         res.json(poolWorkers);
