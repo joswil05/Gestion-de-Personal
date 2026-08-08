@@ -77,6 +77,17 @@ export const onSnapshot = (ref, callback, errorCallback) => {
                 const { exists, data } = await fetchConfigDoc(ref.id);
                 callback(createDocSnapshot(ref.id, exists ? data : {}));
             }
+            else if (pathName === 'config') {
+                // PanelCoordinador.jsx se suscribe a la COLECCIÓN config, no a un doc.
+                // Antes caía en el else genérico y recibía siempre un snapshot vacío,
+                // dejando activeLines y skuPlan del Coordinador sin poblar (ver M-1).
+                const ids = ['global_priority', 'shift_status'];
+                const docs = await Promise.all(ids.map(async (id) => {
+                    const { exists, data } = await fetchConfigDoc(id);
+                    return { id, ...(exists ? data : {}) };
+                }));
+                callback(createQuerySnapshot(docs));
+            }
             else if (pathName === 'trabajadores') {
                 const res = await authFetch('/operarios/pool');
                 if (res.ok) {
