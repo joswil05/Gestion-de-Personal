@@ -1,7 +1,19 @@
 import { io } from 'socket.io-client';
+import { getToken } from '../../services/authService';
 
 const API_URL = 'http://localhost:3001/api';
 const socket = io('http://localhost:3001');
+
+// Todas las lecturas del shim pasan por aquí. Antes, tres puntos distintos leían
+// localStorage.getItem("token") —una clave que ningún módulo escribe nunca— y un
+// cuarto (puestos) no mandaba cabecera en absoluto: el 100% de las lecturas
+// devolvía 401 (ver AUDIT_REPORT C-1 y C-2).
+const authFetch = (path) => {
+    const token = getToken();
+    return fetch(`${API_URL}${path}`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {}
+    });
+};
 
 // Helpers to create Firebase-like Snapshot objects
 const createDocSnapshot = (id, data) => ({
@@ -24,10 +36,7 @@ const createQuerySnapshot = (dataArray) => ({
 // shift_status, line_{lineId}) por datos reales de SQL Server
 // (tablas Lineas y ConfiguracionGlobal, ver server/server.js).
 const fetchConfigDoc = async (docId) => {
-    const token = localStorage.getItem("token") || "";
-    const res = await fetch(`${API_URL}/config/${docId}`, {
-        headers: { 'Authorization': `Bearer ${token}` }
-    });
+    const res = await authFetch(`/config/${docId}`);
     if (!res.ok) return { exists: false, data: {} };
     return res.json();
 };
@@ -51,21 +60,20 @@ export const onSnapshot = (ref, callback, errorCallback) => {
             if (ref.type === 'doc') pathName = ref.path; // For doc, path is usually the collection name
 
             if (pathName === 'puestos') {
-                const res = await fetch(`${API_URL}/puestos`);
+                const res = await authFetch('/puestos');
+                if (!res.ok) throw new Error(`GET /puestos → HTTP ${res.status}`);
                 const data = await res.json();
+                if (!Array.isArray(data)) throw new Error('GET /puestos devolvió un payload no iterable');
                 callback(createQuerySnapshot(data));
                 eventName = 'puestos_updated';
-            } 
+            }
             else if (pathName === 'config' && ref.type === 'doc') {
                 const { exists, data } = await fetchConfigDoc(ref.id);
                 callback(createDocSnapshot(ref.id, exists ? data : {}));
                 eventName = 'config_updated';
             }
             else if (pathName === 'trabajadores') {
-                const token = localStorage.getItem("token") || "";
-                const res = await fetch(`${API_URL}/operarios/pool`, {
-                    headers: { 'Authorization': `Bearer ${token}` }
-                });
+                const res = await authFetch('/operarios/pool');
                 if (res.ok) {
                     const data = await res.json();
                     callback(createQuerySnapshot(data));
@@ -123,10 +131,7 @@ export const getDocs = async (ref) => {
     if (ref && ref.type === 'query') pathName = ref.col.path || ref.col;
 
     if (pathName === 'trabajadores') {
-        const token = localStorage.getItem("token") || "";
-        const res = await fetch(`${API_URL}/operarios/pool`, {
-            headers: { 'Authorization': `Bearer ${token}` }
-        });
+        const res = await authFetch('/operarios/pool');
         if (res.ok) {
             const data = await res.json();
             return createQuerySnapshot(data);
