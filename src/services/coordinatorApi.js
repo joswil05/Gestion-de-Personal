@@ -1,12 +1,12 @@
 import { io } from 'socket.io-client';
 import { getToken, logoutUser } from './authService';
+import { API_BASE, API_URL } from '../config';
 
-const API_URL = 'http://localhost:3001/api';
 // Ver el mismo comentario en src/mocks/firebase/firestore.js: el WebSocket
 // exige token (server/server.js io.use, AUDIT_REPORT.md M-4) y auth es una
 // función para que se reevalúe en cada reconexión, no solo al cargar el
 // módulo (que ocurre antes del login).
-export const socket = io('http://localhost:3001', {
+export const socket = io(API_BASE, {
     auth: (cb) => cb({ token: getToken() })
 });
 

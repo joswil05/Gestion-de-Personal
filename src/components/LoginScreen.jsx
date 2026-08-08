@@ -2,8 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { styled } from '../styles/theme';
 import { triggerNativeHapticFeedback } from '../skills/capacitor-android-bridge';
 import { loginWithRoleAndLine, logoutUser } from '../services/authService';
-
-const API_URL = 'http://localhost:3001/api';
+import { API_URL } from '../config';
 
 // --- STITCHES STYLED LOGIN COMPONENTS ---
 

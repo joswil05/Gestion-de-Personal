@@ -8,6 +8,7 @@
 import { initializeApp, getApp, getApps } from "firebase/app";
 import { isAppOnline } from "../skills/state-connectivity-guard.js";
 import { getToken } from "./authService";
+import { API_URL as REST_API_URL } from "../config";
 import {
   getFirestore,
   initializeFirestore, 
@@ -117,7 +118,7 @@ const CRITICAL_TIPOS_PUESTO = ["Operador A", "Averiero", "Operador C"];
 // Firestore: hablan directamente con la API REST + SQL Server real.
 // El resto de funciones de este archivo (planificación T+1, sugerencias de
 // rotación) siguen sobre el mock hasta que se migren en una fase posterior.
-const REST_API_URL = "http://localhost:3001/api";
+// REST_API_URL importado de ../config (VITE_API_URL), ver paso 3.7.
 
 const TIMEOUT_MS = 15000;
 

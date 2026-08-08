@@ -4,14 +4,14 @@
  * dado que TI se encargará de la autenticación real más adelante.
  */
 
+import { API_URL } from '../config';
+
 let currentUser = null;
 const listeners = [];
 
 function notifyListeners() {
   listeners.forEach(callback => callback(currentUser));
 }
-
-const API_URL = 'http://localhost:3001/api';
 
 /**
  * Autentica al usuario contra el backend Node.js.
