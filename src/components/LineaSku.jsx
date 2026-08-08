@@ -4,6 +4,7 @@ import { db, puestosColl, startLineParoTransaction, endLineParoTransaction, save
 import { doc, onSnapshot, getDocs, where, query } from 'firebase/firestore';
 import { triggerNativeHapticFeedback } from '../skills/capacitor-android-bridge';
 import { useStopTimer } from './StopTimerContext';
+import { useNotification, NotificationToast } from './shared/Notification';
 
 // --- STITCHES STYLED COMPONENTS ---
 
@@ -630,6 +631,7 @@ const PARO_MAP = {
 
 export default function LineaSku({ supervisorLineId = "L4" }) {
   const { activeParo } = useStopTimer();
+  const [notification, notify] = useNotification();
 
   // Estados locales del SKU y base de datos
   const [sku, setSku] = useState("Cargando SKU...");
@@ -752,7 +754,7 @@ export default function LineaSku({ supervisorLineId = "L4" }) {
   const handleStartParo = async (e) => {
     e.preventDefault();
     if (!symptoms.trim()) {
-      alert("Es obligatorio registrar los síntomas físicos del equipo.");
+      notify('error', "Es obligatorio registrar los síntomas físicos del equipo.");
       return;
     }
     triggerNativeHapticFeedback('confirm');
@@ -762,7 +764,7 @@ export default function LineaSku({ supervisorLineId = "L4" }) {
       setSymptoms("");
     } catch (err) {
       console.error("[LineaSku] Error al iniciar paro:", err);
-      alert("Error al guardar paro en base de datos.");
+      notify('error', "Error al guardar paro en base de datos.");
     }
   };
 
@@ -775,7 +777,7 @@ export default function LineaSku({ supervisorLineId = "L4" }) {
       await endLineParoTransaction(supervisorLineId);
     } catch (err) {
       console.error("[LineaSku] Error al detener paro:", err);
-      alert("Error al reanudar producción.");
+      notify('error', "Error al reanudar producción.");
     }
   };
 
@@ -884,12 +886,13 @@ export default function LineaSku({ supervisorLineId = "L4" }) {
       setTimeout(() => setMermaSavedMsg(false), 3000);
     } catch (err) {
       console.error("[LineaSku] Error al guardar mermas:", err);
-      alert(err.message || "Error al guardar las mermas.");
+      notify('error', err.message || "Error al guardar las mermas.");
     }
   };
 
   return (
     <SkuContainer>
+      <NotificationToast notification={notification} id="lineasku-toast" />
       <SkuHeader>
         <SkuTitle>
           <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#2563EB" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">

@@ -546,21 +546,14 @@ export default function RelevosNotificaciones({ supervisorLineId }) {
               w.currentSlotId == null
             );
 
+            // Antes cada rama logueaba nombre + id del operario a la consola
+            // del navegador ("[QA Debug]..."), visible en una terminal
+            // compartida de planta (AUDIT_REPORT.md B-6). Retirado.
             const hasCompatibleL8Worker = l8Available.some(w => {
               const blacklist = slot.rejectedWorkerIds || [];
-              if (blacklist.includes(w.id)) {
-                console.log(`[QA Debug] ${w.name} (${w.id}) excluido de ${slot.puestoName} por estar en la blacklist.`);
-                return false;
-              }
-              if (!canWorkerOccupiedSlot(w, slot)) {
-                console.log(`[QA Debug] ${w.name} (${w.id}) excluido de ${slot.puestoName} por canWorkerOccupiedSlot.`);
-                return false;
-              }
-              if (w.lastActivity && w.lastActivity === slot.puestoName) {
-                console.log(`[QA Debug] ${w.name} (${w.id}) excluido de ${slot.puestoName} por lastActivity matching (fatiga ergonómica 24h).`);
-                return false;
-              }
-              console.log(`[QA Debug] CANDIDATO COMPATIBLE L8 DETECTADO: ${w.name} (${w.id}) para puesto ${slot.puestoName}.`);
+              if (blacklist.includes(w.id)) return false;
+              if (!canWorkerOccupiedSlot(w, slot)) return false;
+              if (w.lastActivity && w.lastActivity === slot.puestoName) return false;
               return true;
             });
 

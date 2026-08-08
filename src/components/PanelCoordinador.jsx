@@ -4,6 +4,7 @@ import { db, puestosColl, trabajadoresColl, getHistorialDia, getProgramaProducci
 import { executeCoordinatorSuggestion } from '../services/apiService';
 import { collection, doc, onSnapshot, getDocs, updateDoc, setDoc, deleteDoc, query, where, getDoc, writeBatch, serverTimestamp } from 'firebase/firestore';
 import { triggerNativeHapticFeedback } from '../skills/capacitor-android-bridge';
+import { useNotification, NotificationToast } from './shared/Notification';
 
 // --- KEYFRAMES & MICRO-ANIMATIONS ---
 const fadeIn = keyframes({
@@ -1651,6 +1652,7 @@ const QuickStatValue = styled('span', {
 
 
 export default function PanelCoordinador({ coordinatorName, onLogout, isOffline }) {
+  const [notification, notify] = useNotification();
   const [currentTab, setCurrentTab] = useState('MAPA'); // 'MAPA' | 'PUESTOS' | 'DASHBOARD' | 'SUGERENCIAS' | 'CONTROL'
   const [activeLines, setActiveLines] = useState(["L4", "L1", "L2", "L6", "L7", "L5", "L3", "L8", "L9", "L10"]);
   const [selectedLineId, setSelectedLineId] = useState("L4");
@@ -1768,7 +1770,7 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
       await reloadOperariosGestion();
     } catch (err) {
       triggerNativeHapticFeedback('error');
-      alert(`Error al guardar: ${err.message}`);
+      notify('error', `Error al guardar: ${err.message}`);
     } finally {
       setSavingOperario(false);
     }
@@ -1782,7 +1784,7 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
       await reloadOperariosGestion();
     } catch (err) {
       triggerNativeHapticFeedback('error');
-      alert(`Error al dar de baja: ${err.message}`);
+      notify('error', `Error al dar de baja: ${err.message}`);
     }
   };
 
@@ -1793,7 +1795,7 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
       await reloadOperariosGestion();
     } catch (err) {
       triggerNativeHapticFeedback('error');
-      alert(`Error al reactivar: ${err.message}`);
+      notify('error', `Error al reactivar: ${err.message}`);
     }
   };
 
@@ -1804,7 +1806,7 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
     try {
       await actualizarOperario(workerId, { estadoActual: newStatus });
     } catch (err) {
-      alert("Error al tipificar inasistencia: " + err.message);
+      notify('error', "Error al tipificar inasistencia: " + err.message);
     }
   };
 
@@ -2628,11 +2630,11 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
     try {
       const result = await confirmarPlanificacion(selectedDate);
       triggerNativeHapticFeedback('confirm');
-      alert(`¡Planificación de ${selectedDate} CONFIRMADA y SELLADA con éxito! (${result.lineasConfirmadas} línea(s)). Se activará sola al llegar la fecha, y fijará al supervisor planificado en cada línea activa.`);
+      notify('success', `¡Planificación de ${selectedDate} CONFIRMADA y SELLADA con éxito! (${result.lineasConfirmadas} línea(s)). Se activará sola al llegar la fecha, y fijará al supervisor planificado en cada línea activa.`);
       await reloadPlanificacionManana();
     } catch (err) {
       triggerNativeHapticFeedback('error');
-      alert(`Error al confirmar plan: ${err.message}`);
+      notify('error', `Error al confirmar plan: ${err.message}`);
     } finally {
       setConfirmingPlan(false);
     }
@@ -2686,7 +2688,7 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
         const trimmedResponse = response.trim();
         const validDates = ["2026-05-26", "2026-05-27", "2026-05-28"];
         if (!validDates.includes(trimmedResponse)) {
-          alert(`Fecha inválida o sin órdenes programadas: "${trimmedResponse}". Se canceló la carga.`);
+          notify('error', `Fecha inválida o sin órdenes programadas: "${trimmedResponse}". Se canceló la carga.`);
           return;
         }
 
@@ -2695,7 +2697,7 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
       }
 
       if (!orders || orders.length === 0) {
-        alert(`No se encontraron órdenes para la fecha seleccionada (${targetDateStr}).`);
+        notify('error', `No se encontraron órdenes para la fecha seleccionada (${targetDateStr}).`);
         return;
       }
 
@@ -2711,12 +2713,12 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
       setNextDayOrdenIds(prev => ({ ...prev, ...loadedOrdenIds }));
 
       const linesSched = Object.keys(loadedPlan).filter(l => loadedPlan[l] !== "INACTIVO");
-      alert(`¡Programa de Excel cargado con éxito para la fecha seleccionada (${targetDateStr})!\n\n` +
+      notify('success', `¡Programa de Excel cargado con éxito para la fecha seleccionada (${targetDateStr})!\n\n` +
             `Líneas activadas: ${linesSched.join(", ")}\n` +
             `Líneas inactivas (suspensión lógica): ${activeLines.filter(l => !linesSched.includes(l)).join(", ")}`);
     } catch (err) {
       console.error("Error al cargar plan de Excel:", err);
-      alert(`Error al cargar plan de Excel: ${err.message}`);
+      notify('error', `Error al cargar plan de Excel: ${err.message}`);
     }
   };
 
@@ -2737,11 +2739,11 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
       await guardarPlanificacion(selectedDate, lineas);
       setIsConfiguringNextDay(false);
       triggerNativeHapticFeedback('confirm');
-      alert(`¡Planificación de ${selectedDate} guardada como borrador! Revisa el resumen y usa "Confirmar y Sellar" cuando esté lista -sella el día completo, no línea por línea-.`);
+      notify('success', `¡Planificación de ${selectedDate} guardada como borrador! Revisa el resumen y usa "Confirmar y Sellar" cuando esté lista -sella el día completo, no línea por línea-.`);
       await reloadPlanificacionManana();
     } catch (err) {
       triggerNativeHapticFeedback('error');
-      alert(`Error al guardar la planificación: ${err.message}`);
+      notify('error', `Error al guardar la planificación: ${err.message}`);
     } finally {
       setProgramingNextDay(false);
     }
@@ -2754,10 +2756,10 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
       await executeCoordinatorSuggestion(workerId, slotId, originalSlotId);
 
       triggerNativeHapticFeedback('confirm');
-      alert(`¡Sugerencia de rotación aplicada con éxito! ${workerName} ha sido asignado al puesto "${slotName}".`);
+      notify('success', `¡Sugerencia de rotación aplicada con éxito! ${workerName} ha sido asignado al puesto "${slotName}".`);
     } catch (err) {
       triggerNativeHapticFeedback('error');
-      alert(`Error al aplicar sugerencia: ${err.message}`);
+      notify('error', `Error al aplicar sugerencia: ${err.message}`);
     } finally {
       setApplyingRotationId(null);
     }
@@ -2767,7 +2769,7 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
     triggerNativeHapticFeedback('confirm');
     const validSugs = deficitSuggestions.filter(s => s.worker != null);
     if (validSugs.length === 0) {
-      alert("No hay sugerencias aplicables que cuenten con candidatos recomendados en este momento.");
+      notify('error', "No hay sugerencias aplicables que cuenten con candidatos recomendados en este momento.");
       return;
     }
 
@@ -2804,10 +2806,10 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
       if (failures.length > 0) {
         msg += `\n\nFallaron:\n${failures.join('\n')}`;
       }
-      alert(msg);
+      notify(failures.length === 0 ? 'success' : 'error', msg);
     } catch (err) {
       triggerNativeHapticFeedback('error');
-      alert(`Error al aplicar balanceo masivo: ${err.message}`);
+      notify('error', `Error al aplicar balanceo masivo: ${err.message}`);
     } finally {
       setApplyingAll(false);
     }
@@ -2820,7 +2822,7 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
      * El alta/baja de supervisores se trasladará a la base de datos SQL Server
      * en un bloque de trabajo futuro, ya que requiere endpoints REST específicos.
      */
-    alert("Función en migración a SQL Server - temporalmente no disponible.");
+    notify('error', "Función en migración a SQL Server - temporalmente no disponible.");
     return;
   };
 
@@ -2830,7 +2832,7 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
      * El alta/baja de supervisores se trasladará a la base de datos SQL Server
      * en un bloque de trabajo futuro, ya que requiere endpoints REST específicos.
      */
-    alert("Función en migración a SQL Server - temporalmente no disponible.");
+    notify('error', "Función en migración a SQL Server - temporalmente no disponible.");
     return;
   };
 
@@ -2840,7 +2842,7 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
      * La asignación de líneas a supervisores se trasladará a SQL Server
      * en un bloque de trabajo futuro, ya que el endpoint actual está roto.
      */
-    alert("Función en migración a SQL Server - temporalmente no disponible.");
+    notify('error', "Función en migración a SQL Server - temporalmente no disponible.");
     setEditingLineId(null);
     return;
   };
@@ -2855,6 +2857,7 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
 
   return (
     <PanelContainer id="coordinator-dashboard">
+      <NotificationToast notification={notification} id="coordinador-toast" />
       {/* SideDrawer removed completely to eliminate all redundancies */}
 
       <StickyHeaderContainer>

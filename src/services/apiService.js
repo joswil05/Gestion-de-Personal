@@ -831,7 +831,11 @@ export function canWorkerOccupiedSlot(w, p) {
   });
 
   if (hasMedicalConflict) {
-    console.log(`[Restricción Médica] Operario ${w.name} excluido de puesto ${p.puestoName} (${p.id}) debido a conflicto de aptitud médica.`);
+    // Antes se logueaba el nombre del operario junto a su restricción médica
+    // en la consola del navegador -dato de salud personal, visible en una
+    // terminal compartida de planta- (AUDIT_REPORT.md B-6). Se retira el
+    // nombre; el id del puesto basta para depurar.
+    console.log(`[Restricción Médica] Operario excluido de puesto ${p.puestoName} (${p.id}) por conflicto de aptitud médica.`);
     return false;
   }
 
@@ -880,7 +884,9 @@ export function canWorkerOccupiedSlot(w, p) {
     const normPref = preferedSex.trim().toLowerCase().replace(/a$/, "o");
     const normWSex = wSex.trim().toLowerCase().replace(/a$/, "o");
     if (normWSex !== normPref) {
-      console.log(`[Restricción Sexo] Operario ${w.name} (${wSex}) no coincide con sexo preferente (${preferedSex}) para puesto ${p.puestoName}.`);
+      // Igual que arriba: antes se logueaba nombre + sexo del operario
+      // (AUDIT_REPORT.md B-6). Se retira el nombre.
+      console.log(`[Restricción Sexo] Operario excluido de puesto ${p.puestoName} (sexo preferente: ${preferedSex}).`);
       return false;
     }
   }

@@ -33,6 +33,7 @@ import SlotCard from './SlotCard';
 import { initializeConnectivityGuard } from '../skills/state-connectivity-guard';
 import { triggerNativeHapticFeedback, initializeRearCameraQRScanner } from '../skills/capacitor-android-bridge';
 import { Capacitor } from '@capacitor/core';
+import { useNotification, NotificationToast } from './shared/Notification';
 
 // --- STITCHES STYLED HUD COMPONENTS ---
 
@@ -999,37 +1000,9 @@ const CancelButton = styled('button', {
   }
 });
 
-// Toast / Alerta de Notificación Temporal de Planta
-const AlertBanner = styled('div', {
-  position: 'fixed',
-  top: '20px',
-  left: '20px',
-  right: '20px',
-  zIndex: 3000,
-  padding: '14px 18px',
-  borderRadius: '8px',
-  color: '#FFFFFF',
-  fontSize: '12px',
-  fontWeight: 600,
-  boxShadow: '0 8px 24px rgba(15, 23, 42, 0.15)',
-  display: 'flex',
-  alignItems: 'center',
-  gap: '10px',
-  animation: 'slideDown 0.3s ease-out',
-
-  variants: {
-    type: {
-      error: {
-        backgroundColor: '#EF4444',
-        borderLeft: '4px solid #B91C1C'
-      },
-      success: {
-        backgroundColor: '#22C55E',
-        borderLeft: '4px solid #15803D'
-      }
-    }
-  }
-});
+// El toast de notificación (antes AlertBanner, definido aquí) vive ahora en
+// src/components/shared/Notification.jsx (Fase 4 paso 4.3) — lo usan además
+// PanelCoordinador.jsx y LineaSku.jsx, que no tenían ninguno propio.
 
 // Menú Contextual para celdas ocupadas
 const ContextOverlay = styled('div', {
@@ -1281,7 +1254,7 @@ export default function HudPlanta({ supervisorLineId = "L4" }) {
       });
     } catch (err) {
       triggerNativeHapticFeedback('error');
-      alert(`Error al cerrar el turno: ${err.message}`);
+      setNotification({ type: 'error', message: `Error al cerrar el turno: ${err.message}` });
     }
   };
 
@@ -1326,7 +1299,12 @@ export default function HudPlanta({ supervisorLineId = "L4" }) {
   const [lineOrders, setLineOrders] = useState([]);
   const [selectedNextOrderId, setSelectedNextOrderId] = useState("");
   const [confirmWorker, setConfirmWorker] = useState(null);
-  const [notification, setNotification] = useState(null); // { type: 'success' | 'error', message: string }
+  // notification/setNotification vienen ahora del hook compartido (ver
+  // src/components/shared/Notification.jsx, Fase 4 paso 4.3): mismo nombre
+  // de variables a propósito para no tocar los ~25 setNotification({type,
+  // message}) que ya existían en este archivo. El auto-dismiss a 4s vive
+  // dentro del hook; se retiró el useEffect local que hacía lo mismo.
+  const [notification, , setNotification] = useNotification();
 
   // Estados exclusivos para confirmación de operario en tránsito
   const [transitConfirmWorker, setTransitConfirmWorker] = useState(null);
@@ -1398,14 +1376,6 @@ export default function HudPlanta({ supervisorLineId = "L4" }) {
       setIsOffline(!onlineStatus);
     });
   }, []);
-
-  // Auto-desvanecer notificaciones toast tras 4 segundos
-  useEffect(() => {
-    if (notification) {
-      const timer = setTimeout(() => setNotification(null), 4000);
-      return () => clearTimeout(timer);
-    }
-  }, [notification]);
 
   // Refs para evitar reinicializaciones de cámara al cambiar estados
   const handleScanWorkerSuccessRef = useRef(null);
@@ -1774,21 +1744,16 @@ export default function HudPlanta({ supervisorLineId = "L4" }) {
       if (!workerA) continue;
 
       // Evaluar si L8 tiene algún operario compatible disponible
+      // Antes cada rama de este filtro logueaba nombre + id del operario a
+      // la consola del navegador ("[QA Debug HUD]..."), visible para
+      // cualquiera con las herramientas de desarrollo abiertas en una
+      // terminal compartida de planta (AUDIT_REPORT.md B-6). Se retiraron;
+      // el resultado del filtro (compatible o no) ya se refleja en la UI.
       const hasCompatibleL8Worker = l8Available.some(w => {
         const blacklist = slotA.rejectedWorkerIds || [];
-        if (blacklist.includes(w.id)) {
-          console.log(`[QA Debug HUD] ${w.name} (${w.id}) excluido de ${slotA.puestoName} por estar en la blacklist.`);
-          return false;
-        }
-        if (!canWorkerOccupiedSlot(w, slotA)) {
-          console.log(`[QA Debug HUD] ${w.name} (${w.id}) excluido de ${slotA.puestoName} por canWorkerOccupiedSlot.`);
-          return false;
-        }
-        if (w.lastActivity && w.lastActivity === slotA.puestoName) {
-          console.log(`[QA Debug HUD] ${w.name} (${w.id}) excluido de ${slotA.puestoName} por lastActivity matching (fatiga ergonómica 24h).`);
-          return false;
-        }
-        console.log(`[QA Debug HUD] CANDIDATO COMPATIBLE L8 DETECTADO: ${w.name} (${w.id}) para puesto ${slotA.puestoName}.`);
+        if (blacklist.includes(w.id)) return false;
+        if (!canWorkerOccupiedSlot(w, slotA)) return false;
+        if (w.lastActivity && w.lastActivity === slotA.puestoName) return false;
         return true;
       });
 
@@ -1891,7 +1856,7 @@ export default function HudPlanta({ supervisorLineId = "L4" }) {
       return;
     }
 
-    console.log(`[QR Scan] Procesando escaneo de: ${worker.name} (${worker.id})`);
+    console.log(`[QR Scan] Procesando escaneo de operario id ${worker.id}`); // sin nombre en consola (AUDIT_REPORT.md B-6)
     isProcessingScanRef.current = true; // Pausar escáner para procesar y dar feedback
     
     // Interceptar escaneo de personal administrativo/liderazgo sin puesto seleccionado
@@ -2515,22 +2480,7 @@ export default function HudPlanta({ supervisorLineId = "L4" }) {
         }
       `}</style>
 
-      {notification && (
-        <AlertBanner type={notification.type} id="plant-toast-alert">
-          {notification.type === 'error' ? (
-            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-              <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/>
-              <line x1="12" y1="9" x2="12" y2="13"/>
-              <line x1="12" y1="17" x2="12.01" y2="17"/>
-            </svg>
-          ) : (
-            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-              <polyline points="20 6 9 17 4 12"/>
-            </svg>
-          )}
-          <span>{notification.message}</span>
-        </AlertBanner>
-      )}
+      <NotificationToast notification={notification} id="plant-toast-alert" />
 
       {/* PLANIFICACIÓN T+1 (solo lectura): plan de mañana ya sellado por el Coordinador para este supervisor */}
       {planificacionManana && (
@@ -2573,10 +2523,10 @@ export default function HudPlanta({ supervisorLineId = "L4" }) {
 
                 await startLineOfficially(supervisorLineId, skuToUse);
                 triggerNativeHapticFeedback('confirm');
-                alert(`¡Línea ${supervisorLineId} Iniciada! La jornada laboral ha comenzado oficialmente en el piso.`);
+                setNotification({ type: 'success', message: `¡Línea ${supervisorLineId} Iniciada! La jornada laboral ha comenzado oficialmente en el piso.` });
               } catch (err) {
                 triggerNativeHapticFeedback('error');
-                alert(`Error al iniciar la línea: ${err.message}`);
+                setNotification({ type: 'error', message: `Error al iniciar la línea: ${err.message}` });
               }
             }}
           >
@@ -2925,7 +2875,7 @@ export default function HudPlanta({ supervisorLineId = "L4" }) {
                     setSelectedNextOrderId("");
                   } catch (err) {
                     triggerNativeHapticFeedback('error');
-                    alert(`Error en transición: ${err.message}`);
+                    setNotification({ type: 'error', message: `Error en transición: ${err.message}` });
                   }
                 }}
                 style={{
@@ -3016,7 +2966,7 @@ export default function HudPlanta({ supervisorLineId = "L4" }) {
                       });
                     } catch (err) {
                       triggerNativeHapticFeedback('error');
-                      alert(`Error al finalizar orden: ${err.message}`);
+                      setNotification({ type: 'error', message: `Error al finalizar orden: ${err.message}` });
                     }
                   }
                 }}
