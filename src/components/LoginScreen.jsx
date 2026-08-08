@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { styled } from '../styles/theme';
 import { triggerNativeHapticFeedback } from '../skills/capacitor-android-bridge';
-import { loginWithRoleAndLine } from '../services/authService';
+import { loginWithRoleAndLine, logoutUser } from '../services/authService';
 
 const API_URL = 'http://localhost:3001/api';
 
@@ -161,8 +161,7 @@ const LoginButton = styled('button', {
 // --- COMPONENT IMPLEMENTATION ---
 
 export default function LoginScreen({ onLoginSuccess }) {
-  const [selectedRole, setSelectedRole] = useState("SUPERVISOR"); 
-  const [selectedLine, setSelectedLine] = useState("L1");
+  const [selectedRole, setSelectedRole] = useState("SUPERVISOR");
   const [supervisorName, setSupervisorName] = useState("");
   const [supervisorPassword, setSupervisorPassword] = useState("");
   const [coordinatorPin, setCoordinatorPin] = useState("");
@@ -191,8 +190,6 @@ export default function LoginScreen({ onLoginSuccess }) {
     }
     fetchSupervisors();
   }, []);
-
-  const activeLines = ["L4", "L1", "L2", "L6", "L7", "L5", "L3", "L8", "L9", "L10"];
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -225,8 +222,6 @@ export default function LoginScreen({ onLoginSuccess }) {
       loginIdentity = { supervisorId: Number(selectedSupervisorId) };
     }
 
-    const finalLine = selectedRole === "COORDINADOR" ? "COORDINADOR" : selectedLine;
-
     // Login real al API con JWT. Antes: (supervisorPassword || '123456') —
     // dejar el campo vacío enviaba una contraseña fija embebida en el bundle
     // de producción, legible por cualquiera con las herramientas de
@@ -242,10 +237,25 @@ export default function LoginScreen({ onLoginSuccess }) {
     try {
       setIsSubmitting(true);
 
-      await loginWithRoleAndLine({
+      const loggedInUser = await loginWithRoleAndLine({
         ...loginIdentity,
         password: loginPassword
       });
+
+      // La línea del Supervisor viene del servidor (Supervisores.LineaAsignadaActual,
+      // resuelta al login y embebida en el JWT) — ya no de un desplegable
+      // manual donde el operador podía elegir cualquiera de las 10 líneas
+      // sin relación con su asignación real (AUDIT_REPORT.md M-8). "Sin
+      // Asignar" es el centinela real que usa la tabla Supervisores (6 de
+      // 8 cuentas sembradas lo tienen hoy) — se trata igual que "sin línea".
+      const finalLine = selectedRole === "COORDINADOR" ? "COORDINADOR" : loggedInUser.lineId;
+      const sinLinea = !finalLine || finalLine === "Sin Asignar";
+      if (selectedRole !== "COORDINADOR" && sinLinea) {
+        await logoutUser();
+        triggerNativeHapticFeedback('error');
+        setErrorText("Tu cuenta no tiene una línea de producción asignada. Contacta al Coordinador.");
+        return;
+      }
 
       triggerNativeHapticFeedback('confirm');
       console.log(`[Login] Acceso local concedido: ${finalName} (${selectedRole}) -> ${finalLine}`);
@@ -363,25 +373,11 @@ export default function LoginScreen({ onLoginSuccess }) {
             </>
           )}
 
-          {selectedRole !== "COORDINADOR" && (
-            <FormField>
-              <FormLabel htmlFor="supervisor-line-select">Línea de Producción a Cargo</FormLabel>
-              <SelectDropdown 
-                id="supervisor-line-select"
-                value={selectedLine} 
-                onChange={(e) => {
-                  setSelectedLine(e.target.value);
-                  setErrorText("");
-                }}
-              >
-                {activeLines.map(lineId => (
-                  <option key={lineId} value={lineId}>
-                    Línea Operativa {lineId} {lineId === "L8" ? "(Bolsón Central)" : ""}
-                  </option>
-                ))}
-              </SelectDropdown>
-            </FormField>
-          )}
+          {/* El desplegable manual de "Línea de Producción a Cargo" se retiró:
+              dejaba que el supervisor eligiera cualquiera de las 10 líneas
+              sin relación con su asignación real en la base de datos. La
+              línea ahora la resuelve el servidor al login (ver más arriba,
+              loggedInUser.lineId) — ver AUDIT_REPORT.md M-8. */}
 
           {errorText && (
             <div style={{ color: '#EF4444', fontSize: '11px', fontWeight: 600, textAlign: 'center', marginTop: '4px' }}>

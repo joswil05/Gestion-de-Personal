@@ -181,7 +181,13 @@ app.post('/api/auth/login', loginLimiter, async (req, res) => {
 
         res.json({
             token,
-            user: { id: user.Id, role: user.Rol.toUpperCase(), username: user.Username },
+            // lineId ya se calculaba (línea 158-168) y se embebía en el JWT,
+            // pero no se devolvía aquí: authService.js (cliente) esperaba
+            // data.user.lineId y siempre leía undefined. El desplegable
+            // manual de línea en LoginScreen.jsx compensaba con una elección
+            // arbitraria del operador, sin relación con su asignación real
+            // (AUDIT_REPORT.md M-8, paso 3.5).
+            user: { id: user.Id, role: user.Rol.toUpperCase(), username: user.Username, lineId },
             forcePasswordChange: user.MustChangePassword === 1
         });
     } catch (err) {
