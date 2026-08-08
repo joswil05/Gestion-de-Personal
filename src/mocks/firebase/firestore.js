@@ -48,29 +48,34 @@ export const where = (field, op, val) => ({ type: 'where', field, op, val });
 
 export const onSnapshot = (ref, callback, errorCallback) => {
     let isCancelled = false;
-    let eventName = null;
+
+    // Resolver el path y el evento de forma SÍNCRONA. Antes esto se hacía dentro de
+    // fetchData (asíncrona) y la suscripción se intentaba en un setTimeout(0), que
+    // siempre corre antes de que vuelva la red: socket.on no llegaba a ejecutarse
+    // nunca y no había tiempo real (ver AUDIT_REPORT C-7).
+    let pathName = ref;
+    if (ref.type === 'collection') pathName = ref.path;
+    if (ref.type === 'query') pathName = ref.col.path || ref.col;
+    if (ref.type === 'doc') pathName = ref.path; // For doc, path is usually the collection name
+
+    const eventName =
+        pathName === 'puestos'      ? 'puestos_updated'      :
+        pathName === 'trabajadores' ? 'trabajadores_updated' :
+        pathName === 'config'       ? 'config_updated'       : null;
 
     const fetchData = async () => {
         if (isCancelled) return;
         try {
-            // Determine what we are querying
-            let pathName = ref;
-            if (ref.type === 'collection') pathName = ref.path;
-            if (ref.type === 'query') pathName = ref.col.path || ref.col;
-            if (ref.type === 'doc') pathName = ref.path; // For doc, path is usually the collection name
-
             if (pathName === 'puestos') {
                 const res = await authFetch('/puestos');
                 if (!res.ok) throw new Error(`GET /puestos → HTTP ${res.status}`);
                 const data = await res.json();
                 if (!Array.isArray(data)) throw new Error('GET /puestos devolvió un payload no iterable');
                 callback(createQuerySnapshot(data));
-                eventName = 'puestos_updated';
             }
             else if (pathName === 'config' && ref.type === 'doc') {
                 const { exists, data } = await fetchConfigDoc(ref.id);
                 callback(createDocSnapshot(ref.id, exists ? data : {}));
-                eventName = 'config_updated';
             }
             else if (pathName === 'trabajadores') {
                 const res = await authFetch('/operarios/pool');
@@ -80,7 +85,6 @@ export const onSnapshot = (ref, callback, errorCallback) => {
                 } else {
                     callback(createQuerySnapshot([]));
                 }
-                eventName = 'trabajadores_updated';
             }
             else {
                 // Return empty snapshot for other unhandled collections for now
@@ -92,29 +96,19 @@ export const onSnapshot = (ref, callback, errorCallback) => {
             }
         } catch (err) {
             if (errorCallback) errorCallback(err);
+            else console.error('[firestore-shim] onSnapshot:', err.message);
         }
     };
 
     // Initial fetch
     fetchData();
 
-    // Setup socket listener
-    const handleUpdate = () => {
-        fetchData();
-    };
-
-    // Wait a tick to ensure eventName is set
-    setTimeout(() => {
-        if (eventName) {
-            socket.on(eventName, handleUpdate);
-        }
-    }, 0);
+    const handleUpdate = () => fetchData();
+    if (eventName) socket.on(eventName, handleUpdate);
 
     return () => {
         isCancelled = true;
-        if (eventName) {
-            socket.off(eventName, handleUpdate);
-        }
+        if (eventName) socket.off(eventName, handleUpdate);
     };
 };
 
