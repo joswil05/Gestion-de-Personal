@@ -79,17 +79,19 @@ export const configColl = collection(db, "config");
 // --- CLOCK SYNCHRONIZATION ENGINE ---
 let serverTimeOffset = 0;
 
+// NOTA (migración SQL Server, AUDIT_REPORT.md Fase 3 paso 3.4): antes hacía
+// setDoc/getDoc contra config/time_sync en el shim muerto de Firestore -ya
+// no lanzaba porque Paso 1.1 solo neutralizó setDoc/updateDoc/etc a nivel de
+// export, y esta función seguía intacta; simplemente nunca sincronizaba
+// nada real y el desfase quedaba siempre en 0-. Ahora usa el serverTime que
+// GET /api/health ya expone (paso 3.1), sin necesitar escritura alguna.
 export async function syncServerTimeOffset() {
-  const syncRef = doc(db, "config", "time_sync");
   const clientBefore = Date.now();
   try {
-    await setDoc(syncRef, {
-      timestamp: serverTimestamp()
-    });
-    const snap = await getDoc(syncRef);
+    const payload = await apiFetch("/health");
     const clientAfter = Date.now();
-    if (snap.exists() && snap.data().timestamp) {
-      const serverTime = snap.data().timestamp.toDate().getTime();
+    if (payload?.serverTime) {
+      const serverTime = new Date(payload.serverTime).getTime();
       const avgClientTime = (clientBefore + clientAfter) / 2;
       serverTimeOffset = serverTime - avgClientTime;
       console.log(`[Clock Sync] Servidor desfasado por ${serverTimeOffset}ms frente a cliente.`);
