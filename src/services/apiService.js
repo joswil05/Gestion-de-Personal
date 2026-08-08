@@ -1,5 +1,5 @@
 /**
- * Service: Core de Conexión, Persistencia y Transacciones Firebase (firebaseService.js)
+ * Service: Core de Conexión, Persistencia y Transacciones Firebase (apiService.js)
  * Responsabilidad: Gobernar la persistencia y reactividad de las Fases A y B del MVP.
  * Estilo de código: Producción limpio, modular, sin placeholders y totalmente tipado en lógica.
  * Versión de SDK: Firebase v10+ (Modular JS API)
@@ -7,7 +7,8 @@
 
 import { initializeApp, getApp, getApps } from "firebase/app";
 import { isAppOnline } from "../skills/state-connectivity-guard.js";
-import { 
+import { getToken } from "./authService";
+import {
   getFirestore,
   initializeFirestore, 
   persistentLocalCache, 
@@ -102,6 +103,42 @@ export function getServerTimeOffset() {
   return serverTimeOffset;
 }
 
+// Puestos fijos/críticos (anclados por asistencia vía Motor 1) vs. puestos
+// varios/rotativos (llenados manualmente por el supervisor vía QR).
+// Centralizado aquí porque el literal se repetía 10 veces en este archivo.
+const CRITICAL_TIPOS_PUESTO = ["Operador A", "Averiero", "Operador C"];
+
+// --- PUENTE REST HACIA EL BACKEND SQL SERVER (server/server.js) ---
+// Las funciones del flujo diario de Supervisor (asignar, liberar, baja
+// temporal, relevo ergonómico, despacho entre líneas, Motor 1, paros,
+// mermas, cierre de turno, intercambio local) ya no corren contra el mock de
+// Firestore: hablan directamente con la API REST + SQL Server real.
+// El resto de funciones de este archivo (planificación T+1, sugerencias de
+// rotación) siguen sobre el mock hasta que se migren en una fase posterior.
+const REST_API_URL = "http://localhost:3001/api";
+
+async function apiFetch(path, options = {}) {
+  const token = getToken();
+  const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+
+  const response = await fetch(`${REST_API_URL}${path}`, { ...options, headers });
+
+  let payload = null;
+  try {
+    payload = await response.json();
+  } catch (e) {
+    // Respuesta sin cuerpo JSON (poco común, pero no debe tumbar el flujo)
+  }
+
+  if (!response.ok) {
+    const message = (payload && payload.error) || `Error de red (HTTP ${response.status})`;
+    throw new Error(message);
+  }
+
+  return payload;
+}
+
 /**
  * MOTOR 1: INYECCIÓN DE TURNO Y PRE-LLENADO DE PUESTOS FIJOS (Fase A)
  * Se ejecuta al iniciar la jornada. Vincula automáticamente el personal crítico y
@@ -110,252 +147,37 @@ export function getServerTimeOffset() {
  * @param {object} skuData Objeto que contiene las líneas planificadas con su SKU asignado. Ej: { "L1": "SKU-990", "L4": "SKU-112" }
  */
 export async function initializeTurnoWithSheets(skuData) {
-  console.log("[Motor 1] Iniciando inyección del turno a partir de Google Sheets...");
-  
-  try {
-    // a. Obtener la jerarquía y prioridad global de líneas
-    const globalPriorityDoc = await getDoc(doc(db, "config", "global_priority"));
-    if (!globalPriorityDoc.exists()) {
-      throw new Error("El documento de configuración 'config/global_priority' no existe.");
-    }
-    const { priorityOrder } = globalPriorityDoc.data(); // Ej: ["L4", "L1", "L2", "L6", "L7", "L5", "L3", "L8", "L9", "L10"]
+  console.log("[Motor 1] Iniciando inyección del turno...");
 
-    // b. Obtener todos los trabajadores disponibles (POOL_ARRANQUE, INACTIVO, DISPONIBLE_BOLSON)
-    const snapshotTrabajadores = await getDocs(trabajadoresColl);
-    const trabajadoresPresentes = {}; // Map para búsquedas O(1)
-    snapshotTrabajadores.forEach(docSnap => {
-      const data = docSnap.data();
-      if (data.status === "POOL_ARRANQUE" || data.status === "INACTIVO" || data.status === "DISPONIBLE_BOLSON") {
-        trabajadoresPresentes[docSnap.id] = { id: docSnap.id, ...data };
-      }
-    });
+  // NOTA (migración SQL Server, Fase 2): reemplaza el flujo Firestore
+  // (lectura de config/global_priority + writeBatch masivo sobre
+  // trabajadores/puestos) por una única transacción SQL real en
+  // POST /coordinador/inyectar-turno (server/server.js). Esa transacción
+  // suspende las líneas sin SKU hoy y auto-asigna puestos fijos/críticos
+  // (Operador A/Averiero/Operador C) a operarios en POOL_ARRANQUE.
+  //
+  // Simplificación deliberada respecto a la versión anterior: no se porta el
+  // "Rastro Dual" persistente (titular fijo de una máquina específica +
+  // sustituto Operador B cuando falta) porque requiere una columna de
+  // "titular permanente por puesto" que todavía no existe en el esquema SQL
+  // (ver plan de Fase 2). El emparejamiento server-side usa
+  // Operarios.PuestoBase cuando coincide con el tipo de puesto, y si no,
+  // cualquier operario disponible que pase las reglas de salud/género/24h.
+  // Activación de puestos SKU-dependientes y auto-asignación de supervisor
+  // por plan del coordinador (pasos g.1/g.2 de la versión anterior) también
+  // quedan fuera de esta ronda.
+  const payload = await apiFetch("/coordinador/inyectar-turno", {
+    method: "POST",
+    body: JSON.stringify({ skuData })
+  });
 
-    console.log(`[Motor 1] Asistencia verificada: ${Object.keys(trabajadoresPresentes).length} operarios en POOL_ARRANQUE.`);
-
-    // c. Preparar lote atómico (Batch) para mutación masiva de puestos
-    const batch = writeBatch(db);
-
-    // Obtener catálogo de puestos
-    const snapshotPuestos = await getDocs(puestosColl);
-    const puestosPorLinea = {};
-    snapshotPuestos.forEach(docSnap => {
-      const puesto = { id: docSnap.id, ...docSnap.data() };
-      if (!puestosPorLinea[puesto.lineId]) {
-        puestosPorLinea[puesto.lineId] = [];
-      }
-      puestosPorLinea[puesto.lineId].push(puesto);
-    });
-
-    // Guardar trabajadores asignados en este paso para evitar duplicaciones
-    const asignadosEnLote = new Set();
-
-    // d. Procesar cada línea en base al SKU y prioridad
-    for (const lineaId of priorityOrder) {
-      const skuPlanificado = skuData[lineaId];
-      const puestosDeLinea = puestosPorLinea[lineaId] || [];
-
-      // Si la línea carece de SKU planificado, entra en suspensión lógica
-      if (!skuPlanificado) {
-        console.log(`[Motor 1] Línea ${lineaId} inactiva hoy (Sin SKU). Suspendiendo vacantes no fijas...`);
-        puestosDeLinea.forEach(puesto => {
-          const esPuestoFijoCritico = ["Operador A", "Averiero", "Operador C"].includes(puesto.tipoPuesto);
-          
-          if (!esPuestoFijoCritico) {
-            // Solo suspendemos los puestos varios/rotativos
-            batch.update(doc(db, "puestos", puesto.id), {
-              status: "SUSPENDIDO",
-              idWorkerCurrent: null,
-              updatedAt: serverTimestamp()
-            });
-
-            // Si había un titular registrado activo en este puesto varios, lo regresamos al Bolsón L8
-            if (puesto.idWorkerCurrent) {
-              const workerPresent = trabajadoresPresentes[puesto.idWorkerCurrent];
-              batch.update(doc(db, "trabajadores", puesto.idWorkerCurrent), {
-                status: workerPresent ? "DISPONIBLE_BOLSON" : "INACTIVO",
-                currentSlotId: null,
-                lineaDestinoId: null,
-                physicalLineLocation: workerPresent ? "L8" : null,
-                updatedAt: serverTimestamp()
-              });
-            }
-          } else {
-            // Los puestos fijos críticos permanecen en estado normal (VACANTE o ASIGNADO) para permitir limpieza/mantenimiento manual
-            batch.update(doc(db, "puestos", puesto.id), {
-              status: puesto.idWorkerCurrent ? "ASIGNADO" : "VACANTE",
-              updatedAt: serverTimestamp()
-            });
-          }
-        });
-
-        // El personal titular ausente o inactivo que de casualidad marque asistencia en línea inactiva 
-        // será absorbido por la Línea 8 (Bolsón) de forma manual o en pool general.
-        continue;
-      }
-
-      console.log(`[Motor 1] Procesando línea activa: ${lineaId} con SKU: ${skuPlanificado}`);
-
-      // e. Para líneas activas, procesar puestos mecánicos esenciales
-      for (const puesto of puestosDeLinea) {
-        const esPuestoFijoCritico = ["Operador A", "Averiero", "Operador C"].includes(puesto.tipoPuesto);
-        
-        if (!esPuestoFijoCritico) {
-          // Los puestos varios/rotativos se inician vacíos en el MVP
-          batch.update(doc(db, "puestos", puesto.id), {
-            status: "VACANTE",
-            idWorkerCurrent: null,
-            updatedAt: serverTimestamp()
-          });
-          // Limpiar el estado y currentSlotId del operario que estaba asignado a este puesto varios
-          if (puesto.idWorkerCurrent) {
-            const workerPresent = trabajadoresPresentes[puesto.idWorkerCurrent];
-            batch.update(doc(db, "trabajadores", puesto.idWorkerCurrent), {
-              status: workerPresent ? "POOL_ARRANQUE" : "INACTIVO",
-              currentSlotId: null,
-              lineaDestinoId: null,
-              physicalLineLocation: workerPresent ? lineaId : null,
-              updatedAt: serverTimestamp()
-            });
-          }
-          continue;
-        }
-
-        const titularId = puesto.idWorkerOriginal;
-        const titularPresente = titularId && trabajadoresPresentes[titularId] && !asignadosEnLote.has(titularId);
-
-        if (titularPresente) {
-          // El titular está presente en POOL_ARRANQUE. Anclaje directo automático.
-          batch.update(doc(db, "puestos", puesto.id), {
-            status: "ASIGNADO",
-            idWorkerCurrent: titularId,
-            idWorkerOriginal: titularId,
-            asignadoEnSegundoVirtual: serverTimestamp(),
-            updatedAt: serverTimestamp()
-          });
-
-          batch.update(doc(db, "trabajadores", titularId), {
-            status: "ASIGNADO",
-            currentSlotId: puesto.id,
-            lineaDestinoId: null,
-            physicalLineLocation: lineaId,
-            updatedAt: serverTimestamp()
-          });
-
-          asignadosEnLote.add(titularId);
-          console.log(`[Motor 1] Anclaje Fijo: Titular ${titularId} asignado a puesto ${puesto.id} en ${lineaId}.`);
-        } else {
-          // LÓGICA DE RASTRO DUAL OBLIGATORIA: Titular ausente. Buscar reemplazo calificado.
-          console.warn(`[Motor 1] Ausencia detectada: Titular ${titularId} ausente para puesto crítico ${puesto.id}. Buscando reemplazo...`);
-
-          // LÓGICA INTELIGENTE DE REEMPLAZO TÉCNICO:
-          // 1. Buscamos primero un operario libre del mismo rol técnico (ej. Operador A para Operador A, Averiero para Averiero)
-          //    que esté presente pero su propia línea esté inactiva hoy (por lo que está libre en POOL_ARRANQUE).
-          let reemplazoId = Object.keys(trabajadoresPresentes).find(id => {
-            const t = trabajadoresPresentes[id];
-            return t.role === puesto.tipoPuesto && !asignadosEnLote.has(id);
-          });
-
-          // 2. Si no hay del mismo rol técnico, buscamos un 'Operador B' calificado (reemplazo versátil)
-          if (!reemplazoId) {
-            reemplazoId = Object.keys(trabajadoresPresentes).find(id => {
-              const t = trabajadoresPresentes[id];
-              return t.role === "Operador B" && !asignadosEnLote.has(id);
-            });
-          }
-
-          if (reemplazoId) {
-            // Asignación dual: Registramos el reemplazo manteniendo el rastro del titular ausente
-            batch.update(doc(db, "puestos", puesto.id), {
-              status: "ASIGNADO",
-              idWorkerCurrent: reemplazoId,     // Operador B en caliente
-              idWorkerOriginal: titularId,      // Rastro dual del titular ausente
-              asignadoEnSegundoVirtual: serverTimestamp(),
-              updatedAt: serverTimestamp(),
-              microCopiaContextual: "Reemplazo automático - Titular ausente"
-            });
-
-            batch.update(doc(db, "trabajadores", reemplazoId), {
-              status: "ASIGNADO",
-              currentSlotId: puesto.id,
-              lineaDestinoId: null,
-              physicalLineLocation: lineaId,
-              updatedAt: serverTimestamp()
-            });
-
-            asignadosEnLote.add(reemplazoId);
-            console.log(`[Motor 1] Rastro Dual Completo: Operador B ${reemplazoId} cubre temporalmente a ${titularId} en puesto ${puesto.id}.`);
-          } else {
-            // Si no hay Operadores B, el puesto crítico queda con bandera de alerta para el Coordinador
-            batch.update(doc(db, "puestos", puesto.id), {
-              status: "ALERTA_VACANTE",
-              idWorkerCurrent: null,
-              idWorkerOriginal: titularId,
-              updatedAt: serverTimestamp(),
-              microCopiaContextual: "Crítico vacante sin relevo disponible"
-            });
-            console.error(`[Motor 1] ALERTA: No se encontró ningún Operador B disponible para suplir a ${titularId} en puesto ${puesto.id}.`);
-          }
-        }
-      }
-
-      // Marcar los fijos como asignados y el SKU de la línea activa en Firestore para que el supervisor no los limpie
-      batch.set(doc(db, "config", `line_${lineaId}`), {
-        status: "PREPARACION",
-        fijosAssigned: true,
-        sku: skuPlanificado,
-        updatedAt: serverTimestamp()
-      }, { merge: true });
-    }
-
-    // e.5. Transferir los trabajadores que registraron asistencia (POOL_ARRANQUE) y que no fueron asignados a ningún puesto, al Bolsón L8
-    Object.keys(trabajadoresPresentes).forEach(wId => {
-      if (!asignadosEnLote.has(wId)) {
-        batch.update(doc(db, "trabajadores", wId), {
-          status: "DISPONIBLE_BOLSON",
-          physicalLineLocation: "L8",
-          currentSlotId: null,
-          lineaDestinoId: null,
-          updatedAt: serverTimestamp()
-        });
-      }
-    });
-
-    // f. Consolidar lote de escrituras en la base de datos
-    await batch.commit();
-    console.log("[Motor 1] Inyección de turno y pre-llenado de puestos completado con éxito.");
-
-    // g. Post-procesamiento: Activar puestos SKU-dependientes y asignar supervisores del plan del coordinador
-    const supervisorAssignDoc = await getDoc(doc(db, "config", "supervisors_assignment"));
-    const supervisorAssignments = supervisorAssignDoc.exists() ? supervisorAssignDoc.data() : {};
-
-    for (const lineaId of Object.keys(skuData)) {
-      const skuPlanificado = skuData[lineaId];
-      if (!skuPlanificado) continue;
-
-      // g.1 Activar puestos SKU-dependientes
-      try {
-        await activateSkuDependentSlots(lineaId, skuPlanificado);
-      } catch (skuErr) {
-        console.warn(`[Motor 1] Error activando puestos SKU-dependientes para ${lineaId}:`, skuErr.message);
-      }
-
-      // g.2 Asignar supervisor del plan del coordinador (si existe)
-      const supAssign = supervisorAssignments[lineaId];
-      if (supAssign?.workerId) {
-        try {
-          await assignSupervisorToLine(lineaId, supAssign.workerId, supAssign.name, supAssign.shortName || supAssign.name);
-          console.log(`[Motor 1] Supervisor ${supAssign.shortName || supAssign.name} asignado a ${lineaId} según plan del coordinador.`);
-        } catch (supErr) {
-          console.warn(`[Motor 1] Error asignando supervisor a ${lineaId}:`, supErr.message);
-        }
-      }
-    }
-
-    return { success: true, totalAsignados: asignadosEnLote.size };
-  } catch (error) {
-    console.error("[Motor 1] Error crítico inicializando turno:", error);
-    throw error;
-  }
+  console.log(`[Motor 1] Inyección completada: ${payload?.totalAsignados ?? 0} puestos fijos asignados.`);
+  return {
+    success: !!(payload && payload.success),
+    totalAsignados: payload?.totalAsignados ?? 0,
+    lineasActivas: payload?.lineasActivas ?? [],
+    lineasInactivas: payload?.lineasInactivas ?? []
+  };
 }
 
 /**
@@ -394,7 +216,7 @@ export async function initializeSingleLineTransaction(lineId, sku) {
 
     // 3. Procesar puestos
     for (const puesto of puestosDeLinea) {
-      const esPuestoFijoCritico = ["Operador A", "Averiero", "Operador C"].includes(puesto.tipoPuesto);
+      const esPuestoFijoCritico = CRITICAL_TIPOS_PUESTO.includes(puesto.tipoPuesto);
       
       if (!esPuestoFijoCritico) {
         // Los puestos varios se inician como VACANTE
@@ -626,7 +448,7 @@ export async function autoAssignFixedOperators(lineId, sku) {
 
     // 3. Procesar puestos
     for (const puesto of puestosDeLinea) {
-      const esPuestoFijoCritico = ["Operador A", "Averiero", "Operador C"].includes(puesto.tipoPuesto);
+      const esPuestoFijoCritico = CRITICAL_TIPOS_PUESTO.includes(puesto.tipoPuesto);
       
       if (!esPuestoFijoCritico) {
         continue; // Los puestos varios se quedan vacantes en preparación
@@ -738,329 +560,29 @@ export async function assignWorkerTransaction(workerId, puestoId, supervisorLine
     throw new Error("Faltan parámetros obligatorios en la petición de asignación.");
   }
 
-  const workerRef = doc(db, "trabajadores", workerId);
-  const puestoRef = doc(db, "puestos", puestoId);
-  const shiftStatusRef = doc(db, "config", "shift_status");
+  // NOTA (migración SQL Server): reemplaza el flujo Firestore (offline-bypass +
+  // runTransaction) por una llamada real a /api/puestos/asignar, que ya corre
+  // en una transacción SQL con UPDLOCK/SERIALIZABLE y valida salud ocupacional
+  // server-side (ver server/server.js y canWorkerOccupiedSlot.js). La
+  // intercepción "Motor 2" (allowInterception, redirección automática a otra
+  // línea de mayor prioridad) queda pendiente de migrar: por ahora este
+  // parámetro se conserva en la firma mas no tiene efecto.
+  console.log(`[Asignación] Asignando worker: ${workerId} -> puesto: ${puestoId} (línea ${supervisorLineId})`);
 
-  console.log(`[Asignación] Iniciando proceso (Online: ${isAppOnline()}) para worker: ${workerId} -> puesto: ${puestoId}`);
+  const payload = await apiFetch("/puestos/asignar", {
+    method: "POST",
+    body: JSON.stringify({
+      assignments: [{ slotId: Number(puestoId), workerId: Number(workerId) }]
+    })
+  });
 
-  // ==========================================
-  // FLUJO OFFLINE (Bypass de Transacciones)
-  // ==========================================
-  if (!isAppOnline()) {
-    try {
-      const [workerDoc, puestoDoc, shiftDoc] = await Promise.all([
-        getDoc(workerRef),
-        getDoc(puestoRef),
-        getDoc(shiftStatusRef)
-      ]);
-
-      if (!workerDoc.exists()) throw new Error("El perfil del trabajador no existe en la caché local.");
-      if (!puestoDoc.exists()) throw new Error("El puesto de destino no existe en la caché local.");
-
-      const workerData = workerDoc.data();
-      const puestoData = puestoDoc.data();
-
-      // Determinar fase de arranque aislada (primeros 10 minutos)
-      let isMarchaPhase = false;
-      if (shiftDoc.exists()) {
-        const shiftData = shiftDoc.data();
-        if (shiftData.status === "ARRANQUE" && shiftData.shiftStartTimestamp) {
-          const shiftStartTime = shiftData.shiftStartTimestamp.toDate ? shiftData.shiftStartTimestamp.toDate().getTime() : new Date(shiftData.shiftStartTimestamp).getTime();
-          const elapsed = (Date.now() - shiftStartTime) / 60000;
-          if (elapsed > 10) isMarchaPhase = true;
-        }
-      }
-
-      // Check if already assigned
-      if (workerData.status === "ASIGNADO" && workerData.currentSlotId === puestoId && puestoData.idWorkerCurrent === workerId) {
-        return { success: true, alreadyAssigned: true, message: "El operario ya se encuentra asignado a este puesto." };
-      }
-
-      // Reglas de estado de operario (permitir INACTIVO en ambas fases para asistencia automática)
-      const allowedStatuses = ["POOL_ARRANQUE", "DISPONIBLE_BOLSON", "INACTIVO", "ASIGNADO"];
-      if (!allowedStatuses.includes(workerData.status)) {
-        throw new Error(`Asignación denegada offline: Estado incompatible (${workerData.status}).`);
-      }
-
-      // Validar exclusión mutua local
-      if (puestoData.idWorkerCurrent && puestoData.idWorkerCurrent !== workerId) {
-        throw new Error(`Asignación denegada offline: El puesto ya está ocupado.`);
-      }
-
-      // Regla de Supervisor Dedicado
-      if (puestoData.lineId !== supervisorLineId) {
-        throw new Error(`Acceso denegado offline: No puedes asignar personal a otra línea.`);
-      }
-
-      // Aislamiento en Arranque: Bloquear desvíos cruzados si tiene otra ubicación física asignada
-      if (!isMarchaPhase && workerData.physicalLineLocation && workerData.physicalLineLocation !== supervisorLineId) {
-        throw new Error(`Aislamiento de Arranque: El operario está asignado físicamente a la línea ${workerData.physicalLineLocation}.`);
-      }
-
-      // Filtro de Restricciones Médicas y Género
-      if (!canWorkerOccupiedSlot(workerData, puestoData)) {
-        throw new Error("Asignación denegada: El operario no cumple con las restricciones del puesto.");
-      }
-
-      // Filtro de Historial (Regla de No Repetición Ergonómica de 24h)
-      if (workerData.lastActivity && puestoData.activityName && workerData.lastActivity === puestoData.activityName) {
-        throw new Error(`Fatiga Ergonómica: El operario realizó la actividad "${puestoData.activityName}" al cierre de ayer.`);
-      }
-
-      const batch = writeBatch(db);
-
-      // Si estaba asignado en otro puesto de la línea, vaciar el anterior
-      if (workerData.status === "ASIGNADO" && workerData.currentSlotId && workerData.currentSlotId !== puestoId) {
-        const oldPuestoRef = doc(db, "puestos", workerData.currentSlotId);
-        const oldPuestoDoc = await getDoc(oldPuestoRef);
-        if (oldPuestoDoc.exists()) {
-          const oldPuestoData = oldPuestoDoc.data();
-          const esFijoCritico = ["Operador A", "Averiero", "Operador C"].includes(oldPuestoData.tipoPuesto);
-          batch.update(oldPuestoRef, {
-            status: esFijoCritico ? "ALERTA_VACANTE" : "VACANTE",
-            idWorkerCurrent: null,
-            updatedAt: serverTimestamp(),
-            microCopiaContextual: `Reasignado a ${puestoData.puestoName} (${puestoData.lineId})`
-          });
-        }
-      }
-
-      batch.update(puestoRef, {
-        status: "ASIGNADO",
-        idWorkerCurrent: workerId,
-        asignadoEnSegundoVirtual: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-        microCopiaContextual: "Asignado localmente (Offline)"
-      });
-
-      batch.update(workerRef, {
-        status: "ASIGNADO",
-        currentSlotId: puestoId,
-        lineaDestinoId: null,
-        physicalLineLocation: supervisorLineId,
-        updatedAt: serverTimestamp()
-      });
-
-      await batch.commit();
-      console.log(`[Offline Bypass] Asignación encolada para ${workerId} -> ${puestoId}`);
-      return {
-        success: true,
-        assignedWorker: workerId,
-        assignedSlot: puestoId,
-        assignedAt: new Date().toISOString()
-      };
-    } catch (error) {
-      console.error("[Offline Bypass] Error en asignación local:", error.message);
-      throw error;
-    }
-  }
-
-  // ==========================================
-  // FLUJO ONLINE (Transacciones Consistentes)
-  // ==========================================
-  try {
-    return await runTransaction(db, async (transaction) => {
-      // 1. Lecturas iniciales de estado del servidor
-      const workerDoc = await transaction.get(workerRef);
-      const puestoDoc = await transaction.get(puestoRef);
-      const shiftDoc = await transaction.get(shiftStatusRef);
-
-      if (!workerDoc.exists()) throw new Error("El perfil del trabajador no existe en el sistema.");
-      if (!puestoDoc.exists()) throw new Error("El puesto de destino no existe en la base de datos.");
-
-      const workerData = workerDoc.data();
-      const puestoData = puestoDoc.data();
-
-      // 2. RESTRICCIÓN OPERATIVA DE ARRANQUE LOCAL AISLADO (Primeros 10 minutos)
-      let isMarchaPhase = false;
-      if (shiftDoc.exists()) {
-        const shiftData = shiftDoc.data();
-        if (shiftData.status === "ARRANQUE") {
-          const shiftStart = shiftData.shiftStartTimestamp;
-          if (shiftStart) {
-            const shiftStartTime = shiftStart.toDate().getTime();
-            const currentTime = Date.now();
-            const elapsedMinutes = (currentTime - shiftStartTime) / (60 * 1000);
-
-            if (elapsedMinutes <= 10) {
-              console.log(`[Arranque Aislado] ${elapsedMinutes.toFixed(1)} min transcurridos. Bloqueo de intercepción activo.`);
-            } else {
-              isMarchaPhase = true;
-            }
-          }
-        }
-      }
-
-      // Check if the worker is already assigned to the target slot
-      if (workerData.status === "ASIGNADO" && workerData.currentSlotId === puestoId && puestoData.idWorkerCurrent === workerId) {
-        console.log(`[Transacción de Asignación] Worker ${workerId} already assigned to slot ${puestoId}. Returning success.`);
-        return {
-          success: true,
-          assignedWorker: workerId,
-          assignedSlot: puestoId,
-          alreadyAssigned: true,
-          message: "El operario ya se encuentra asignado a este puesto."
-        };
-      }
-
-      // REGLA DE EXCLUSIÓN MUTUA / ESTADO DEL TRABAJADOR
-      if (isMarchaPhase) {
-        // En Fase de Marcha, permitimos POOL_ARRANQUE, DISPONIBLE_BOLSON y también INACTIVO (asistencia automática)
-        const allowedStatuses = ["POOL_ARRANQUE", "DISPONIBLE_BOLSON", "INACTIVO"];
-        if (!allowedStatuses.includes(workerData.status)) {
-          throw new Error(`Asignación denegada: El operario ${workerData.name} ya fue asignado o tiene un estado incompatible (${workerData.status}).`);
-        }
-      } else {
-        // En Fase de Asignación Inicial / Arranque, permitimos POOL_ARRANQUE, DISPONIBLE_BOLSON, INACTIVO, y ASIGNADO
-        const allowedStatuses = ["POOL_ARRANQUE", "DISPONIBLE_BOLSON", "INACTIVO", "ASIGNADO"];
-        if (!allowedStatuses.includes(workerData.status)) {
-          throw new Error(`Asignación denegada: El operario ${workerData.name} tiene un estado incompatible (${workerData.status}).`);
-        }
-      }
-
-      // Validar exclusión mutua de línea
-      if (puestoData.idWorkerCurrent) {
-        throw new Error(`Asignación denegada: El puesto ${puestoId} ya está ocupado por el operario ${puestoData.idWorkerCurrent}.`);
-      }
-
-      // Regla de Supervisor Único Dedicado: Bloquear cruce de asignaciones en líneas ajenas
-      if (puestoData.lineId !== supervisorLineId) {
-        throw new Error(`Acceso denegado: Un supervisor de la línea ${supervisorLineId} no puede asignar personal a la línea ${puestoData.lineId}.`);
-      }
-
-      // Aislamiento en Arranque: Bloquear desvíos cruzados si tiene otra ubicación física asignada durante los primeros 10 minutos
-      if (!isMarchaPhase && workerData.physicalLineLocation && workerData.physicalLineLocation !== supervisorLineId) {
-        throw new Error(`Aislamiento de Arranque: El operario ${workerData.name} está asignado físicamente a la línea ${workerData.physicalLineLocation}. No se permiten desvíos cruzados en el arranque.`);
-      }
-
-      // 2.5 MOTOR 2: INTERCEPCIÓN TARDÍA EN CALIENTE (Solo en Fase de Marcha y si se permite)
-      if (isMarchaPhase && allowInterception) {
-        const globalPriorityDoc = await transaction.get(doc(db, "config", "global_priority"));
-        if (globalPriorityDoc.exists()) {
-          const { priorityOrder } = globalPriorityDoc.data();
-          const currentPriorityIndex = priorityOrder.indexOf(supervisorLineId);
-          
-          if (currentPriorityIndex > 0) {
-            const higherPriorityLines = priorityOrder.slice(0, currentPriorityIndex);
-            
-            const snapshotPuestos = await getDocs(query(puestosColl, where("status", "in", ["VACANTE", "ALERTA_VACANTE"])));
-            const candidateSlots = [];
-            snapshotPuestos.forEach(docSnap => {
-              const p = docSnap.data();
-              if (higherPriorityLines.includes(p.lineId)) {
-                candidateSlots.push({ id: docSnap.id, ...p, ref: docSnap.ref });
-              }
-            });
-
-            const restriccionesMedicas = workerData.medicalRestrictions || [];
-            const aptCandidateSlots = candidateSlots.filter(p => {
-              const reqs = p.requiredCapabilities || [];
-              const colision = reqs.some(r => 
-                restriccionesMedicas.includes(`PROHIBIDO_${r}`) || restriccionesMedicas.includes(r)
-              );
-              return !colision;
-            });
-
-            if (aptCandidateSlots.length > 0) {
-              aptCandidateSlots.sort((a, b) => priorityOrder.indexOf(a.lineId) - priorityOrder.indexOf(b.lineId));
-              const interceptedSlot = aptCandidateSlots[0];
-
-              transaction.update(workerRef, {
-                status: "EN_TRANSITO",
-                lineaDestinoId: interceptedSlot.lineId,
-                targetSlotId: interceptedSlot.id,
-                currentSlotId: null,
-                updatedAt: serverTimestamp()
-              });
-
-              transaction.update(interceptedSlot.ref, {
-                microCopiaContextual: `Asignación redirigida a la línea ${interceptedSlot.lineId} por vacante crítica de mayor prioridad abierta.`,
-                updatedAt: serverTimestamp()
-              });
-
-              console.log(`[Motor 2 Interceptor] INTERCEPTADO: Worker ${workerId} redirigido a ${interceptedSlot.lineId} (Puesto: ${interceptedSlot.id})`);
-              
-              return {
-                success: true,
-                intercepted: true,
-                targetLineId: interceptedSlot.lineId,
-                targetSlotName: interceptedSlot.puestoName,
-                message: `Asignación redirigida a la línea ${interceptedSlot.lineId} por vacante crítica de mayor prioridad abierta.`
-              };
-            }
-          }
-        }
-      }
-
-      // 3. FILTROS OPERATIVOS LOCALES DE PLANTA (Salud, Género e Historial Ergonómico)
-      
-      // A. Filtro de Restricciones Médicas y Género
-      if (!canWorkerOccupiedSlot(workerData, puestoData)) {
-        const restriccionesMedicas = workerData.medicalRestrictions || [];
-        const exigenciasPuesto = puestoData.requiredCapabilities || [];
-        const colisionMedica = exigenciasPuesto.some(exigencia => 
-          restriccionesMedicas.includes(`PROHIBIDO_${exigencia}`) || restriccionesMedicas.includes(exigencia)
-        );
-
-        if (colisionMedica) {
-          throw new Error(`Asignación denegada por Salud: El operario tiene restricciones médicas incompatibles con los requerimientos físicos del puesto ${puestoId}.`);
-        } else {
-          throw new Error(`Asignación denegada por Género: El operario no coincide con el sexo preferente para este puesto.`);
-        }
-      }
-
-      // B. Filtro de Historial (Regla de No Repetición Ergonómica de 24h)
-      if (workerData.lastActivity && puestoData.activityName) {
-        if (workerData.lastActivity === puestoData.activityName) {
-          throw new Error(`Fatiga Ergonómica: El operario realizó la actividad "${puestoData.activityName}" al cierre de ayer. Regla de no repetición de 24h activa.`);
-        }
-      }
-
-      if (workerData.status === "ASIGNADO" && workerData.currentSlotId && workerData.currentSlotId !== puestoId) {
-        const oldPuestoRef = doc(db, "puestos", workerData.currentSlotId);
-        const oldPuestoDoc = await transaction.get(oldPuestoRef);
-        if (oldPuestoDoc.exists()) {
-          const oldPuestoData = oldPuestoDoc.data();
-          const esFijoCritico = ["Operador A", "Averiero", "Operador C"].includes(oldPuestoData.tipoPuesto);
-          transaction.update(oldPuestoRef, {
-            status: esFijoCritico ? "ALERTA_VACANTE" : "VACANTE",
-            idWorkerCurrent: null,
-            updatedAt: serverTimestamp(),
-            microCopiaContextual: `Reasignado a ${puestoData.puestoName} (${puestoData.lineId})`
-          });
-          console.log(`[Transacción de Asignación] Vacando puesto anterior ${workerData.currentSlotId} del operario ${workerId}.`);
-        }
-      }
-
-      transaction.update(puestoRef, {
-        status: "ASIGNADO",
-        idWorkerCurrent: workerId,
-        asignadoEnSegundoVirtual: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-        microCopiaContextual: "Asignado manualmente por supervisor"
-      });
-
-      transaction.update(workerRef, {
-        status: "ASIGNADO",
-        currentSlotId: puestoId,
-        lineaDestinoId: null,
-        physicalLineLocation: supervisorLineId,
-        updatedAt: serverTimestamp()
-      });
-
-      console.log(`[Transacción de Asignación] ÉXITO: Asignación consolidada en servidor para ${workerId} -> ${puestoId}`);
-      return {
-        success: true,
-        assignedWorker: workerId,
-        assignedSlot: puestoId,
-        assignedAt: new Date().toISOString()
-      };
-    });
-  } catch (error) {
-    console.error(`[Transacción de Asignación] ABORTADA por regla de seguridad:`, error.message);
-    throw error;
-  }
+  console.log(`[Asignación] ÉXITO: Asignación consolidada en servidor para ${workerId} -> ${puestoId}`);
+  return {
+    success: !!(payload && payload.success),
+    assignedWorker: workerId,
+    assignedSlot: puestoId,
+    assignedAt: new Date().toISOString()
+  };
 }
 
 /**
@@ -1076,64 +598,20 @@ export async function releaseWorkerTransaction(puestoId, workerId, supervisorLin
     throw new Error("Faltan parámetros obligatorios en la petición de liberación.");
   }
 
-  const workerRef = doc(db, "trabajadores", workerId);
-  const puestoRef = doc(db, "puestos", puestoId);
+  console.log(`[Liberación] Liberando worker: ${workerId} de puesto: ${puestoId}`);
 
-  console.log(`[Transacción de Liberación] Iniciando proceso atómico para worker: ${workerId} en puesto: ${puestoId}`);
+  await apiFetch("/puestos/relevo", {
+    method: "POST",
+    body: JSON.stringify({ action: "liberar", slotId: Number(puestoId) })
+  });
 
-  try {
-    return await runTransaction(db, async (transaction) => {
-      const workerDoc = await transaction.get(workerRef);
-      const puestoDoc = await transaction.get(puestoRef);
-
-      if (!workerDoc.exists()) throw new Error("El perfil del trabajador no existe en el sistema.");
-      if (!puestoDoc.exists()) throw new Error("El puesto no existe en la base de datos.");
-
-      const workerData = workerDoc.data();
-      const puestoData = puestoDoc.data();
-
-      // Regla de Supervisor Único Dedicado: Bloquear manipulación en líneas ajenas
-      if (puestoData.lineId !== supervisorLineId) {
-        throw new Error(`Acceso denegado: Un supervisor de la línea ${supervisorLineId} no puede liberar personal de la línea ${puestoData.lineId}.`);
-      }
-
-      // Validar consistencia de asignación en base de datos
-      if (puestoData.idWorkerCurrent !== workerId) {
-        throw new Error("Consistencia: El puesto no tiene asignado a este operario actualmente.");
-      }
-
-      if (workerData.currentSlotId !== puestoId) {
-        throw new Error("Consistencia: El operario no tiene registrado este puesto en su perfil.");
-      }
-
-      // Escritura atómica
-      transaction.update(puestoRef, {
-        status: "VACANTE",
-        idWorkerCurrent: null,
-        updatedAt: serverTimestamp(),
-        microCopiaContextual: "Puesto liberado manualmente por supervisor"
-      });
-
-      transaction.update(workerRef, {
-        status: "DISPONIBLE_BOLSON",
-        currentSlotId: null,
-        lineaDestinoId: null,
-        physicalLineLocation: "L8", // Regresa a las mesas de la Línea 8 (Bolsón)
-        updatedAt: serverTimestamp()
-      });
-
-      console.log(`[Transacción de Liberación] ÉXITO: Operario ${workerId} liberado de ${puestoId} y enviado a Línea 8.`);
-      return {
-        success: true,
-        releasedWorker: workerId,
-        releasedSlot: puestoId,
-        releasedAt: new Date().toISOString()
-      };
-    });
-  } catch (error) {
-    console.error(`[Transacción de Liberación] ABORTADA por regla de seguridad:`, error.message);
-    throw error;
-  }
+  console.log(`[Liberación] ÉXITO: Operario ${workerId} liberado de ${puestoId} y enviado a Línea 8.`);
+  return {
+    success: true,
+    releasedWorker: workerId,
+    releasedSlot: puestoId,
+    releasedAt: new Date().toISOString()
+  };
 }
 
 /**
@@ -1149,100 +627,15 @@ export async function tempBajaWorkerTransaction(puestoId, workerId, supervisorLi
     throw new Error("Faltan parámetros obligatorios en la petición de baja temporal.");
   }
 
-  const workerRef = doc(db, "trabajadores", workerId);
-  const puestoRef = doc(db, "puestos", puestoId);
+  console.log(`[Baja Temporal] Registrando baja para worker: ${workerId}`);
 
-  console.log(`[Baja Temporal] Iniciando proceso (Online: ${isAppOnline()}) para worker: ${workerId}`);
+  await apiFetch("/puestos/relevo", {
+    method: "POST",
+    body: JSON.stringify({ action: "baja_temporal", slotId: Number(puestoId) })
+  });
 
-  // ==========================================
-  // FLUJO OFFLINE (Bypass de Transacciones)
-  // ==========================================
-  if (!isAppOnline()) {
-    try {
-      const [workerDoc, puestoDoc] = await Promise.all([
-        getDoc(workerRef),
-        getDoc(puestoRef)
-      ]);
-
-      if (!workerDoc.exists()) throw new Error("El perfil del trabajador no existe en la caché local.");
-      if (!puestoDoc.exists()) throw new Error("El puesto no existe en la caché local.");
-
-      const puestoData = puestoDoc.data();
-
-      if (puestoData.lineId !== supervisorLineId) {
-        throw new Error("Acceso denegado offline: Línea incorrecta.");
-      }
-
-      if (puestoData.idWorkerCurrent !== workerId) {
-        throw new Error("Consistencia offline: Operario no coincide.");
-      }
-
-      const batch = writeBatch(db);
-      batch.update(puestoRef, {
-        status: "VACANTE",
-        idWorkerCurrent: null,
-        updatedAt: serverTimestamp(),
-        microCopiaContextual: "Operario retirado por baja temporal (Offline)"
-      });
-
-      batch.update(workerRef, {
-        status: "BAJA_TEMPORAL",
-        currentSlotId: null,
-        lineaDestinoId: null,
-        updatedAt: serverTimestamp()
-      });
-
-      await batch.commit();
-      console.log(`[Offline Bypass] Baja temporal encolada para ${workerId}`);
-      return { success: true };
-    } catch (error) {
-      console.error("[Offline Bypass] Error en baja temporal local:", error.message);
-      throw error;
-    }
-  }
-
-  // ==========================================
-  // FLUJO ONLINE (Transacciones Consistentes)
-  // ==========================================
-  try {
-    return await runTransaction(db, async (transaction) => {
-      const workerDoc = await transaction.get(workerRef);
-      const puestoDoc = await transaction.get(puestoRef);
-
-      if (!workerDoc.exists()) throw new Error("El perfil del trabajador no existe.");
-      if (!puestoDoc.exists()) throw new Error("El puesto no existe.");
-
-      const puestoData = puestoDoc.data();
-
-      if (puestoData.lineId !== supervisorLineId) {
-        throw new Error(`Acceso denegado: Línea incorrecta.`);
-      }
-
-      if (puestoData.idWorkerCurrent !== workerId) {
-        throw new Error("Consistencia: Operario no coincide.");
-      }
-
-      transaction.update(puestoRef, {
-        status: "VACANTE",
-        idWorkerCurrent: null,
-        updatedAt: serverTimestamp(),
-        microCopiaContextual: "Operario retirado por baja temporal"
-      });
-
-      transaction.update(workerRef, {
-        status: "BAJA_TEMPORAL",
-        currentSlotId: null,
-        lineaDestinoId: null,
-        updatedAt: serverTimestamp()
-      });
-
-      console.log(`[Transacción de Baja Temporal] ÉXITO: Operario ${workerId} asignado a BAJA_TEMPORAL.`);
-      return { success: true };
-    });
-  } catch (error) {
-    console.error(`[Transacción de Baja Temporal] ABORTADA:`, error.message);
-    throw error;
-  }
+  console.log(`[Baja Temporal] ÉXITO: Operario ${workerId} asignado a BAJA_TEMPORAL.`);
+  return { success: true };
 }
 
 /**
@@ -1258,59 +651,15 @@ export async function confirmTransitWorkerArrival(workerId, slotId, supervisorLi
     throw new Error("Parámetros incompletos para confirmar arribo.");
   }
 
-  const workerRef = doc(db, "trabajadores", workerId);
-  const puestoRef = doc(db, "puestos", slotId);
+  console.log(`[Arribo] Confirmando arribo para worker: ${workerId} -> slot: ${slotId}`);
 
-  console.log(`[Transacción Arribo] Confirmando arribo para worker: ${workerId} -> slot: ${slotId}`);
+  await apiFetch("/puestos/relevo", {
+    method: "POST",
+    body: JSON.stringify({ action: "confirmar_llegada", workerId: Number(workerId), targetSlotId: Number(slotId) })
+  });
 
-  try {
-    return await runTransaction(db, async (transaction) => {
-      const workerDoc = await transaction.get(workerRef);
-      const puestoDoc = await transaction.get(puestoRef);
-
-      if (!workerDoc.exists()) throw new Error("Operario no existe.");
-      if (!puestoDoc.exists()) throw new Error("Puesto no existe.");
-
-      const workerData = workerDoc.data();
-      const puestoData = puestoDoc.data();
-
-      if (workerData.status !== "EN_TRANSITO") {
-        throw new Error("Consistencia: El operario ya no se encuentra en tránsito.");
-      }
-
-      if (workerData.lineaDestinoId !== supervisorLineId) {
-        throw new Error("Consistencia: El operario está destinado a otra línea.");
-      }
-
-      if (puestoData.idWorkerCurrent) {
-        throw new Error("Exclusión Mutua: El puesto ya se encuentra ocupado.");
-      }
-
-      // Consolidar asignación
-      transaction.update(puestoRef, {
-        status: "ASIGNADO",
-        idWorkerCurrent: workerId,
-        asignadoEnSegundoVirtual: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-        microCopiaContextual: "Relevo ergonómico confirmado físicamente"
-      });
-
-      transaction.update(workerRef, {
-        status: "ASIGNADO",
-        currentSlotId: slotId,
-        lineaDestinoId: null,
-        targetSlotId: null,
-        physicalLineLocation: supervisorLineId,
-        updatedAt: serverTimestamp()
-      });
-
-      console.log(`[Transacción Arribo] ÉXITO: Operario ${workerId} arribado y asignado a ${slotId}.`);
-      return { success: true };
-    });
-  } catch (error) {
-    console.error(`[Transacción Arribo] ABORTADA:`, error.message);
-    throw error;
-  }
+  console.log(`[Arribo] ÉXITO: Operario ${workerId} arribado y asignado a ${slotId}.`);
+  return { success: true };
 }
 
 /**
@@ -1324,42 +673,15 @@ export async function acceptReturnToBolson(workerId) {
     throw new Error("ID del operario no provisto.");
   }
 
-  const workerRef = doc(db, "trabajadores", workerId);
+  console.log(`[Retorno Bolsón] Confirmando retorno para worker: ${workerId}`);
 
-  console.log(`[Transacción Retorno Bolsón] Confirmando retorno para worker: ${workerId}`);
+  await apiFetch("/puestos/relevo", {
+    method: "POST",
+    body: JSON.stringify({ action: "retorno_bolson", workerId: Number(workerId) })
+  });
 
-  try {
-    return await runTransaction(db, async (transaction) => {
-      const workerDoc = await transaction.get(workerRef);
-
-      if (!workerDoc.exists()) throw new Error("Operario no existe.");
-
-      const workerData = workerDoc.data();
-
-      if (workerData.status !== "EN_TRANSITO") {
-        throw new Error("Consistencia: El operario ya no se encuentra en tránsito.");
-      }
-
-      if (workerData.lineaDestinoId !== "L8") {
-        throw new Error("Consistencia: El operario no está destinado al Bolsón L8.");
-      }
-
-      transaction.update(workerRef, {
-        status: "DISPONIBLE_BOLSON",
-        currentSlotId: null,
-        lineaDestinoId: null,
-        targetSlotId: null,
-        physicalLineLocation: "L8",
-        updatedAt: serverTimestamp()
-      });
-
-      console.log(`[Transacción Retorno Bolsón] ÉXITO: Operario ${workerId} devuelto a DISPONIBLE_BOLSON.`);
-      return { success: true };
-    });
-  } catch (error) {
-    console.error(`[Transacción Retorno Bolsón] ABORTADA:`, error.message);
-    throw error;
-  }
+  console.log(`[Retorno Bolsón] ÉXITO: Operario ${workerId} devuelto a DISPONIBLE_BOLSON.`);
+  return { success: true };
 }
 
 /**
@@ -1376,45 +698,20 @@ export async function dispatchWorkerToLine(workerId, targetLineId, targetSlotId,
     throw new Error("Parámetros incompletos para despachar operario.");
   }
 
-  const workerRef = doc(db, "trabajadores", workerId);
+  console.log(`[Despacho] Despachando worker: ${workerId} desde ${supervisorLineId} -> ${targetLineId}`);
 
-  console.log(`[Transacción Despacho] Despachando worker: ${workerId} desde ${supervisorLineId} -> ${targetLineId}`);
+  await apiFetch("/puestos/relevo", {
+    method: "POST",
+    body: JSON.stringify({
+      action: "despachar",
+      workerId: Number(workerId),
+      targetLineId,
+      targetSlotId: targetSlotId ? Number(targetSlotId) : null
+    })
+  });
 
-  try {
-    return await runTransaction(db, async (transaction) => {
-      const workerDoc = await transaction.get(workerRef);
-      if (!workerDoc.exists()) throw new Error("Operario no existe.");
-
-      const workerData = workerDoc.data();
-
-      // Verificar que el operario esté disponible en el Bolsón o Pool y pertenezca a la línea
-      if (workerData.status !== "DISPONIBLE_BOLSON" && workerData.status !== "POOL_ARRANQUE") {
-        throw new Error("El operario debe estar disponible en Bolsón o Pool para ser despachado.");
-      }
-
-      transaction.update(workerRef, {
-        status: "EN_TRANSITO",
-        lineaDestinoId: targetLineId,
-        targetSlotId: targetSlotId || null,
-        currentSlotId: null,
-        updatedAt: serverTimestamp()
-      });
-
-      if (targetSlotId) {
-        const puestoRef = doc(db, "puestos", targetSlotId);
-        transaction.update(puestoRef, {
-          relevoSolicitado: false,
-          updatedAt: serverTimestamp()
-        });
-      }
-
-      console.log(`[Transacción Despacho] ÉXITO: Operario ${workerId} puesto EN_TRANSITO con destino a ${targetLineId}.`);
-      return { success: true };
-    });
-  } catch (error) {
-    console.error(`[Transacción Despacho] ABORTADA:`, error.message);
-    throw error;
-  }
+  console.log(`[Despacho] ÉXITO: Operario ${workerId} puesto EN_TRANSITO con destino a ${targetLineId}.`);
+  return { success: true };
 }
 
 /**
@@ -1430,20 +727,14 @@ export async function requestErgonomicRelevo(slotId, supervisorLineId) {
     throw new Error("Parámetros incompletos para solicitar relevo.");
   }
 
-  const puestoRef = doc(db, "puestos", slotId);
-
   console.log(`[Relevos] Solicitando relevo para puesto: ${slotId}`);
 
-  try {
-    await updateDoc(puestoRef, {
-      relevoSolicitado: true,
-      updatedAt: serverTimestamp()
-    });
-    return { success: true };
-  } catch (error) {
-    console.error(`[Relevos] Error al solicitar relevo:`, error.message);
-    throw error;
-  }
+  await apiFetch("/puestos/relevo", {
+    method: "POST",
+    body: JSON.stringify({ action: "solicitar_relevo", slotId: Number(slotId) })
+  });
+
+  return { success: true };
 }
 
 /**
@@ -1474,7 +765,7 @@ export function getSlotsForSku(sku, slots) {
   if (uppercaseSku === "SKU-441-AQUA" || uppercaseSku.includes("EC") || uppercaseSku.includes("MX") || uppercaseSku.includes("AQUA")) {
     let varioIndex = 0;
     return sortedSlots.filter(s => {
-      const isCritical = ["Operador A", "Averiero", "Operador C"].includes(s.tipoPuesto);
+      const isCritical = CRITICAL_TIPOS_PUESTO.includes(s.tipoPuesto);
       if (isCritical) return true;
       varioIndex++;
       return varioIndex % 3 !== 0; // Omit every 3rd variable position
@@ -1484,7 +775,7 @@ export function getSlotsForSku(sku, slots) {
   // Default / Low Demand: if it is Diet or includes SP, PX, NI, CR, PA, LITE etc.
   let varioIndex = 0;
   return sortedSlots.filter(s => {
-    const isCritical = ["Operador A", "Averiero", "Operador C"].includes(s.tipoPuesto);
+    const isCritical = CRITICAL_TIPOS_PUESTO.includes(s.tipoPuesto);
     if (isCritical) return true;
     varioIndex++;
     return varioIndex % 2 === 0; // Retain only half of the variable positions
@@ -1507,7 +798,7 @@ export async function getProgramaProduccionPorFecha(fechaStr) {
     });
     return orders;
   } catch (error) {
-    console.error("[firebaseService] Error en getProgramaProduccionPorFecha:", error);
+    console.error("[apiService] Error en getProgramaProduccionPorFecha:", error);
     return [];
   }
 }
@@ -1529,80 +820,25 @@ export async function acceptErgonomicRelevo(relevistaId, slotId, supervisorLineI
     throw new Error("Parámetros incompletos para aceptar el relevo ergonómico.");
   }
 
-  const relevistaRef = doc(db, "trabajadores", relevistaId);
-  const puestoRef = doc(db, "puestos", slotId);
+  console.log(`[Relevo] Aceptando relevista ${relevistaId} en puesto ${slotId}.`);
 
-  try {
-    return await runTransaction(db, async (transaction) => {
-      const puestoDoc = await transaction.get(puestoRef);
-      const relevistaDoc = await transaction.get(relevistaRef);
+  const payload = await apiFetch("/puestos/relevo", {
+    method: "POST",
+    body: JSON.stringify({ action: "aceptar_relevo", slotId: Number(slotId), newWorkerId: Number(relevistaId) })
+  });
 
-      if (!puestoDoc.exists()) throw new Error("Puesto de destino no encontrado.");
-      if (!relevistaDoc.exists()) throw new Error("Relevista no encontrado.");
-
-      const puestoData = puestoDoc.data();
-      const relievedWorkerId = puestoData.idWorkerCurrent;
-
-      if (puestoData.lineId !== supervisorLineId) {
-        throw new Error("Acceso denegado: No puedes aceptar relevos en otra línea.");
-      }
-
-      let relievedWorker = null;
-      if (relievedWorkerId) {
-        const relievedWorkerRef = doc(db, "trabajadores", relievedWorkerId);
-        const relievedWorkerDoc = await transaction.get(relievedWorkerRef);
-        if (relievedWorkerDoc.exists()) {
-          relievedWorker = { id: relievedWorkerId, ...relievedWorkerDoc.data() };
-          
-          transaction.update(relievedWorkerRef, {
-            status: "EN_TRANSITO",
-            lineaDestinoId: "L8",
-            targetSlotId: null,
-            currentSlotId: null,
-            physicalLineLocation: "L8",
-            updatedAt: serverTimestamp()
-          });
-        }
-      }
-
-      transaction.update(puestoRef, {
-        status: "ASIGNADO",
-        idWorkerCurrent: relevistaId,
-        asignadoEnSegundoVirtual: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-        microCopiaContextual: "Relevo ergonómico confirmado físicamente en pasillo",
-        rejectedWorkerIds: []
-      });
-
-      transaction.update(relevistaRef, {
-        status: "ASIGNADO",
-        currentSlotId: slotId,
-        lineaDestinoId: null,
-        targetSlotId: null,
-        physicalLineLocation: supervisorLineId,
-        updatedAt: serverTimestamp()
-      });
-
-      const chainPath = [];
-      if (relievedWorker) {
-        chainPath.push({
-          workerName: relievedWorker.name,
-          type: "bolson",
-          label: "Bolsón L8"
-        });
-      }
-
-      console.log(`[Relevo Optimizado] ÉXITO: Relevista ${relevistaId} asignado a puesto ${slotId}.`);
-      return {
-        success: true,
-        relievedWorker,
-        chainPath
-      };
-    });
-  } catch (error) {
-    console.error("[Transacción Aceptar Relevo] ABORTADA:", error.message);
-    throw error;
-  }
+  // NOTA (migración SQL Server): el backend ya no devuelve el objeto completo
+  // del trabajador relevado (relievedWorker) ni un chainPath detallado -
+  // solo su id (relievedWorkerId). HudPlanta.jsx/RelevosNotificaciones.jsx
+  // usan estos campos únicamente para mensajes informativos; si su ausencia
+  // afecta algún texto en pantalla, se puede enriquecer luego con una
+  // consulta adicional a /api/operarios.
+  console.log(`[Relevo] ÉXITO: Relevista ${relevistaId} asignado a puesto ${slotId}.`);
+  return {
+    success: true,
+    relievedWorker: payload && payload.relievedWorkerId ? { id: String(payload.relievedWorkerId) } : null,
+    chainPath: []
+  };
 }
 
 /**
@@ -1621,144 +857,46 @@ export async function rejectErgonomicRelevo(relevistaId, slotId, supervisorLineI
     throw new Error("Parámetros incompletos para rechazar el relevo ergonómico.");
   }
 
-  const relevistaRef = doc(db, "trabajadores", relevistaId);
-  const puestoRef = doc(db, "puestos", slotId);
+  console.log(`[Rechazar Relevo] Iniciando: ${relevistaId} -> puesto ${slotId}`);
 
-  console.log(`[Transacción Rechazar Relevo] Iniciando: ${relevistaId} -> puesto ${slotId}`);
+  await apiFetch("/puestos/relevo", {
+    method: "POST",
+    body: JSON.stringify({ action: "rechazar_relevo", slotId: Number(slotId), newWorkerId: Number(relevistaId) })
+  });
 
-  try {
-    return await runTransaction(db, async (transaction) => {
-      const relevistaDoc = await transaction.get(relevistaRef);
-      const puestoDoc = await transaction.get(puestoRef);
-
-      if (!relevistaDoc.exists()) throw new Error("El relevista no existe.");
-      if (!puestoDoc.exists()) throw new Error("El puesto de destino no existe.");
-
-      // 1. Devolver al relevista al Bolsón L8 (En tránsito de regreso)
-      transaction.update(relevistaRef, {
-        status: "EN_TRANSITO",
-        lineaDestinoId: "L8",
-        targetSlotId: null,
-        currentSlotId: null,
-        physicalLineLocation: "L8",
-        updatedAt: serverTimestamp()
-      });
-
-      // 2. Agregar al relevista a la blacklist de rechazados para este puesto específico
-      const puestoData = puestoDoc.data();
-      const rejectedList = puestoData.rejectedWorkerIds || [];
-      if (!rejectedList.includes(relevistaId)) {
-        rejectedList.push(relevistaId);
-      }
-
-      transaction.update(puestoRef, {
-        rejectedWorkerIds: rejectedList,
-        updatedAt: serverTimestamp()
-      });
-
-      console.log(`[Transacción Rechazar Relevo] ÉXITO: Relevista ${relevistaId} devuelto a L8. Puesto ${slotId} blacklistea a este trabajador.`);
-      return { success: true };
-    });
-  } catch (error) {
-    console.error("[Transacción Rechazar Relevo] ABORTADA:", error.message);
-    throw error;
-  }
+  console.log(`[Rechazar Relevo] ÉXITO: Relevista ${relevistaId} devuelto a L8. Puesto ${slotId} blacklistea a este trabajador.`);
+  return { success: true };
 }
 
 /**
  * EJECUTAR INTERCAMBIO ERGONÓMICO LOCAL ENTRE DOS PUESTOS DE LA MISMA LÍNEA
- * Transacción atómica que intercambia los dos operarios asignados en slotIdA y slotIdB,
- * reseteando sus contadores de fatiga (asignadoEnSegundoVirtual) y quitando solicitudes de relevo.
+ * Rota a los dos operarios ya asignados en slotIdA y slotIdB.
+ *
+ * NOTA (migración SQL Server): reemplaza la transacción Firestore inline
+ * (runTransaction/transaction.get contra el mock, que siempre devolvía un
+ * snapshot vacío y por lo tanto fallaba con "Ambos puestos deben tener
+ * operarios asignados" en cada intento) por la acción 'intercambio_local'
+ * del despachador real POST /puestos/relevo (server/server.js), que ya
+ * concentra el resto de transiciones de Puestos/Operarios (asignar, liberar,
+ * aceptar_relevo, etc.) bajo el mismo bloqueo transaccional.
  */
 export async function executeLocalSwapTransaction(slotIdA, slotIdB, lineId) {
   if (!slotIdA || !slotIdB || !lineId) {
     throw new Error("Parámetros incompletos para ejecutar el intercambio local.");
   }
 
-  const slotRefA = doc(db, "puestos", slotIdA);
-  const slotRefB = doc(db, "puestos", slotIdB);
+  const payload = await apiFetch("/puestos/relevo", {
+    method: "POST",
+    body: JSON.stringify({ action: "intercambio_local", slotIdA: Number(slotIdA), slotIdB: Number(slotIdB) })
+  });
 
-  try {
-    return await runTransaction(db, async (transaction) => {
-      const [slotSnapA, slotSnapB] = await Promise.all([
-        transaction.get(slotRefA),
-        transaction.get(slotRefB)
-      ]);
-
-      if (!slotSnapA.exists() || !slotSnapB.exists()) {
-        throw new Error("Uno o ambos puestos no existen en la base de datos.");
-      }
-
-      const slotDataA = slotSnapA.data();
-      const slotDataB = slotSnapB.data();
-
-      const workerIdA = slotDataA.idWorkerCurrent;
-      const workerIdB = slotDataB.idWorkerCurrent;
-
-      if (!workerIdA || !workerIdB) {
-        throw new Error("Ambos puestos deben tener operarios asignados para realizar el intercambio.");
-      }
-
-      const workerRefA = doc(db, "trabajadores", workerIdA);
-      const workerRefB = doc(db, "trabajadores", workerIdB);
-
-      const [workerSnapA, workerSnapB] = await Promise.all([
-        transaction.get(workerRefA),
-        transaction.get(workerRefB)
-      ]);
-
-      if (!workerSnapA.exists() || !workerSnapB.exists()) {
-        throw new Error("Uno o ambos trabajadores no existen en la base de datos.");
-      }
-
-      const workerDataA = workerSnapA.data();
-      const workerDataB = workerSnapB.data();
-
-      // Intercambiar de forma atómica
-      transaction.update(slotRefA, {
-        idWorkerCurrent: workerIdB,
-        status: "ASIGNADO",
-        relevoSolicitado: false,
-        asignadoEnSegundoVirtual: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-        microCopiaContextual: `Intercambio ergonómico local con puesto ${slotDataB.puestoName}`
-      });
-
-      transaction.update(slotRefB, {
-        idWorkerCurrent: workerIdA,
-        status: "ASIGNADO",
-        relevoSolicitado: false,
-        asignadoEnSegundoVirtual: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-        microCopiaContextual: `Intercambio ergonómico local con puesto ${slotDataA.puestoName}`
-      });
-
-      transaction.update(workerRefA, {
-        currentSlotId: slotIdB,
-        lineaDestinoId: null,
-        targetSlotId: null,
-        updatedAt: serverTimestamp()
-      });
-
-      transaction.update(workerRefB, {
-        currentSlotId: slotIdA,
-        lineaDestinoId: null,
-        targetSlotId: null,
-        updatedAt: serverTimestamp()
-      });
-
-      return {
-        success: true,
-        workerAName: workerDataA.name,
-        workerBName: workerDataB.name,
-        puestoAName: slotDataA.puestoName,
-        puestoBName: slotDataB.puestoName
-      };
-    });
-  } catch (error) {
-    console.error("[Transacción Intercambio Local] ABORTADA:", error.message);
-    throw error;
-  }
+  return {
+    success: !!(payload && payload.success),
+    workerAName: payload?.workerAName || null,
+    workerBName: payload?.workerBName || null,
+    puestoAName: payload?.puestoAName || null,
+    puestoBName: payload?.puestoBName || null
+  };
 }
 
 /**
@@ -1849,26 +987,12 @@ export function canWorkerOccupiedSlot(w, p) {
   }
 
   if (preferedSex !== "Indistinto") {
-    // Derivar sexo deterministamente del nombre si no está presente en el operario
-    const nameLower = (w.name || "").trim().toLowerCase();
-    const femaleKeywords = [
-      "maria", "maría", "elena", "sofia", "sofía", "teresa", "lucia", "lucía", "laura", "carmen", 
-      "patricia", "isabel", "ana", "rosa", "margarita", "juana", "diana", "dayana", "anielka", 
-      "vanessa", "meyling", "nahomy", "wendy", "flor", "keidy", "grethel", "tania", "joseline", 
-      "ingri", "zuleica", "jenny", "nerling", "nubia", "esmeralda", "ruth", "yessica", "karla", 
-      "estela", "marcia", "rebeca", "keyling", "carlota", "fabiana", "jeaneth", "brenda", "digna", 
-      "jackeline", "jhovania", "jessica", "sara", "yelba", "fresia", "indira", "tatiana", "elissa", 
-      "hanan", "shelsea", "doris", "martha", "miurys", "scarleth", "nancy", "elieth", "karen", 
-      "fernanda", "jennifer", "denise", "ashly", "glenda", "sonia", "samira", "mary", "dominga", 
-      "mercedes", "leslie", "soraya", "ileana", "marjorie", "francis", "carla", "guadalupe"
-    ];
-    
-    const isFemaleByName = femaleKeywords.some(kw => {
-      const regex = new RegExp(`\\b${kw}\\b`, "i");
-      return regex.test(nameLower);
-    });
-
-    const wSex = w.sexo || (isFemaleByName ? "Femenino" : "Masculino");
+    // NOTA (limpieza Fase 3): se quitó la lista fija de nombres para adivinar
+    // el sexo del operario cuando w.sexo venía vacío. Los 153 operarios reales
+    // sembrados ya tienen sexo poblado; si algún registro futuro llega sin
+    // sexo, no se aplica la restricción (en vez de adivinarlo por nombre).
+    if (!w.sexo) return true;
+    const wSex = w.sexo;
     const normPref = preferedSex.trim().toLowerCase().replace(/a$/, "o");
     const normWSex = wSex.trim().toLowerCase().replace(/a$/, "o");
     if (normWSex !== normPref) {
@@ -1900,7 +1024,7 @@ export function getRelocationDestinationSimple(relievedWorker, relievedFromSlot,
 
   const fatiguedLocal = ownLineSlots.find(s => {
     if (s.status !== 'ASIGNADO') return false;
-    if (["Operador A", "Averiero", "Operador C"].includes(s.tipoPuesto)) return false;
+    if (CRITICAL_TIPOS_PUESTO.includes(s.tipoPuesto)) return false;
     if (getBaseName(s.puestoName) === getBaseName(relievedFromSlot.puestoName)) return false;
     const elapsed = getElapsedMins(s);
     const needsRelay = s.relevoSolicitado || (elapsed >= 105);
@@ -1909,15 +1033,8 @@ export function getRelocationDestinationSimple(relievedWorker, relievedFromSlot,
   });
   if (fatiguedLocal) return { type: "local", slotId: fatiguedLocal.id };
 
-  const customPriorities = {
-    "L1": ["L2", "L4", "L6", "L3"],
-    "L2": ["L4", "L1", "L6", "L3"],
-    "L3": ["L6", "L4", "L2", "L1"],
-    "L4": ["L2", "L1", "L6", "L3"],
-    "L5": ["L8", "L1", "L2", "L4", "L6", "L3"],
-    "L6": ["L3", "L4", "L2", "L1", "L5"]
-  };
-  // Deshabilitado por simplificación y para no robar operarios de otras celdas/líneas
+  // La rotación cruzada entre líneas (robar operarios de otras celdas/líneas
+  // activas) está deshabilitada por simplificación; siempre cae a Bolsón L8.
   return { type: "bolson" };
 }
 
@@ -2012,7 +1129,7 @@ export function getRelocationDestination(relievedWorker, relievedFromSlot, allSl
     if (s.status !== 'ASIGNADO') return false;
     
     // Excluir puestos fijos críticos
-    const esFijo = ["Operador A", "Averiero", "Operador C"].includes(s.tipoPuesto);
+    const esFijo = CRITICAL_TIPOS_PUESTO.includes(s.tipoPuesto);
     if (esFijo) return false;
 
     // Restricción: No debe ser un puesto similar (misma raíz de nombre)
@@ -2122,7 +1239,7 @@ export async function programNextDayShift(skuData, planStatus = "BORRADOR") {
       // 2. Procesar asignación de personal para puestos habilitados por el SKU
       let assignedCount = 0;
       enabledPuestos.forEach(p => {
-        const esFijo = ["Operador A", "Averiero", "Operador C"].includes(p.tipoPuesto);
+        const esFijo = CRITICAL_TIPOS_PUESTO.includes(p.tipoPuesto);
         
         if (esFijo) {
           const titularId = p.idWorkerOriginal;
@@ -2460,7 +1577,7 @@ export async function reprogramPartialNextDayShift(skuData, planStatus = "BORRAD
         }
 
         // Si no está locked o el operario ya no está disponible, recalculamos
-        const esFijo = ["Operador A", "Averiero", "Operador C"].includes(p.tipoPuesto);
+        const esFijo = CRITICAL_TIPOS_PUESTO.includes(p.tipoPuesto);
         if (esFijo) {
           const titularId = p.idWorkerOriginal;
           const worker = titularId ? trabajadoresPool.find(w => w.id === titularId) : null;
@@ -2771,7 +1888,7 @@ export async function assignPuestosLive(skuData) {
 
       // Procesar asignación de personal para puestos habilitados por el SKU
       enabledPuestos.forEach(p => {
-        const esFijo = ["Operador A", "Averiero", "Operador C"].includes(p.tipoPuesto);
+        const esFijo = CRITICAL_TIPOS_PUESTO.includes(p.tipoPuesto);
         
         if (esFijo) {
           const titularId = p.idWorkerOriginal;
@@ -2889,390 +2006,79 @@ export async function assignPuestosLive(skuData) {
 
 /**
  * Asigna o rota atómicamente a un trabajador a un puesto con déficit (para uso exclusivo del Coordinador)
- * 
- * @param {string} workerId ID del trabajador
- * @param {string} targetSlotId ID del puesto vacante destino
- * @param {string} originalSlotId ID del puesto anterior (si es rotación, opcional)
+ *
+ * NOTA (migración SQL Server): reemplaza la transacción Firestore inline
+ * (runTransaction/transaction.get contra el mock, código muerto que nadie
+ * importaba) por la acción 'aplicar_sugerencia' del despachador real
+ * POST /puestos/relevo (server/server.js) — contraparte real de
+ * PanelCoordinador.jsx:deficitSuggestions (tipos POOL/BOLSON/ROTACION).
+ *
+ * @param {string|number} workerId ID del trabajador
+ * @param {string|number} targetSlotId ID del puesto vacante destino
+ * @param {string|number|null} originalSlotId ID del puesto anterior (si es rotación, opcional)
  */
 export async function executeCoordinatorSuggestion(workerId, targetSlotId, originalSlotId) {
   if (!workerId || !targetSlotId) {
     throw new Error("Faltan parámetros indispensables para aplicar la sugerencia.");
   }
 
-  const workerRef = doc(db, "trabajadores", workerId);
-  const targetSlotRef = doc(db, "puestos", targetSlotId);
-  const originalSlotRef = originalSlotId ? doc(db, "puestos", originalSlotId) : null;
+  const payload = await apiFetch("/puestos/relevo", {
+    method: "POST",
+    body: JSON.stringify({
+      action: "aplicar_sugerencia",
+      workerId: Number(workerId),
+      slotId: Number(targetSlotId),
+      originalSlotId: originalSlotId ? Number(originalSlotId) : null
+    })
+  });
 
-  console.log(`[Coordinador Sugerencia] Iniciando rotación: ${workerId} -> puesto ${targetSlotId}`);
-
-  try {
-    return await runTransaction(db, async (transaction) => {
-      const workerDoc = await transaction.get(workerRef);
-      const targetSlotDoc = await transaction.get(targetSlotRef);
-
-      if (!workerDoc.exists()) throw new Error("El trabajador sugerido no existe.");
-      if (!targetSlotDoc.exists()) throw new Error("El puesto de destino no existe.");
-
-      const workerData = workerDoc.data();
-      const targetSlotData = targetSlotDoc.data();
-
-      // Validar exclusión mutua de destino
-      if (targetSlotData.idWorkerCurrent) {
-        throw new Error("El puesto de destino ya fue ocupado en piso.");
-      }
-
-      // Si es una rotación de línea, liberar el puesto original primero
-      if (originalSlotRef) {
-        const originalSlotDoc = await transaction.get(originalSlotRef);
-        if (originalSlotDoc.exists()) {
-          const originalSlotData = originalSlotDoc.data();
-          if (originalSlotData.idWorkerCurrent === workerId) {
-            transaction.update(originalSlotRef, {
-              status: "VACANTE",
-              idWorkerCurrent: null,
-              updatedAt: serverTimestamp()
-            });
-          }
-        }
-      }
-
-      // Actualizar el puesto de destino
-      transaction.update(targetSlotRef, {
-        status: "ASIGNADO",
-        idWorkerCurrent: workerId,
-        updatedAt: serverTimestamp(),
-        asignadoEnSegundoVirtual: serverTimestamp()
-      });
-
-      // Actualizar el estado del trabajador a ASIGNADO
-      transaction.update(workerRef, {
-        status: "ASIGNADO",
-        currentSlotId: targetSlotId,
-        lineaDestinoId: null,
-        physicalLineLocation: targetSlotData.lineId,
-        updatedAt: serverTimestamp()
-      });
-
-      console.log(`[Coordinador] Rotación completada: ${workerId} -> ${targetSlotId}`);
-    });
-  } catch (error) {
-    console.error("[Coordinador Sugerencia] Error en transacción:", error);
-    throw error;
-  }
+  return { success: !!(payload && payload.success), workerName: payload?.workerName || null, slotName: payload?.slotName || null };
 }
 
-/**
- * Función C: Obtener el histórico persistente de planta para una fecha específica.
- * Si el documento no existe en Firestore, genera un histórico inicial realista
- * y lo persiste automáticamente para que el usuario pueda consultarlo sin vacíos de datos.
- * 
- * @param {string} fechaStr Fecha en formato YYYY-MM-DD
- */
-export async function getHistorialDia(fechaStr) {
-  if (!fechaStr) throw new Error("Fecha no especificada.");
-  console.log(`[Historial] Consultando histórico para fecha: ${fechaStr}`);
-  
-  const docRef = doc(db, "historial_dias", fechaStr);
-  
-  try {
-    const docSnap = await getDoc(docRef);
-    if (docSnap.exists()) {
-      console.log(`[Historial] Encontrado registro para ${fechaStr}`);
-      return docSnap.data();
-    }
-    
-    console.log(`[Historial] No hay registro para ${fechaStr}. Generando simulación realista de autoguardado...`);
-    
-    // Generar datos históricos dinámicos realistas basados en operarios y puestos reales
-    const snapshotPuestos = await getDocs(puestosColl);
-    const snapshotTrabajadores = await getDocs(trabajadoresColl);
-    
-    const puestosList = [];
-    snapshotPuestos.forEach(d => puestosList.push({ id: d.id, ...d.data() }));
-    
-    const trabajadoresList = [];
-    snapshotTrabajadores.forEach(d => trabajadoresList.push({ id: d.id, ...d.data() }));
-
-    const presetSupervisors = [
-      "Ing. Carlos Mendoza", "Ing. Sofía Reyes", "Ing. Martín Gómez", 
-      "Ing. Elena Torres", "Ing. Oscar Díaz", "Ing. Lucía Sanz"
-    ];
-
-    const activeLines = ["L4", "L1", "L2", "L6", "L7", "L5", "L3", "L8", "L9", "L10"];
-    const lineStats = {};
-    let totalOeeSum = 0;
-    let activeLinesCount = 0;
-
-    let totalDowntimeMinutes = 0;
-    let totalMermasProcess = 0;
-    const parosByCategory = { MECÁNICO: 0, ELÉCTRICO: 0, CALIDAD: 0, FALTA_DE_MATERIAL: 0 };
-    const mermasByMaterial = { tapon: 0, botella: 0, estuche: 0, etiqueta: 0 };
-
-    // Mapear puestos por línea
-    const puestosPorLinea = {};
-    puestosList.forEach(p => {
-      if (!puestosPorLinea[p.lineId]) puestosPorLinea[p.lineId] = [];
-      puestosPorLinea[p.lineId].push(p);
-    });
-
-    // Barajar trabajadores para asignar
-    const shuffledWorkers = [...trabajadoresList].sort(() => 0.5 - Math.random());
-    let workerIdx = 0;
-
-    activeLines.forEach((lineId, idx) => {
-      const linePuestos = puestosPorLinea[lineId] || [];
-      // Simular que el 70%-90% de las líneas estuvieron activas ese día
-      const isActive = idx < 7; // Primeras 7 activas por default
-      const sku = isActive ? (idx % 3 === 0 ? "SKU-990-BOST" : idx % 3 === 1 ? "SKU-441-AQUA" : "SKU-102-LITE") : "INACTIVO";
-      
-      const totalSlots = linePuestos.length;
-      let assignedSlots = 0;
-      let deficitCount = 0;
-
-      const tomorrowPuestosData = linePuestos.map(p => {
-        if (!isActive) {
-          return {
-            id: p.id,
-            puestoName: p.puestoName,
-            tipoPuesto: p.tipoPuesto,
-            status: "SUSPENDIDO",
-            idWorkerCurrent: null,
-            workerName: "VACANTE (Línea Inactiva)"
-          };
-        }
-
-        const isExcluded = p.tipoPuesto === "Averiero" && sku === "SKU-102-LITE";
-        if (isExcluded) {
-          return {
-            id: p.id,
-            puestoName: p.puestoName,
-            tipoPuesto: p.tipoPuesto,
-            status: "SUSPENDIDO",
-            idWorkerCurrent: null,
-            workerName: "VACANTE (Excluido por SKU)"
-          };
-        }
-
-        // Asignación realista (92% de asistencia)
-        const asiste = Math.random() > 0.08;
-        if (asiste && workerIdx < shuffledWorkers.length) {
-          const w = shuffledWorkers[workerIdx++];
-          assignedSlots++;
-          return {
-            id: p.id,
-            puestoName: p.puestoName,
-            tipoPuesto: p.tipoPuesto,
-            status: "ASIGNADO",
-            idWorkerCurrent: w.id,
-            workerName: w.name
-          };
-        } else {
-          deficitCount++;
-          return {
-            id: p.id,
-            puestoName: p.puestoName,
-            tipoPuesto: p.tipoPuesto,
-            status: "VACANTE",
-            idWorkerCurrent: null,
-            workerName: "VACANTE"
-          };
-        }
-      });
-
-      const coveragePct = totalSlots > 0 ? Math.round((assignedSlots / totalSlots) * 100) : 0;
-      // Generar OEE entre 75 y 95% para líneas activas
-      const oeePct = isActive ? Math.round(75 + Math.random() * 20) : 0;
-
-      if (isActive) {
-        totalOeeSum += oeePct;
-        activeLinesCount++;
-
-        // Simular paros y mermas
-        const lineDowntime = Math.round(Math.random() * 35);
-        totalDowntimeMinutes += lineDowntime;
-        const catKeys = Object.keys(parosByCategory);
-        const cat = catKeys[Math.floor(Math.random() * catKeys.length)];
-        parosByCategory[cat] += lineDowntime;
-
-        const lineMermas = Math.round(10 + Math.random() * 45);
-        totalMermasProcess += lineMermas;
-        const matKeys = Object.keys(mermasByMaterial);
-        const mat = matKeys[Math.floor(Math.random() * matKeys.length)];
-        mermasByMaterial[mat] += lineMermas;
-      }
-
-      lineStats[lineId] = {
-        totalSlots,
-        assignedSlots,
-        coveragePct,
-        coverageState: !isActive ? "suspended" : (deficitCount > 0 ? "danger" : "success"),
-        oeePct,
-        isLinePrep: false,
-        deficitCount,
-        sku,
-        supervisor: isActive ? presetSupervisors[idx % presetSupervisors.length] : "Sin Asignar",
-        puestosData: tomorrowPuestosData
-      };
-    });
-
-    const avgOee = activeLinesCount > 0 ? Math.round(totalOeeSum / activeLinesCount) : 0;
-
-    const fakeHistory = {
-      fecha: fechaStr,
-      metrics: {
-        avgOee,
-        totalDowntimeMinutes,
-        totalMermasProcess,
-        parosByCategory,
-        mermasByMaterial
-      },
-      lineStats,
-      shiftStatus: {
-        status: "FINALIZADO",
-        shiftStartTimestamp: new Date(new Date(fechaStr).getTime() + 6 * 3600 * 1000) // Simular inicio a las 6:00 AM
-      }
-    };
-
-    await setDoc(docRef, fakeHistory);
-    console.log(`[Historial] Creado y persistido registro automático para ${fechaStr}`);
-    return fakeHistory;
-
-  } catch (error) {
-    console.error(`[Historial] Error generando histórico de respaldo para ${fechaStr}:`, error);
-    
-    const fallbackHistory = {
-      fecha: fechaStr,
-      metrics: {
-        avgOee: 84,
-        totalDowntimeMinutes: 45,
-        totalMermasProcess: 120,
-        parosByCategory: { MECÁNICO: 15, ELÉCTRICO: 15, CALIDAD: 10, FALTA_DE_MATERIAL: 5 },
-        mermasByMaterial: { tapon: 30, botella: 45, estuche: 20, etiqueta: 25 }
-      },
-      lineStats: {},
-      shiftStatus: { status: "FINALIZADO" }
-    };
-    await setDoc(docRef, fallbackHistory);
-    return fallbackHistory;
-  }
-}
+// NOTA (limpieza Fase 3): getHistorialDia/saveHistorialDia se eliminaron de
+// este archivo. Eran código inalcanzable (ningún componente las importaba
+// desde aquí; PanelCoordinador.jsx usa las versiones reales de
+// coordinatorApi.js, que sí pegan contra /api/historial) y la versión que
+// vivía aquí fabricaba historial falso con Math.random() cuando no
+// encontraba un registro real — justo el antipatrón que no debía portarse.
 
 /**
- * Guardar/Archivar el histórico de un día completo.
- * 
- * @param {string} fechaStr Fecha en formato YYYY-MM-DD
- * @param {object} datos Estructura completa de métricas, líneas y estados
- */
-export async function saveHistorialDia(fechaStr, datos) {
-  if (!fechaStr || !datos) throw new Error("Datos insuficientes.");
-  console.log(`[Historial] Guardando registro manual de planta para: ${fechaStr}`);
-  
-  const docRef = doc(db, "historial_dias", fechaStr);
-  await setDoc(docRef, datos);
-  return { success: true };
-}
-
-/**
- * Registra el inicio de un paro técnico (Transición a Preparación)
- * Desaloja puestos varios a VACANTE y sus operarios a DISPONIBLE_BOLSON en L8.
+ * MOTOR 4: Registra el inicio de un paro técnico.
+ * Desaloja los puestos varios ocupados hacia el Bolsón L8; los puestos
+ * fijos/críticos permanecen anclados (el técnico se queda con el equipo).
  */
 export async function startLineParoTransaction(lineId, category, cause, symptoms) {
   if (!lineId || !category || !cause) {
     throw new Error("Faltan parámetros obligatorios para registrar el paro.");
   }
-  const lineDocRef = doc(db, "config", `line_${lineId}`);
 
-  const serverNowMs = Date.now() + getServerTimeOffset();
-  const newParo = {
-    category,
-    cause,
-    symptoms: symptoms || "",
-    startedAt: new Date(serverNowMs)
-  };
-
-  // Mutación atómica 1: Registrar Paro en la Línea
-  await updateDoc(lineDocRef, {
-    status: "PARO",
-    activeParo: newParo
+  const payload = await apiFetch(`/lineas/${lineId}/paro/iniciar`, {
+    method: "POST",
+    body: JSON.stringify({ categoria: category, causa: cause, sintomas: symptoms || "" })
   });
 
-  // Mutación atómica 2: Desalojar Puestos Varios de la línea en suspensión (Motor 4)
-  console.log(`[Motor 4] Desalojando puestos varios de la línea: ${lineId}`);
-  const qSlots = query(collection(db, "puestos"), where("lineId", "==", lineId));
-  const snapshotPuestos = await getDocs(qSlots);
-  const batch = writeBatch(db);
-
-  snapshotPuestos.forEach(docSnap => {
-    const slot = docSnap.data();
-    if (slot.tipoPuesto === "Puesto Vario" && slot.idWorkerCurrent) {
-      const workerId = slot.idWorkerCurrent;
-      batch.update(docSnap.ref, {
-        status: "VACANTE",
-        idWorkerCurrent: null,
-        microCopiaContextual: "Desalojado por Paro Técnico / Preparación de equipo"
-      });
-      batch.update(doc(db, "trabajadores", workerId), {
-        status: "DISPONIBLE_BOLSON",
-        currentSlotId: null,
-        physicalLineLocation: "L8"
-      });
-    }
-  });
-  await batch.commit();
-  return { success: true, newParo };
+  console.log(`[Motor 4] Paro registrado en línea ${lineId}. Puestos varios liberados: ${payload?.puestosLiberados ?? 0}.`);
+  return { success: !!(payload && payload.success), newParo: payload?.paro || null };
 }
 
 /**
- * Finaliza un paro técnico activo y reanuda producción
- * Registra la duración calculada en el historial de paros de la línea.
+ * Finaliza un paro técnico activo y reanuda producción.
  */
 export async function endLineParoTransaction(lineId) {
   if (!lineId) {
     throw new Error("Falta el identificador de la línea.");
   }
-  const lineDocRef = doc(db, "config", `line_${lineId}`);
 
-  // Hacemos una lectura consistente
-  const lineDoc = await getDoc(lineDocRef);
-  if (!lineDoc.exists()) {
-    throw new Error(`La configuración de la línea_${lineId} no existe.`);
-  }
-
-  const lineData = lineDoc.data();
-  if (!lineData.activeParo) {
-    if (lineData.status !== "PRODUCCION") {
-      await updateDoc(lineDocRef, {
-        status: "PRODUCCION",
-        activeParo: null
-      });
-      console.warn(`[Paros] Se detectó estado inconsistente (status: ${lineData.status} pero activeParo nulo). Se auto-corrigió a PRODUCCION.`);
-      return { success: true, message: "Estado de producción corregido." };
-    }
-    return { success: false, message: "No hay ningún paro activo en esta línea." };
-  }
-
-  const startedAt = lineData.activeParo.startedAt;
-  const startMs = startedAt?.toDate ? startedAt.toDate().getTime() : (startedAt?.seconds ? startedAt.seconds * 1000 : new Date(startedAt).getTime());
-  
-  const serverNowMs = Date.now() + getServerTimeOffset();
-  const durationSeconds = Math.max(1, Math.floor((serverNowMs - startMs) / 1000));
-
-  const completedParo = {
-    ...lineData.activeParo,
-    endedAt: new Date(serverNowMs),
-    durationSeconds
-  };
-
-  const pastParos = lineData.paros || [];
-
-  await updateDoc(lineDocRef, {
-    status: "PRODUCCION",
-    activeParo: null,
-    paros: [...pastParos, completedParo]
+  const payload = await apiFetch(`/lineas/${lineId}/paro/finalizar`, {
+    method: "POST"
   });
 
-  console.log(`[Paros] Paro completado y guardado en Línea ${lineId}. Duración: ${durationSeconds}s`);
-  return { success: true, completedParo, durationSeconds };
+  console.log(`[Paros] Paro finalizado en línea ${lineId}. Duración: ${payload?.duracionSegundos ?? "N/A"}s`);
+  return {
+    success: !!(payload && payload.success),
+    completedParo: payload?.paroFinalizado || null,
+    durationSeconds: payload?.duracionSegundos ?? null
+  };
 }
 
 /**
@@ -3448,17 +2254,10 @@ export function getBestSuggestionsForSlot(slot, allSlots, allWorkers, priorityOr
     return !medicalConflict;
   };
 
-  const getElapsedMins = (s) => {
-    const t = s.asignadoEnSegundoVirtual;
-    if (!t) return 0;
-    const ms = t.toDate ? t.toDate().getTime() : (t.seconds ? t.seconds * 1000 : new Date(t).getTime());
-    return Math.max(0, Math.floor((Date.now() - ms) / 60000));
-  };
-
   const workersList = Array.isArray(allWorkers) ? allWorkers : Object.values(allWorkers || {});
 
   // 1. Filtrar operarios libres compatibles de Bolsón L8
-  const availableCandidates = workersList.filter(w => 
+  const availableCandidates = workersList.filter(w =>
     (w.status === "POOL_ARRANQUE" || w.status === "DISPONIBLE_BOLSON") &&
     w.currentSlotId == null &&
     isWorkerRoleCompatibleWithSlot(w.role, slot.tipoPuesto, slot.puestoName) &&
@@ -3466,9 +2265,10 @@ export function getBestSuggestionsForSlot(slot, allSlots, allWorkers, priorityOr
     w.lastActivity !== slot.puestoName
   );
 
-  // 2. Filtrar candidatos de rotación por fatiga en otras líneas
-  const rotationCandidates = [];
-
+  // NOTA: la rotación por fatiga en otras líneas ("ROTACION") no está
+  // implementada todavía -no hay ninguna fuente que popule candidatos ahí-;
+  // por ahora las sugerencias solo salen de Bolsón L8 (abajo) y, si no hay
+  // ninguna, del Motor 3 (extracción inversa por jerarquía, más abajo).
   const suggestions = [];
 
   // Agregar disponibles de Bolsón L8 con puntuación base alta (100)
@@ -3478,20 +2278,6 @@ export function getBestSuggestionsForSlot(slot, allSlots, allWorkers, priorityOr
       type: "BOLSON",
       label: `${w.name} (Disponible en Bolsón L8)`,
       score: 100
-    });
-  });
-
-  // Agregar candidatos de rotación ergonómica por fatiga (score escala con los minutos de fatiga)
-  rotationCandidates.forEach(w => {
-    const currentSlot = allSlots.find(s => s.id === w.currentSlotId);
-    const elapsed = getElapsedMins(currentSlot);
-    suggestions.push({
-      worker: w,
-      type: "ROTACION",
-      originalSlotId: w.currentSlotId,
-      originalLineId: currentSlot.lineId,
-      label: `${w.name} (Línea ${currentSlot.lineId} - Fatiga: ${elapsed} mins)`,
-      score: 50 + Math.min(40, elapsed - 100)
     });
   });
 
@@ -3565,205 +2351,51 @@ export async function updateWorkerDobleTurno(workerId, dobleTurnoActivo) {
 }
 
 /**
- * FASE 2: GESTIÓN DE DOBLE TURNO - CIERRE DE TURNO ATÓMICO
- * Desvincula todo el personal de la línea, enviando a los seleccionados a POOL_ARRANQUE del siguiente turno
- * y a los no seleccionados a INACTIVO. Limpia todas las celdas de la línea.
+ * CIERRE DE TURNO
+ * Calcula el OEE real del turno y lo persiste en HistoricoOEE (alimenta
+ * GET /api/historial), resetea los puestos de la línea, y despacha a cada
+ * operario asignado a POOL_ARRANQUE (doble turno) o INACTIVO.
+ *
+ * NOTA (migración SQL Server): reemplaza el cálculo/escritura inline contra
+ * Firestore por una única transacción SQL real en
+ * POST /lineas/:lineId/cerrar-turno (server/server.js), con la misma fórmula
+ * de OEE (availability × performance × quality). La generación de
+ * "productionReport"/"skuFinishedEvent" (config/production_reports, capado a
+ * 50) no se portó — no hay tabla ni consumidor confirmado que dependa de eso
+ * hoy; queda pendiente para cuando se construya el Dashboard analítico real.
  */
 export async function closeShiftForLineTransaction(lineId, selectedWorkersForDobleTurno) {
   console.log(`[Cierre Turno] Iniciando cierre de turno para línea ${lineId}...`);
-  try {
-    // 1. Obtener todos los puestos de la línea
-    const qSlots = query(puestosColl, where("lineId", "==", lineId));
-    const slotsSnapshot = await getDocs(qSlots);
-    
-    const slotRefs = [];
-    const workerIdsToUpdate = new Set();
-    const puestosList = [];
-    
-    slotsSnapshot.forEach(docSnap => {
-      slotRefs.push(docSnap.ref);
-      const data = docSnap.data();
-      puestosList.push({ id: docSnap.id, ...data });
-      if (data.idWorkerCurrent) workerIdsToUpdate.add(data.idWorkerCurrent);
-      if (data.idWorkerOriginal) workerIdsToUpdate.add(data.idWorkerOriginal);
-    });
-    
-    const workerRefs = Array.from(workerIdsToUpdate).map(id => doc(db, "trabajadores", id));
-    
-    // Obtener config de la línea actual
-    const lineDocRef = doc(db, "config", `line_${lineId}`);
-    const lineDocSnap = await getDoc(lineDocRef);
-    const lineConfig = lineDocSnap.exists() ? lineDocSnap.data() : {};
 
-    // Obtener asignación del supervisor actual
-    const supervisorsAssignDoc = await getDoc(doc(db, "config", "supervisors_assignment"));
-    const supervisorAssignments = supervisorsAssignDoc.exists() ? supervisorsAssignDoc.data() : {};
-    const supervisorAssign = supervisorAssignments[lineId];
-    const supervisorName = supervisorAssign?.shortName || supervisorAssign?.name || "Sin Asignar";
+  const payload = await apiFetch(`/lineas/${lineId}/cerrar-turno`, {
+    method: "POST",
+    body: JSON.stringify({ workersDobleTurno: (selectedWorkersForDobleTurno || []).map(Number) })
+  });
 
-    // Calcular métricas de producción finales para el informe
-    const currentSku = lineConfig.sku || "INACTIVO";
-    
-    // Calcular paros acumulados
-    let totalParoSeconds = 0;
-    if (lineConfig.paros) {
-      lineConfig.paros.forEach(p => {
-        totalParoSeconds += p.durationSeconds || 0;
-      });
-    }
-    if (lineConfig.activeParo && lineConfig.activeParo.startedAt) {
-      const t = lineConfig.activeParo.startedAt;
-      const ms = t.toDate ? t.toDate().getTime() : (t.seconds ? t.seconds * 1000 : new Date(t).getTime());
-      if (!isNaN(ms)) {
-        totalParoSeconds += Math.max(0, Math.floor((Date.now() - ms) / 1000));
-      }
-    }
+  console.log(`[Cierre Turno] Cierre consolidado para línea ${lineId}. OEE: ${payload?.oee?.oeeGlobalPct ?? "N/A"}%.`);
+  return { success: !!(payload && payload.success), oee: payload?.oee || null };
+}
 
-    // Calcular mermas
-    const mermas = lineConfig.mermas || {};
-    const processWaste = Object.values(mermas).reduce((acc, m) => acc + (parseInt(m?.proceso) || 0), 0);
-
-    // Calcular OEE final
-    const startTimestamp = lineConfig.turnStartTimestamp;
-    let startMs = Date.now() - 3600000;
-    if (startTimestamp) {
-      const ms = startTimestamp.toDate ? startTimestamp.toDate().getTime() : (startTimestamp.seconds ? startTimestamp.seconds * 1000 : new Date(startTimestamp).getTime());
-      if (!isNaN(ms)) startMs = ms;
-    }
-    const totalElapsedSeconds = Math.max(60, Math.floor((Date.now() - startMs) / 1000));
-    const runSeconds = Math.max(0, totalElapsedSeconds - totalParoSeconds);
-    const availability = totalElapsedSeconds > 0 ? (runSeconds / totalElapsedSeconds) : 1;
-    
-    let speedPerMin = 100;
-    if (currentSku.includes("BOST")) speedPerMin = 120;
-    else if (currentSku.includes("LITE")) speedPerMin = 80;
-    const estimatedProduction = Math.max(100, Math.round((runSeconds * speedPerMin) / 60));
-    const quality = estimatedProduction > 0 ? Math.max(0, Math.min(1, (estimatedProduction - processWaste) / estimatedProduction)) : 1;
-
-    const totalSlots = puestosList.length || 8;
-    const activeSlotsCount = puestosList.filter(p => p.status === "ASIGNADO").length;
-    const coverageFactor = totalSlots > 0 ? (activeSlotsCount / totalSlots) : 1;
-    const performance = coverageFactor * 0.98;
-    const finalOee = Math.round(availability * performance * quality * 100);
-
-    // Crear informe estructurado de producción
-    const productionReport = {
-      id: `report_${lineId}_${Date.now()}`,
-      lineId,
-      sku: currentSku,
-      supervisor: supervisorName,
-      oee: finalOee,
-      availability: Math.round(availability * 100),
-      performance: Math.round(performance * 100),
-      quality: Math.round(quality * 100),
-      totalParoMinutes: Math.round(totalParoSeconds / 60),
-      totalMermas: processWaste,
-      mermasDetail: mermas,
-      closedAt: new Date().toISOString()
-    };
-
-    // Crear evento de finalización de SKU
-    const skuFinishedEvent = {
-      id: `event_${lineId}_${Date.now()}`,
-      lineId,
-      sku: currentSku,
-      eventType: "SKU_FINALIZADO",
-      timestamp: new Date().toISOString()
-    };
-
-    await runTransaction(db, async (transaction) => {
-      // a. Leer todos los puestos de la línea para asegurar consistencia
-      const slotSnapshots = [];
-      for (const ref of slotRefs) {
-        slotSnapshots.push(await transaction.get(ref));
-      }
-      
-      // b. Leer todos los trabajadores implicados
-      const workerSnapshots = [];
-      for (const ref of workerRefs) {
-        workerSnapshots.push(await transaction.get(ref));
-      }
-
-      // b.2. Leer o inicializar el documento de informes globales config/production_reports
-      const reportsDocRef = doc(db, "config", "production_reports");
-      const reportsDocSnap = await transaction.get(reportsDocRef);
-      let reportsList = [];
-      let eventsList = [];
-      if (reportsDocSnap.exists()) {
-        const rData = reportsDocSnap.data();
-        reportsList = rData.reports || [];
-        eventsList = rData.skuEvents || [];
-      }
-      reportsList.unshift(productionReport); // Agregar al principio
-      eventsList.unshift(skuFinishedEvent);
-
-      // Limitar a los últimos 50 registros para evitar sobrecarga del documento
-      if (reportsList.length > 50) reportsList = reportsList.slice(0, 50);
-      if (eventsList.length > 50) eventsList = eventsList.slice(0, 50);
-
-      // Escribir el informe consolidado
-      transaction.set(reportsDocRef, {
-        reports: reportsList,
-        skuEvents: eventsList,
-        updatedAt: serverTimestamp()
-      }, { merge: true });
-      
-      // c. Escribir actualizaciones de puestos (vaciar celdas)
-      slotSnapshots.forEach(snap => {
-        if (snap.exists()) {
-          const data = snap.data();
-          const esFijo = ["Operador A", "Averiero", "Operador C"].includes(data.tipoPuesto);
-          transaction.update(snap.ref, {
-            idWorkerCurrent: null,
-            idWorkerOriginal: null,
-            status: esFijo ? "ALERTA_VACANTE" : "VACANTE",
-            asignadoEnSegundoVirtual: null,
-            relevoSolicitado: null
-          });
-        }
-      });
-      
-      // d. Escribir actualizaciones de trabajadores
-      workerSnapshots.forEach(snap => {
-        if (snap.exists()) {
-          const workerId = snap.id;
-          const isDobleTurno = selectedWorkersForDobleTurno.includes(workerId);
-          
-          transaction.update(snap.ref, {
-            status: isDobleTurno ? "POOL_ARRANQUE" : "INACTIVO",
-            currentSlotId: null,
-            lineaDestinoId: null,
-            dobleTurnoActivo: false, // Resetear bandera al consolidar
-            updatedAt: serverTimestamp()
-          });
-        }
-      });
-      
-      // e. Actualizar estado de la línea a PREPARACION y reiniciar contadores de mermas y paros
-      transaction.set(lineDocRef, {
-        status: "PREPARACION",
-        fijosAssigned: false, // Permitir nueva auto-asignación al iniciar siguiente turno
-        activeParo: null,
-        paros: [],
-        mermas: {
-          tapon: { proceso: 0, inventario: 0 },
-          botella: { proceso: 0, inventario: 0 },
-          estuche: { proceso: 0, inventario: 0 },
-          etiqueta: { proceso: 0, inventario: 0 }
-        },
-        mermaJustification: "",
-        oee: 0,
-        turnStartTimestamp: serverTimestamp(),
-        updatedAt: serverTimestamp()
-      }, { merge: true });
-    });
-    
-    console.log(`[Cierre Turno] Cierre de turno consolidado con éxito para la línea ${lineId}. Informe enviado.`);
-    return { success: true };
-  } catch (error) {
-    console.error(`[Cierre Turno] Error al ejecutar cierre de turno para línea ${lineId}:`, error);
-    throw error;
+/**
+ * FORMULARIO DE MERMAS: guarda el snapshot actual (4 materiales x
+ * inventario/proceso) de la línea en curso. Reemplaza el updateDoc contra
+ * Firestore que el mock ignoraba silenciosamente (LineaSku.jsx handleSaveMermas).
+ */
+export async function saveMermasForLine(lineId, mermas, justification) {
+  if (!lineId) {
+    throw new Error("Falta el identificador de la línea.");
   }
+
+  const payload = await apiFetch(`/lineas/${lineId}/mermas`, {
+    method: "POST",
+    body: JSON.stringify({ mermas, justification: justification || "" })
+  });
+
+  return {
+    success: !!(payload && payload.success),
+    totalProcessWaste: payload?.totalProcessWaste ?? null,
+    wastePercentage: payload?.wastePercentage ?? null
+  };
 }
 
 

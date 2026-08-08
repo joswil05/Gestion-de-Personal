@@ -1,7 +1,7 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { styled, keyframes } from '../styles/theme';
-import { db, puestosColl, trabajadoresColl, initializeTurnoWithSheets, programNextDayShift, assignPuestosLive, executeCoordinatorSuggestion, getHistorialDia, saveHistorialDia, getProgramaProduccionPorFecha, canWorkerOccupiedSlot, assignSupervisorToLine } from '../services/firebaseService';
-import { REAL_SUPERVISORS } from '../dev/realDataSeed';
+import { db, puestosColl, trabajadoresColl, getHistorialDia, getProgramaProduccionPorFecha, canWorkerOccupiedSlot, subscribeToPuestos, subscribeToTrabajadores, subscribeToLineas, getSupervisorsFromApi, getPlanificacion, guardarPlanificacion, confirmarPlanificacion, getOperariosGestion, crearOperario, actualizarOperario, darBajaOperario, reactivarOperario } from '../services/coordinatorApi';
+import { executeCoordinatorSuggestion } from '../services/apiService';
 import { collection, doc, onSnapshot, getDocs, updateDoc, setDoc, deleteDoc, query, where, getDoc, writeBatch, serverTimestamp } from 'firebase/firestore';
 import { triggerNativeHapticFeedback } from '../skills/capacitor-android-bridge';
 
@@ -1689,38 +1689,156 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
     L9: "INACTIVO",
     L10: "INACTIVO"
   });
+  // Planificación T+1 real (PlanificacionLineas vía server.js) — reemplaza
+  // el doc config/next_day_plan, que quedó huérfano tras la migración a SQL
+  // Server (ver getPlanificacion/guardarPlanificacion/confirmarPlanificacion
+  // en coordinatorApi.js).
+  const [planificacionManana, setPlanificacionManana] = useState([]);
+  const [loadingPlanificacion, setLoadingPlanificacion] = useState(false);
+  const [confirmingPlan, setConfirmingPlan] = useState(false);
+  const [nextDaySupervisorPlan, setNextDaySupervisorPlan] = useState({});
+  const [nextDayOrdenIds, setNextDayOrdenIds] = useState({});
 
-  const [authorizedSupervisors, setAuthorizedSupervisors] = useState(REAL_SUPERVISORS);
+  // Gestión de Personal (CRUD real de Operarios) — reemplaza el editor de
+  // estado de la pestaña "Ausencias", que escribía contra el shim muerto de
+  // Firestore (ver handleUpdateWorkerStatus más abajo).
+  const [operariosGestion, setOperariosGestion] = useState([]);
+  const [loadingOperarios, setLoadingOperarios] = useState(false);
+  const [personalSearchQuery, setPersonalSearchQuery] = useState("");
+  const [personalFilterCargo, setPersonalFilterCargo] = useState("TODOS");
+  const [personalFilterEstado, setPersonalFilterEstado] = useState("TODOS");
+  const [personalShowBajas, setPersonalShowBajas] = useState(false);
+  const [editingOperario, setEditingOperario] = useState(null); // null | 'new' | objeto operario
+  const [operarioForm, setOperarioForm] = useState({});
+  const [savingOperario, setSavingOperario] = useState(false);
+
+  const WORKER_ABSENCE_STATES_UI = ['VACACIONES', 'PERMISOS', 'CONSULTAS_MEDICAS', 'SUBSIDIOS', 'ACCIDENTE_LABORAL', 'BAJA_TEMPORAL'];
+  const WORKER_STATES_UI = ['INACTIVO', 'POOL_ARRANQUE', 'ASIGNADO', 'EN_TRANSITO', 'DISPONIBLE_BOLSON', ...WORKER_ABSENCE_STATES_UI];
+  const WORKER_PUESTO_BASE_UI = ['Operario', 'Operador A', 'Operador B', 'Averiero', 'Auxiliar Materiales', 'Operador Calderas', 'Operario Filtros'];
+
+  const reloadOperariosGestion = useCallback(async () => {
+    setLoadingOperarios(true);
+    try {
+      const rows = await getOperariosGestion();
+      setOperariosGestion(rows || []);
+    } catch (err) {
+      console.error("[Gestión de Personal] Error al cargar:", err);
+    } finally {
+      setLoadingOperarios(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (currentTab === 'PERSONAL') {
+      reloadOperariosGestion();
+    }
+  }, [currentTab, reloadOperariosGestion]);
+
+  const handleOpenNewOperario = () => {
+    triggerNativeHapticFeedback('short');
+    setOperarioForm({ nombreCompleto: "", numeroNomina: "", turnoBase: "Matutino", puestoBase: "Operario", estadoActual: "POOL_ARRANQUE", sexo: "", medicalRestrictions: [] });
+    setEditingOperario('new');
+  };
+
+  const handleOpenEditOperario = (op) => {
+    triggerNativeHapticFeedback('short');
+    setOperarioForm({
+      nombreCompleto: op.nombreCompleto,
+      numeroNomina: op.numeroNomina,
+      turnoBase: op.turnoBase,
+      puestoBase: op.puestoBase || "",
+      estadoActual: op.estadoActual,
+      sexo: op.sexo || "",
+      medicalRestrictions: op.medicalRestrictions || []
+    });
+    setEditingOperario(op);
+  };
+
+  const handleSaveOperario = async () => {
+    triggerNativeHapticFeedback('confirm');
+    setSavingOperario(true);
+    try {
+      if (editingOperario === 'new') {
+        await crearOperario(operarioForm);
+      } else {
+        await actualizarOperario(editingOperario.id, operarioForm);
+      }
+      triggerNativeHapticFeedback('confirm');
+      setEditingOperario(null);
+      await reloadOperariosGestion();
+    } catch (err) {
+      triggerNativeHapticFeedback('error');
+      alert(`Error al guardar: ${err.message}`);
+    } finally {
+      setSavingOperario(false);
+    }
+  };
+
+  const handleBajaOperario = async (op) => {
+    if (!window.confirm(`¿Dar de baja a ${op.nombreCompleto}? Se liberará su puesto si tiene uno asignado. Podrás reactivarlo después.`)) return;
+    triggerNativeHapticFeedback('confirm');
+    try {
+      await darBajaOperario(op.id, "Baja registrada por el Coordinador");
+      await reloadOperariosGestion();
+    } catch (err) {
+      triggerNativeHapticFeedback('error');
+      alert(`Error al dar de baja: ${err.message}`);
+    }
+  };
+
+  const handleReactivarOperario = async (op) => {
+    triggerNativeHapticFeedback('confirm');
+    try {
+      await reactivarOperario(op.id);
+      await reloadOperariosGestion();
+    } catch (err) {
+      triggerNativeHapticFeedback('error');
+      alert(`Error al reactivar: ${err.message}`);
+    }
+  };
+
+  // Reemplaza el updateDoc(doc(db,"trabajadores",...)) roto del <select> de
+  // la pestaña "Ausencias" (escribía contra el shim muerto de Firestore).
+  const handleUpdateWorkerStatus = async (workerId, newStatus) => {
+    triggerNativeHapticFeedback('short');
+    try {
+      await actualizarOperario(workerId, { estadoActual: newStatus });
+    } catch (err) {
+      alert("Error al tipificar inasistencia: " + err.message);
+    }
+  };
+
+  const operariosGestionFiltrados = useMemo(() => {
+    const q = personalSearchQuery.trim().toLowerCase();
+    return operariosGestion.filter(op => {
+      if (!personalShowBajas && !op.activo) return false;
+      if (personalFilterCargo !== 'TODOS' && op.puestoBase !== personalFilterCargo) return false;
+      if (personalFilterEstado !== 'TODOS' && op.estadoActual !== personalFilterEstado) return false;
+      if (q && !op.nombreCompleto.toLowerCase().includes(q) && !op.numeroNomina.toLowerCase().includes(q)) return false;
+      return true;
+    });
+  }, [operariosGestion, personalSearchQuery, personalFilterCargo, personalFilterEstado, personalShowBajas]);
+
+  const [authorizedSupervisors, setAuthorizedSupervisors] = useState([]);
   const [showAuthSupervisorsModal, setShowAuthSupervisorsModal] = useState(false);
   const [newSupWorkerId, setNewSupWorkerId] = useState("");
   const [newSupName, setNewSupName] = useState("");
   const [newSupShortName, setNewSupShortName] = useState("");
 
-  // Escuchar colección personal_autorizado en tiempo real (Fuente de verdad)
-  useEffect(() => {
-    const unsubPersonal = onSnapshot(collection(db, "personal_autorizado"), (snapshot) => {
-      if (!snapshot.empty) {
-        const list = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+  const fetchSupervisors = useCallback(async () => {
+    try {
+      const list = await getSupervisorsFromApi();
+      if (list && list.length > 0) {
         setAuthorizedSupervisors(list);
-      } else {
-        // Auto-poblar semillero inicial si la colección en Firestore está vacía
-        REAL_SUPERVISORS.forEach(async (sup) => {
-          await setDoc(doc(db, "personal_autorizado", sup.id), {
-            workerId: sup.id,
-            name: sup.name,
-            shortName: sup.shortName,
-            role: "Supervisor",
-            createdAt: serverTimestamp()
-          });
-        });
-        setAuthorizedSupervisors(REAL_SUPERVISORS);
       }
-    }, (err) => {
-      console.warn("[PanelCoordinador] Error escuchando personal_autorizado:", err);
-    });
-
-    return () => unsubPersonal();
+    } catch (err) {
+      console.warn("[PanelCoordinador] Error obteniendo supervisores:", err);
+    }
   }, []);
+
+  useEffect(() => {
+    fetchSupervisors();
+  }, [fetchSupervisors]);
 
   // Supervisores reales del sistema — enriquecidos con asignaciones actuales
   const availableSupervisors = useMemo(() => {
@@ -1799,27 +1917,38 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
 
   // 2. Escuchar puestos de toda la planta
   useEffect(() => {
-    const unsubscribe = onSnapshot(puestosColl, (snapshot) => {
-      const list = [];
-      snapshot.forEach(docSnap => {
-        list.push({ id: docSnap.id, ...docSnap.data() });
-      });
-      setPuestos(list);
+    const unsubscribe = subscribeToPuestos((data) => {
+      // data asume venir con formato [{id: '...', ...}]
+      if(Array.isArray(data)) {
+        setPuestos(data);
+      }
     });
     return () => unsubscribe();
   }, []);
 
   // 3. Escuchar trabajadores
   useEffect(() => {
-    const unsubscribe = onSnapshot(trabajadoresColl, (snapshot) => {
-      const map = {};
-      snapshot.forEach(docSnap => {
-        map[docSnap.id] = { id: docSnap.id, ...docSnap.data() };
-      });
-      setWorkers(map);
+    const unsubscribe = subscribeToTrabajadores((data) => {
+      // data asume venir con formato [{id: '...', ...}]
+      if(Array.isArray(data)) {
+        const map = {};
+        data.forEach(worker => {
+          map[worker.id] = worker;
+        });
+        setWorkers(map);
+      }
     });
     return () => unsubscribe();
   }, []);
+
+  // Escuchar actualización de líneas
+  useEffect(() => {
+    const unsubscribe = subscribeToLineas((data) => {
+       // Recargar órdenes si cambian las líneas
+       getProgramaProduccionPorFecha(selectedDate).then(orders => setDayOrders(orders || []));
+    });
+    return () => unsubscribe();
+  }, [selectedDate]);
 
   // 3.5. Cargar datos históricos y órdenes del programa de producción de Excel al cambiar selectedDate
   useEffect(() => {
@@ -1889,6 +2018,43 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
 
     loadHistory();
   }, [selectedDate, activeLines]);
+
+  // 3.6. Cargar la Planificación T+1 real (PlanificacionLineas) para la fecha
+  // seleccionada cuando se está viendo la pestaña "Mañana". Reemplaza la
+  // lectura muerta de configDocs["next_day_plan"].
+  const reloadPlanificacionManana = useCallback(async () => {
+    setLoadingPlanificacion(true);
+    try {
+      const rows = await getPlanificacion(selectedDate);
+      setPlanificacionManana(rows || []);
+      // Precarga los pickers del modal con lo ya guardado, para que
+      // reabrirlo no pierda lo que ya se planificó.
+      if (rows && rows.length > 0) {
+        const skuSeed = {};
+        const supSeed = {};
+        const ordenSeed = {};
+        rows.forEach(r => {
+          skuSeed[r.lineId] = r.sku || "INACTIVO";
+          if (r.supervisorUsuarioId) supSeed[r.lineId] = r.supervisorUsuarioId;
+          if (r.ordenProduccionId) ordenSeed[r.lineId] = r.ordenProduccionId;
+        });
+        setNextDaySkuPlan(prev => ({ ...prev, ...skuSeed }));
+        setNextDaySupervisorPlan(prev => ({ ...prev, ...supSeed }));
+        setNextDayOrdenIds(prev => ({ ...prev, ...ordenSeed }));
+      }
+    } catch (err) {
+      console.error("[Planificación T+1] Error al cargar:", err);
+      setPlanificacionManana([]);
+    } finally {
+      setLoadingPlanificacion(false);
+    }
+  }, [selectedDate]);
+
+  useEffect(() => {
+    if (viewDay === 'NEXT_DAY') {
+      reloadPlanificacionManana();
+    }
+  }, [viewDay, selectedDate, reloadPlanificacionManana]);
 
   // 4. Agregación de Métricas por Línea para el Mapa Global (Turno Actual)
   const lineStats = useMemo(() => {
@@ -2484,39 +2650,33 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
 
   const handleConfirmPlan = async () => {
     triggerNativeHapticFeedback('confirm');
+    setConfirmingPlan(true);
     try {
-      const planRef = doc(db, "config", "next_day_plan");
-      await setDoc(planRef, {
-        status: "CONFIRMADO",
-        updatedAt: new Date()
-      }, { merge: true });
-      alert("¡Planificación de Mañana CONFIRMADA y SELLADA con éxito! Los supervisores ahora pueden ver las asignaciones oficiales.");
+      const result = await confirmarPlanificacion(selectedDate);
+      triggerNativeHapticFeedback('confirm');
+      alert(`¡Planificación de ${selectedDate} CONFIRMADA y SELLADA con éxito! (${result.lineasConfirmadas} línea(s)). Se activará sola al llegar la fecha, y fijará al supervisor planificado en cada línea activa.`);
+      await reloadPlanificacionManana();
     } catch (err) {
       triggerNativeHapticFeedback('error');
       alert(`Error al confirmar plan: ${err.message}`);
+    } finally {
+      setConfirmingPlan(false);
     }
   };
 
-
-
   const handleProgramNextDay = () => {
     triggerNativeHapticFeedback('short');
-    const existingPlan = configDocs["next_day_plan"]?.skuPlan;
-    if (existingPlan) {
-      setNextDaySkuPlan(existingPlan);
-    } else {
+    // nextDaySkuPlan/nextDaySupervisorPlan/nextDayOrdenIds ya vienen
+    // precargados por reloadPlanificacionManana si hay un plan guardado para
+    // selectedDate; si no hay nada guardado todavía, se usa este default de
+    // conveniencia (el Coordinador lo puede editar libremente antes de guardar).
+    if (!planificacionManana || planificacionManana.length === 0) {
       setNextDaySkuPlan({
-        L1: "SKU-441-AQUA",
-        L2: "SKU-102-LITE",
-        L3: "SKU-441-AQUA",
-        L4: "SKU-990-BOST",
-        L5: "INACTIVO",
-        L6: "SKU-990-BOST",
-        L7: "INACTIVO",
-        L8: "SKU-102-LITE",
-        L9: "INACTIVO",
-        L10: "INACTIVO"
+        L1: "INACTIVO", L2: "INACTIVO", L3: "INACTIVO", L4: "INACTIVO", L5: "INACTIVO",
+        L6: "INACTIVO", L7: "INACTIVO", L8: "INACTIVO", L9: "INACTIVO", L10: "INACTIVO"
       });
+      setNextDaySupervisorPlan({});
+      setNextDayOrdenIds({});
     }
     setIsConfiguringNextDay(true);
   };
@@ -2566,13 +2726,16 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
       }
 
       const loadedPlan = {};
+      const loadedOrdenIds = {};
       activeLines.forEach(l => {
         const match = orders.find(o => o.lineaId === l);
         loadedPlan[l] = match ? match.item : "INACTIVO";
+        if (match) loadedOrdenIds[l] = match.id;
       });
 
       setNextDaySkuPlan(loadedPlan);
-      
+      setNextDayOrdenIds(prev => ({ ...prev, ...loadedOrdenIds }));
+
       const linesSched = Object.keys(loadedPlan).filter(l => loadedPlan[l] !== "INACTIVO");
       alert(`¡Programa de Excel cargado con éxito para la fecha seleccionada (${targetDateStr})!\n\n` +
             `Líneas activadas: ${linesSched.join(", ")}\n` +
@@ -2587,13 +2750,24 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
     triggerNativeHapticFeedback('confirm');
     setProgramingNextDay(true);
     try {
-      await programNextDayShift(nextDaySkuPlan);
+      const lineas = activeLines.map(lineId => {
+        const sku = nextDaySkuPlan[lineId];
+        const isInactive = !sku || sku === "INACTIVO";
+        return {
+          lineId,
+          sku: isInactive ? null : sku,
+          ordenProduccionId: isInactive ? null : (nextDayOrdenIds[lineId] ? Number(nextDayOrdenIds[lineId]) : null),
+          supervisorUsuarioId: isInactive ? null : (nextDaySupervisorPlan[lineId] ? Number(nextDaySupervisorPlan[lineId]) : null)
+        };
+      });
+      await guardarPlanificacion(selectedDate, lineas);
       setIsConfiguringNextDay(false);
       triggerNativeHapticFeedback('confirm');
-      alert("¡Planificación del Día Posterior generada con éxito! Se pre-asignó preventivamente al personal para el día posterior y se calcularon coberturas y déficits preventivos.");
+      alert(`¡Planificación de ${selectedDate} guardada como borrador! Revisa el resumen y usa "Confirmar y Sellar" cuando esté lista -sella el día completo, no línea por línea-.`);
+      await reloadPlanificacionManana();
     } catch (err) {
       triggerNativeHapticFeedback('error');
-      alert(`Error al generar planificación: ${err.message}`);
+      alert(`Error al guardar la planificación: ${err.message}`);
     } finally {
       setProgramingNextDay(false);
     }
@@ -2603,14 +2777,7 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
     triggerNativeHapticFeedback('short');
     setApplyingRotationId(slotId);
     try {
-      // Aplicar sugerencia al plan de Mañana
       await executeCoordinatorSuggestion(workerId, slotId, originalSlotId);
-      
-      // Marcar plan como BORRADOR
-      await setDoc(doc(db, "config", "next_day_plan"), {
-        status: "BORRADOR",
-        updatedAt: new Date()
-      }, { merge: true });
 
       triggerNativeHapticFeedback('confirm');
       alert(`¡Sugerencia de rotación aplicada con éxito! ${workerName} ha sido asignado al puesto "${slotName}".`);
@@ -2632,52 +2799,38 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
 
     setApplyingAll(true);
     try {
-      const batch = writeBatch(db);
       const processedWorkers = new Set();
       const processedSlots = new Set();
+      const toApply = [];
 
       validSugs.forEach(sug => {
         const { slot, worker, originalSlotId } = sug;
         if (processedWorkers.has(worker.id) || processedSlots.has(slot.id)) return;
         processedWorkers.add(worker.id);
         processedSlots.add(slot.id);
-
-        // 1. Si es rotación, liberar puesto anterior
-        if (originalSlotId) {
-          batch.update(doc(db, "puestos", originalSlotId), {
-            status: "VACANTE",
-            idWorkerCurrent: null,
-            updatedAt: serverTimestamp()
-          });
-        }
-
-        // 2. Asignar en puesto destino
-        batch.update(doc(db, "puestos", slot.id), {
-          status: "ASIGNADO",
-          idWorkerCurrent: worker.id,
-          updatedAt: serverTimestamp(),
-          asignadoEnSegundoVirtual: serverTimestamp()
-        });
-
-        // 3. Actualizar operario
-        batch.update(doc(db, "trabajadores", worker.id), {
-          status: "ASIGNADO",
-          currentSlotId: slot.id,
-          lineaDestinoId: null,
-          physicalLineLocation: slot.lineId,
-          updatedAt: serverTimestamp()
-        });
+        toApply.push(sug);
       });
 
-      // Marcar plan como BORRADOR
-      batch.set(doc(db, "config", "next_day_plan"), {
-        status: "BORRADOR",
-        updatedAt: serverTimestamp()
-      }, { merge: true });
+      // Cada sugerencia es su propia transacción real en el servidor (no un
+      // batch de Firestore): se aplican en secuencia para no pisarse entre
+      // sí, y una que falle no aborta a las demás.
+      let succeeded = 0;
+      const failures = [];
+      for (const sug of toApply) {
+        try {
+          await executeCoordinatorSuggestion(sug.worker.id, sug.slot.id, sug.originalSlotId);
+          succeeded++;
+        } catch (err) {
+          failures.push(`${sug.worker.name || sug.worker.id} → ${sug.slot.puestoName}: ${err.message}`);
+        }
+      }
 
-      await batch.commit();
-      triggerNativeHapticFeedback('confirm');
-      alert(`¡Balanceo automático completado! Se aplicaron ${processedSlots.size} rotaciones/asignaciones preventivas.`);
+      triggerNativeHapticFeedback(failures.length === 0 ? 'confirm' : 'error');
+      let msg = `Balanceo automático: se aplicaron ${succeeded} de ${toApply.length} rotaciones/asignaciones.`;
+      if (failures.length > 0) {
+        msg += `\n\nFallaron:\n${failures.join('\n')}`;
+      }
+      alert(msg);
     } catch (err) {
       triggerNativeHapticFeedback('error');
       alert(`Error al aplicar balanceo masivo: ${err.message}`);
@@ -2688,59 +2841,34 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
 
   const handleAddAuthorizedSupervisor = async (e) => {
     e.preventDefault();
-    if (!newSupWorkerId.trim() || !newSupName.trim()) return;
-    try {
-      const id = newSupWorkerId.trim();
-      const name = newSupName.trim();
-      const shortName = newSupShortName.trim() || name;
-      await setDoc(doc(db, "personal_autorizado", id), {
-        workerId: id,
-        name: name,
-        shortName: shortName,
-        role: "Supervisor",
-        createdAt: serverTimestamp()
-      });
-      setNewSupWorkerId("");
-      setNewSupName("");
-      setNewSupShortName("");
-      triggerNativeHapticFeedback('confirm');
-      alert(`Supervisor ${name} (${id}) dado de alta exitosamente en personal_autorizado.`);
-    } catch (err) {
-      alert(`Error al dar de alta supervisor: ${err.message}`);
-    }
+    /*
+     * Función deshabilitada temporalmente durante la migración (Fase B).
+     * El alta/baja de supervisores se trasladará a la base de datos SQL Server
+     * en un bloque de trabajo futuro, ya que requiere endpoints REST específicos.
+     */
+    alert("Función en migración a SQL Server - temporalmente no disponible.");
+    return;
   };
 
   const handleDeleteAuthorizedSupervisor = async (supId, name) => {
-    if (!window.confirm(`¿Dar de baja al supervisor "${name}" (${supId})? Se revocarán sus accesos.`)) return;
-    try {
-      await deleteDoc(doc(db, "personal_autorizado", supId));
-      triggerNativeHapticFeedback('confirm');
-    } catch (err) {
-      alert(`Error al dar de baja supervisor: ${err.message}`);
-    }
+    /*
+     * Función deshabilitada temporalmente durante la migración (Fase B).
+     * El alta/baja de supervisores se trasladará a la base de datos SQL Server
+     * en un bloque de trabajo futuro, ya que requiere endpoints REST específicos.
+     */
+    alert("Función en migración a SQL Server - temporalmente no disponible.");
+    return;
   };
 
   const handleSaveSupervisor = async () => {
-    if (!editingLineId || !tempSupervisorName) return;
-    triggerNativeHapticFeedback('short');
-    try {
-      // tempSupervisorName ahora contiene el workerId del supervisor seleccionado
-      const selectedSup = authorizedSupervisors.find(s => s.id === tempSupervisorName || s.workerId === tempSupervisorName);
-      if (!selectedSup) {
-        // Si es "Sin Asignar" — limpiar asignación
-        const newAssignments = { ...supervisors };
-        newAssignments[editingLineId] = { workerId: null, name: "Sin Asignar", shortName: "Sin Asignar" };
-        await setDoc(doc(db, "config", "supervisors_assignment"), newAssignments);
-        await setDoc(doc(db, "config", "next_day_plan"), { status: "BORRADOR", updatedAt: new Date() }, { merge: true });
-        setEditingLineId(null);
-        return;
-      }
-
-      await assignSupervisorToLine(editingLineId, selectedSup.id || selectedSup.workerId, selectedSup.name, selectedSup.shortName || selectedSup.name);
-      setEditingLineId(null);
-    } catch (err) {
-      alert(`Error al asignar supervisor: ${err.message}`);
-    }
+    /*
+     * Función deshabilitada temporalmente durante la migración (Fase B).
+     * La asignación de líneas a supervisores se trasladará a SQL Server
+     * en un bloque de trabajo futuro, ya que el endpoint actual está roto.
+     */
+    alert("Función en migración a SQL Server - temporalmente no disponible.");
+    setEditingLineId(null);
+    return;
   };
 
   const handleOpenEditSupervisor = (lineId) => {
@@ -2982,6 +3110,75 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
             </BentoCard>
           )}
 
+          {/* PLANIFICACIÓN T+1 REAL: estado de PlanificacionLineas para selectedDate */}
+          {viewDay === 'NEXT_DAY' && (
+            <BentoCard id="planificacion-t1-status-card" style={{ marginBottom: '16px' }}>
+              <SectionHeaderTitle style={{ marginBottom: '10px' }}>
+                <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                  <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
+                  <line x1="16" y1="2" x2="16" y2="6"/>
+                  <line x1="8" y1="2" x2="8" y2="6"/>
+                  <line x1="3" y1="10" x2="21" y2="10"/>
+                </svg>
+                <span>Planificación de {selectedDate}</span>
+              </SectionHeaderTitle>
+
+              {loadingPlanificacion ? (
+                <div style={{ fontSize: '11px', color: '#64748B' }}>Cargando planificación...</div>
+              ) : planificacionManana.length === 0 ? (
+                <div style={{ fontSize: '11px', color: '#64748B' }}>
+                  Todavía no hay nada planificado para esta fecha. Usa "Planificar Día Siguiente" para empezar.
+                </div>
+              ) : (
+                <>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginBottom: '12px' }}>
+                    {planificacionManana.map(row => (
+                      <div key={row.lineId} id={`planificacion-row-${row.lineId}`} style={{
+                        display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 8px',
+                        borderRadius: '6px',
+                        backgroundColor: row.sku ? '#EFF6FF' : '#F8FAFC',
+                        border: row.sku ? '1px solid #BFDBFE' : '1px solid #E2E8F0'
+                      }}>
+                        <span style={{ fontSize: '11px', fontWeight: 800, color: row.sku ? '#1E40AF' : '#64748B', minWidth: '46px' }}>
+                          {row.lineId}
+                        </span>
+                        <span style={{ fontSize: '10px', color: '#334155', flex: 1 }}>
+                          {row.sku || 'Inactiva'}
+                        </span>
+                        <span style={{ fontSize: '10px', fontWeight: 700, color: !row.sku ? '#94A3B8' : row.supervisorNombre ? '#15803D' : '#B91C1C' }}>
+                          {row.sku ? (row.supervisorNombre || '⚠ Sin supervisor') : ''}
+                        </span>
+                        <span style={{
+                          fontSize: '9px', fontWeight: 800, padding: '2px 6px', borderRadius: '4px',
+                          backgroundColor: row.aplicadoEn ? '#DCFCE7' : row.status === 'CONFIRMADO' ? '#DBEAFE' : '#FEF3C7',
+                          color: row.aplicadoEn ? '#15803D' : row.status === 'CONFIRMADO' ? '#1D4ED8' : '#B45309'
+                        }}>
+                          {row.aplicadoEn ? 'ACTIVADO' : row.status}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                  <button
+                    onClick={handleConfirmPlan}
+                    disabled={confirmingPlan || planificacionManana.some(r => r.aplicadoEn) || planificacionManana.every(r => r.status === 'CONFIRMADO')}
+                    id="confirm-seal-plan-real-btn"
+                    style={{
+                      padding: '8px 14px', backgroundColor: '#16A34A', color: '#FFFFFF', border: 'none',
+                      borderRadius: '6px', fontSize: '11px', fontWeight: 700, cursor: 'pointer',
+                      opacity: (confirmingPlan || planificacionManana.some(r => r.aplicadoEn) || planificacionManana.every(r => r.status === 'CONFIRMADO')) ? 0.6 : 1
+                    }}
+                  >
+                    {planificacionManana.some(r => r.aplicadoEn)
+                      ? '✓ Ya activado'
+                      : planificacionManana.every(r => r.status === 'CONFIRMADO')
+                        ? '✓ Plan Sellado'
+                        : confirmingPlan ? 'Sellando...' : 'Confirmar y Sellar Plan'}
+                  </button>
+                </>
+              )}
+            </BentoCard>
+          )}
+
           {/* DASHBOARD DE MOSAICOS REACTIVOS — EXIGENCIA PLAN MAESTRO 8.A */}
           {viewDay === 'NEXT_DAY' && !activeLineStats && (
             <>
@@ -3110,7 +3307,7 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
                     triggerNativeHapticFeedback('medium');
                     setProgramingNextDay(true);
                     try {
-                      const { reprogramPartialNextDayShift } = await import('../services/firebaseService');
+                      const { reprogramPartialNextDayShift } = await import('../services/apiService');
                       await reprogramPartialNextDayShift(nextDaySkuPlan);
                       alert("¡Reprogramación Parcial completada! Se recalcularon las celdas desocupadas/no-bloqueadas respetando estrictamente los Candados (Locks) del Coordinador.");
                     } catch (err) {
@@ -4284,7 +4481,7 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
 
       {currentTab === 'CONTROL' && (() => {
         const lineColors = { L1: "#DBEAFE", L2: "#D1FAE5", L3: "#F3E8FF", L4: "#FEE2E2", L5: "#FEF9C3", L6: "#E0E7FF", L7: "#FCE7F3" };
-        const supervisorsList = REAL_SUPERVISORS.map(sup => {
+        const supervisorsList = availableSupervisors.map(sup => {
           const assignedEntry = Object.entries(supervisors).find(([, val]) => val?.workerId === sup.id);
           const lineId = assignedEntry ? assignedEntry[0] : null;
           const initials = sup.shortName.split(' ').map(w => w[0]).join('').toUpperCase();
@@ -4485,12 +4682,7 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
                     const statusUpper = w.status?.toUpperCase() || "INACTIVO";
                     const badge = getBadgeStyles(statusUpper);
 
-                    // Derivar sexo
-                    const wSex = w.sexo || (
-                      w.name.includes("María") || w.name.includes("Elena") || w.name.includes("Sofía") || w.name.includes("Teresa") || w.name.includes("Lucía") || w.name.includes("Laura") || w.name.includes("Carmen") || w.name.includes("Patricia") || w.name.includes("Isabel")
-                        ? "Femenino" 
-                        : "Masculino"
-                    );
+                    const wSex = w.sexo || "Sin registrar";
 
                     return (
                       <AbsentListItem key={w.id}>
@@ -4512,16 +4704,7 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
                           <select
                             value={statusUpper}
                             onChange={async (e) => {
-                              const newStatus = e.target.value;
-                              triggerNativeHapticFeedback('short');
-                              try {
-                                await updateDoc(doc(db, "trabajadores", w.id), {
-                                  status: newStatus,
-                                  updatedAt: serverTimestamp()
-                                });
-                              } catch (err) {
-                                alert("Error al tipificar inasistencia: " + err.message);
-                              }
+                              await handleUpdateWorkerStatus(w.id, e.target.value);
                             }}
                             style={{
                               padding: '3px 18px 3px 8px',
@@ -4622,6 +4805,206 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
         </TabContentContainer>
       )}
 
+      {currentTab === 'PERSONAL' && (
+        <TabContentContainer id="tab-coordinador-personal">
+          <SectionHeaderTitle style={{ justifyContent: 'space-between' }}>
+            <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2M9 7a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/>
+              </svg>
+              <span>Gestión de Personal ({operariosGestionFiltrados.length})</span>
+            </span>
+          </SectionHeaderTitle>
+
+          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '12px', alignItems: 'center' }}>
+            <input
+              type="text"
+              placeholder="Buscar por nombre o nómina..."
+              value={personalSearchQuery}
+              onChange={(e) => setPersonalSearchQuery(e.target.value)}
+              id="personal-search-input"
+              style={{ flex: '1 1 200px', padding: '6px 10px', borderRadius: '6px', border: '1px solid #CBD5E1', fontSize: '11px', outline: 'none' }}
+            />
+            <select value={personalFilterCargo} onChange={(e) => setPersonalFilterCargo(e.target.value)} style={{ padding: '6px 8px', borderRadius: '6px', border: '1px solid #CBD5E1', fontSize: '11px' }}>
+              <option value="TODOS">Todos los cargos</option>
+              {WORKER_PUESTO_BASE_UI.map(p => <option key={p} value={p}>{p}</option>)}
+            </select>
+            <select value={personalFilterEstado} onChange={(e) => setPersonalFilterEstado(e.target.value)} style={{ padding: '6px 8px', borderRadius: '6px', border: '1px solid #CBD5E1', fontSize: '11px' }}>
+              <option value="TODOS">Todos los estados</option>
+              {WORKER_STATES_UI.map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '10px', fontWeight: 700, color: '#64748B', cursor: 'pointer' }}>
+              <input type="checkbox" checked={personalShowBajas} onChange={(e) => setPersonalShowBajas(e.target.checked)} />
+              Mostrar bajas
+            </label>
+            <button
+              onClick={handleOpenNewOperario}
+              id="personal-add-btn"
+              style={{ padding: '7px 14px', backgroundColor: '#16A34A', color: '#FFF', border: 'none', borderRadius: '6px', fontSize: '11px', fontWeight: 700, cursor: 'pointer' }}
+            >
+              + Nuevo Trabajador
+            </button>
+          </div>
+
+          {loadingOperarios ? (
+            <div style={{ fontSize: '11px', color: '#64748B', padding: '20px', textAlign: 'center' }}>Cargando personal...</div>
+          ) : (
+            <AbsentListContainer style={{ maxHeight: '520px', overflowY: 'auto' }}>
+              {operariosGestionFiltrados.length === 0 ? (
+                <div style={{ padding: '30px 12px', color: '#94A3B8', fontSize: '11px', textAlign: 'center' }}>
+                  Sin resultados para los filtros actuales.
+                </div>
+              ) : operariosGestionFiltrados.map(op => (
+                <AbsentListItem key={op.id} id={`personal-row-${op.id}`} style={{ opacity: op.activo ? 1 : 0.55 }}>
+                  <AbsentAvatar style={{ backgroundColor: op.activo ? '#EFF6FF' : '#F1F5F9', color: op.activo ? '#1E40AF' : '#64748B' }}>
+                    {op.nombreCompleto.trim().split(/\s+/).slice(0, 2).map(p => p[0]).join('').toUpperCase()}
+                  </AbsentAvatar>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <strong style={{ fontSize: '12px', color: '#1E293B', display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {op.nombreCompleto} {!op.activo && <span style={{ color: '#B91C1C', fontSize: '9px', fontWeight: 800 }}>· BAJA</span>}
+                    </strong>
+                    <span style={{ fontSize: '10px', color: '#64748B', display: 'block' }}>
+                      {op.numeroNomina} • {op.puestoBase || 'Sin cargo'} • {op.estadoActual}
+                    </span>
+                  </div>
+                  <div style={{ display: 'flex', gap: '6px' }}>
+                    <button
+                      onClick={() => handleOpenEditOperario(op)}
+                      id={`personal-edit-btn-${op.id}`}
+                      style={{ padding: '5px 10px', backgroundColor: '#EFF6FF', border: '1px solid #BFDBFE', borderRadius: '6px', fontSize: '10px', fontWeight: 700, color: '#1D4ED8', cursor: 'pointer' }}
+                    >
+                      Editar
+                    </button>
+                    {op.activo ? (
+                      <button
+                        onClick={() => handleBajaOperario(op)}
+                        id={`personal-baja-btn-${op.id}`}
+                        style={{ padding: '5px 10px', backgroundColor: '#FEE2E2', border: '1px solid #FECACA', borderRadius: '6px', fontSize: '10px', fontWeight: 700, color: '#B91C1C', cursor: 'pointer' }}
+                      >
+                        Dar de baja
+                      </button>
+                    ) : (
+                      <button
+                        onClick={() => handleReactivarOperario(op)}
+                        id={`personal-reactivar-btn-${op.id}`}
+                        style={{ padding: '5px 10px', backgroundColor: '#DCFCE7', border: '1px solid #BBF7D0', borderRadius: '6px', fontSize: '10px', fontWeight: 700, color: '#15803D', cursor: 'pointer' }}
+                      >
+                        Reactivar
+                      </button>
+                    )}
+                  </div>
+                </AbsentListItem>
+              ))}
+            </AbsentListContainer>
+          )}
+        </TabContentContainer>
+      )}
+
+      {/* MODAL DE FICHA DE OPERARIO (alta y edición) */}
+      {editingOperario && (
+        <ModalOverlay onClick={() => setEditingOperario(null)} id="operario-ficha-modal">
+          <ModalContent onClick={(e) => e.stopPropagation()} style={{ maxWidth: '440px', width: '95%' }}>
+            <h3 style={{ fontSize: '13.5px', fontWeight: 800, color: '#1E293B', marginBottom: '14px' }}>
+              {editingOperario === 'new' ? 'Nuevo Trabajador' : `Editar: ${editingOperario.nombreCompleto}`}
+            </h3>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginBottom: '18px' }}>
+              <label style={{ fontSize: '10px', fontWeight: 700, color: '#475569' }}>
+                Nombre completo
+                <input
+                  type="text"
+                  value={operarioForm.nombreCompleto || ""}
+                  onChange={(e) => setOperarioForm(f => ({ ...f, nombreCompleto: e.target.value }))}
+                  id="operario-form-nombre"
+                  style={{ width: '100%', marginTop: '4px', padding: '7px 10px', borderRadius: '6px', border: '1px solid #CBD5E1', fontSize: '12px', boxSizing: 'border-box' }}
+                />
+              </label>
+              <label style={{ fontSize: '10px', fontWeight: 700, color: '#475569' }}>
+                Número de nómina
+                <input
+                  type="text"
+                  value={operarioForm.numeroNomina || ""}
+                  onChange={(e) => setOperarioForm(f => ({ ...f, numeroNomina: e.target.value }))}
+                  id="operario-form-nomina"
+                  style={{ width: '100%', marginTop: '4px', padding: '7px 10px', borderRadius: '6px', border: '1px solid #CBD5E1', fontSize: '12px', boxSizing: 'border-box' }}
+                />
+              </label>
+              <div style={{ display: 'flex', gap: '10px' }}>
+                <label style={{ fontSize: '10px', fontWeight: 700, color: '#475569', flex: 1 }}>
+                  Turno base
+                  <select
+                    value={operarioForm.turnoBase || "Matutino"}
+                    onChange={(e) => setOperarioForm(f => ({ ...f, turnoBase: e.target.value }))}
+                    style={{ width: '100%', marginTop: '4px', padding: '7px 8px', borderRadius: '6px', border: '1px solid #CBD5E1', fontSize: '12px' }}
+                  >
+                    <option value="Matutino">Matutino</option>
+                    <option value="Vespertino">Vespertino</option>
+                    <option value="Nocturno">Nocturno</option>
+                  </select>
+                </label>
+                <label style={{ fontSize: '10px', fontWeight: 700, color: '#475569', flex: 1 }}>
+                  Sexo
+                  <select
+                    value={operarioForm.sexo || ""}
+                    onChange={(e) => setOperarioForm(f => ({ ...f, sexo: e.target.value }))}
+                    style={{ width: '100%', marginTop: '4px', padding: '7px 8px', borderRadius: '6px', border: '1px solid #CBD5E1', fontSize: '12px' }}
+                  >
+                    <option value="">Sin registrar</option>
+                    <option value="Masculino">Masculino</option>
+                    <option value="Femenino">Femenino</option>
+                  </select>
+                </label>
+              </div>
+              <label style={{ fontSize: '10px', fontWeight: 700, color: '#475569' }}>
+                Cargo
+                <select
+                  value={operarioForm.puestoBase || ""}
+                  onChange={(e) => setOperarioForm(f => ({ ...f, puestoBase: e.target.value }))}
+                  id="operario-form-cargo"
+                  style={{ width: '100%', marginTop: '4px', padding: '7px 8px', borderRadius: '6px', border: '1px solid #CBD5E1', fontSize: '12px' }}
+                >
+                  <option value="">Sin cargo</option>
+                  {WORKER_PUESTO_BASE_UI.map(p => <option key={p} value={p}>{p}</option>)}
+                </select>
+              </label>
+              <label style={{ fontSize: '10px', fontWeight: 700, color: '#475569' }}>
+                Estado
+                <select
+                  value={operarioForm.estadoActual || "POOL_ARRANQUE"}
+                  onChange={(e) => setOperarioForm(f => ({ ...f, estadoActual: e.target.value }))}
+                  id="operario-form-estado"
+                  style={{ width: '100%', marginTop: '4px', padding: '7px 8px', borderRadius: '6px', border: '1px solid #CBD5E1', fontSize: '12px' }}
+                >
+                  {WORKER_STATES_UI.map(s => <option key={s} value={s}>{s}</option>)}
+                </select>
+                {WORKER_ABSENCE_STATES_UI.includes(operarioForm.estadoActual) && (
+                  <span style={{ display: 'block', marginTop: '4px', fontSize: '9.5px', color: '#B45309', fontWeight: 600 }}>
+                    ⚠ Si el trabajador ocupa un puesto ahora mismo, se liberará al guardar.
+                  </span>
+                )}
+              </label>
+            </div>
+
+            <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
+              <button
+                onClick={() => setEditingOperario(null)}
+                style={{ padding: '8px 14px', backgroundColor: '#F1F5F9', border: 'none', borderRadius: '6px', fontSize: '11px', fontWeight: 600, color: '#475569', cursor: 'pointer' }}
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={handleSaveOperario}
+                disabled={savingOperario || !operarioForm.nombreCompleto || !operarioForm.numeroNomina}
+                id="operario-form-save-btn"
+                style={{ padding: '8px 14px', backgroundColor: '#2563EB', color: '#FFF', border: 'none', borderRadius: '6px', fontSize: '11px', fontWeight: 600, cursor: 'pointer', opacity: savingOperario ? 0.6 : 1 }}
+              >
+                {savingOperario ? "Guardando..." : "Guardar"}
+              </button>
+            </div>
+          </ModalContent>
+        </ModalOverlay>
+      )}
+
       {/* --- BARRA DE NAVEGACIÓN INFERIOR FIJA DE 64PX (TABBAR COORDINADOR) --- */}
       <TabBarContainer id="coordinator-tab-bar">
         <TabButton 
@@ -4678,8 +5061,26 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
           <TabLabel>Ausencias</TabLabel>
         </TabButton>
 
-        <TabButton 
-          active={currentTab === 'DASHBOARD'} 
+        <TabButton
+          active={currentTab === 'PERSONAL'}
+          onClick={() => {
+            triggerNativeHapticFeedback('short');
+            setCurrentTab('PERSONAL');
+          }}
+          id="coordinator-tab-personal"
+        >
+          <IconWrapper active={currentTab === 'PERSONAL'}>
+            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
+              <circle cx="9" cy="7" r="4" />
+              <path d="M19 8v6M22 11h-6" />
+            </svg>
+          </IconWrapper>
+          <TabLabel>Personal</TabLabel>
+        </TabButton>
+
+        <TabButton
+          active={currentTab === 'DASHBOARD'}
           onClick={() => {
             triggerNativeHapticFeedback('short');
             setCurrentTab('DASHBOARD');
@@ -4788,9 +5189,9 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
 
               {/* Info card del supervisor seleccionado */}
               {tempSupervisorName && (() => {
-                const sel = REAL_SUPERVISORS.find(s => s.id === tempSupervisorName);
+                const sel = availableSupervisors.find(s => s.id === tempSupervisorName || s.workerId === tempSupervisorName);
                 if (!sel) return null;
-                const existing = availableSupervisors.find(s => s.id === sel.id);
+                const existing = sel;
                 return (
                   <div style={{
                     padding: '8px 12px',
@@ -4851,19 +5252,44 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
         </ModalOverlay>
       )}
 
-      {/* MODAL DE CONFIGURACIÓN DEL PROGRAMA DE PRODUCCIÓN DE MAÑANA */}
+      {/* MODAL DE PLANIFICACIÓN T+1 (línea, SKU/orden, supervisor) */}
       {isConfiguringNextDay && (
         <ModalOverlay onClick={() => setIsConfiguringNextDay(false)} id="configure-next-day-modal">
-          <ModalContent onClick={(e) => e.stopPropagation()} style={{ maxWidth: '440px', width: '95%' }}>
+          <ModalContent onClick={(e) => e.stopPropagation()} style={{ maxWidth: '520px', width: '95%' }}>
             <h3 style={{ fontSize: '13.5px', fontWeight: 800, color: '#1E293B', marginBottom: '6px', display: 'flex', alignItems: 'center', gap: '6px' }}>
               <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#2563EB" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
                 <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
               </svg>
-              <span>Asignar Puestos (Día Posterior)</span>
+              <span>Planificar {selectedDate}</span>
             </h3>
-            <p style={{ fontSize: '10px', color: '#64748B', marginBottom: '14px', lineHeight: '1.4' }}>
-              Configura la planificación anticipada para el día posterior a mañana (opcional). Esto simula la cobertura de puestos y calcula preventivamente los déficits por SKU de las líneas activas.
+            <p style={{ fontSize: '10px', color: '#64748B', marginBottom: '10px', lineHeight: '1.4' }}>
+              Por línea: SKU (vinculado a una orden real si existe) y supervisor. Al "Confirmar y Sellar" el plan completo, se activa solo al llegar la fecha -fija el SKU de cada línea y coloca a cada supervisor en la suya, sin que tengas que volver a teclear nada esa mañana-.
             </p>
+
+            {/* Personal disponible ahora mismo (informativo, no proyectado) */}
+            {(() => {
+              const counts = {};
+              Object.values(workers).forEach(w => { counts[w.status] = (counts[w.status] || 0) + 1; });
+              const total = Object.values(workers).length;
+              return (
+                <div id="planificacion-personal-disponible" style={{
+                  display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '12px',
+                  padding: '8px', backgroundColor: '#F8FAFC', border: '1px solid #E2E8F0', borderRadius: '8px'
+                }}>
+                  <span style={{ fontSize: '9px', fontWeight: 800, color: '#475569', width: '100%' }}>
+                    PERSONAL AHORA MISMO (referencia, no proyección de mañana) — {total} operarios
+                  </span>
+                  {['ASIGNADO', 'POOL_ARRANQUE', 'DISPONIBLE_BOLSON', 'EN_TRANSITO', 'BAJA_TEMPORAL', 'INACTIVO'].map(estado => (
+                    <span key={estado} style={{
+                      fontSize: '9px', fontWeight: 700, padding: '2px 6px', borderRadius: '4px',
+                      backgroundColor: '#EFF6FF', border: '1px solid #BFDBFE', color: '#1E40AF'
+                    }}>
+                      {estado}: {counts[estado] || 0}
+                    </span>
+                  ))}
+                </div>
+              );
+            })()}
 
             {/* Acciones Rápidas */}
             <div style={{ display: 'flex', gap: '8px', marginBottom: '12px', flexWrap: 'wrap' }}>
@@ -4944,68 +5370,108 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
               {activeLines.map(lineId => {
                 const currentSku = nextDaySkuPlan[lineId] || "INACTIVO";
                 const isInactive = currentSku === "INACTIVO";
-                
+                const currentSupervisorId = nextDaySupervisorPlan[lineId] || "";
+
                 return (
-                  <div key={lineId} style={{ 
-                    display: 'flex', 
-                    justifyContent: 'space-between', 
-                    alignItems: 'center', 
+                  <div key={lineId} style={{
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '6px',
                     padding: '6px 8px',
                     borderRadius: '6px',
                     backgroundColor: isInactive ? '#F8FAFC' : '#EFF6FF',
                     border: isInactive ? '1px solid #E2E8F0' : '1px solid #BFDBFE',
                     transition: 'all 0.15s ease'
                   }}>
-                    <span style={{ fontSize: '11px', fontWeight: 800, color: isInactive ? '#64748B' : '#1E40AF' }}>
-                      Línea {lineId}
-                    </span>
-                    <select
-                      value={currentSku}
-                      onChange={(e) => {
-                        setNextDaySkuPlan(prev => ({ ...prev, [lineId]: e.target.value }));
-                      }}
-                      style={{
-                        padding: '4px 8px',
-                        borderRadius: '6px',
-                        border: '1px solid #CBD5E1',
-                        fontSize: '11px',
-                        fontWeight: 700,
-                        color: '#1E293B',
-                        backgroundColor: '#FFFFFF',
-                        outline: 'none',
-                        cursor: 'pointer'
-                      }}
-                      id={`select-tomorrow-sku-${lineId}`}
-                    >
-                      <option value="INACTIVO">🔴 INACTIVO</option>
-                      <option value="SKU-990-BOST">🟢 SKU-990-BOST (Standard)</option>
-                      <option value="SKU-441-AQUA">🔵 SKU-441-AQUA (Agua)</option>
-                      <option value="SKU-102-LITE">🟡 SKU-102-LITE (Diet)</option>
-                      <optgroup label="SKUs Reales del Excel">
-                        <option value="850EC0832L35">850EC0832L35 (Cristalino 28%)</option>
-                        <option value="850MX0832L35">850MX0832L35 (Especial 35%)</option>
-                        <option value="850RM4H32L40">850RM4H32L40 (Envase R40)</option>
-                        <option value="850SV4H32L40">850SV4H32L40 (Envase SV40)</option>
-                        <option value="850MX0632L35">850MX0632L35 (Especial 35%)</option>
-                        <option value="850EC0632L32">850EC0632L32 (Cristalino 32%)</option>
-                        <option value="850EC0618I32">850EC0618I32 (Cristalino 32% P)</option>
-                        <option value="850EC0640O32">850EC0640O32 (Cristalino Litro)</option>
-                        <option value="850SP0440O35">850SP0440O35 (Seco 35% Litro)</option>
-                        <option value="850PX0440O35">850PX0440O35 (Proceso Premium)</option>
-                        <option value="850NI6F26L28">850NI6F26L28 (Nica 12x750 28%)</option>
-                        <option value="850NI0126L35">850NI0126L35 (12 Años 35% S/E)</option>
-                        <option value="850SP0126L35">850SP0126L35 (12 Años Seco 35%)</option>
-                        <option value="850SP0127L35">850SP0127L35 (12 Años Seco C/E)</option>
-                        <option value="850CR0118I35">850CR0118I35 (12 Años CR 35%)</option>
-                        <option value="850SV0118I35">850SV0118I35 (12 Años SV 35%)</option>
-                        <option value="850PA0118I35">850PA0118I35 (12 Años PA 35%)</option>
-                        <option value="850SP0118I35">850SP0118I35 (12 Años SP 35%)</option>
-                        <option value="850NI3440O25">850NI3440O25 (Nica Lite 25%)</option>
-                        <option value="861NI3274I23">861NI3274I23 (Plata Suave PET)</option>
-                        <option value="861NI3239O23">861NI3239O23 (Plata Suave PET L)</option>
-                        <option value="862NI2939O20">862NI2939O20 (Estrellita 6x1750)</option>
-                      </optgroup>
-                    </select>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span style={{ fontSize: '11px', fontWeight: 800, color: isInactive ? '#64748B' : '#1E40AF' }}>
+                        Línea {lineId}
+                      </span>
+                      <select
+                        value={currentSku}
+                        onChange={(e) => {
+                          const sku = e.target.value;
+                          setNextDaySkuPlan(prev => ({ ...prev, [lineId]: sku }));
+                          if (sku === "INACTIVO") {
+                            setNextDayOrdenIds(prev => { const n = { ...prev }; delete n[lineId]; return n; });
+                          }
+                        }}
+                        style={{
+                          padding: '4px 8px',
+                          borderRadius: '6px',
+                          border: '1px solid #CBD5E1',
+                          fontSize: '11px',
+                          fontWeight: 700,
+                          color: '#1E293B',
+                          backgroundColor: '#FFFFFF',
+                          outline: 'none',
+                          cursor: 'pointer'
+                        }}
+                        id={`select-tomorrow-sku-${lineId}`}
+                      >
+                        <option value="INACTIVO">🔴 INACTIVO</option>
+                        <option value="SKU-990-BOST">🟢 SKU-990-BOST (Standard)</option>
+                        <option value="SKU-441-AQUA">🔵 SKU-441-AQUA (Agua)</option>
+                        <option value="SKU-102-LITE">🟡 SKU-102-LITE (Diet)</option>
+                        <optgroup label="SKUs Reales del Excel">
+                          <option value="850EC0832L35">850EC0832L35 (Cristalino 28%)</option>
+                          <option value="850MX0832L35">850MX0832L35 (Especial 35%)</option>
+                          <option value="850RM4H32L40">850RM4H32L40 (Envase R40)</option>
+                          <option value="850SV4H32L40">850SV4H32L40 (Envase SV40)</option>
+                          <option value="850MX0632L35">850MX0632L35 (Especial 35%)</option>
+                          <option value="850EC0632L32">850EC0632L32 (Cristalino 32%)</option>
+                          <option value="850EC0618I32">850EC0618I32 (Cristalino 32% P)</option>
+                          <option value="850EC0640O32">850EC0640O32 (Cristalino Litro)</option>
+                          <option value="850SP0440O35">850SP0440O35 (Seco 35% Litro)</option>
+                          <option value="850PX0440O35">850PX0440O35 (Proceso Premium)</option>
+                          <option value="850NI6F26L28">850NI6F26L28 (Nica 12x750 28%)</option>
+                          <option value="850NI0126L35">850NI0126L35 (12 Años 35% S/E)</option>
+                          <option value="850SP0126L35">850SP0126L35 (12 Años Seco 35%)</option>
+                          <option value="850SP0127L35">850SP0127L35 (12 Años Seco C/E)</option>
+                          <option value="850CR0118I35">850CR0118I35 (12 Años CR 35%)</option>
+                          <option value="850SV0118I35">850SV0118I35 (12 Años SV 35%)</option>
+                          <option value="850PA0118I35">850PA0118I35 (12 Años PA 35%)</option>
+                          <option value="850SP0118I35">850SP0118I35 (12 Años SP 35%)</option>
+                          <option value="850NI3440O25">850NI3440O25 (Nica Lite 25%)</option>
+                          <option value="861NI3274I23">861NI3274I23 (Plata Suave PET)</option>
+                          <option value="861NI3239O23">861NI3239O23 (Plata Suave PET L)</option>
+                          <option value="862NI2939O20">862NI2939O20 (Estrellita 6x1750)</option>
+                        </optgroup>
+                      </select>
+                    </div>
+
+                    {!isInactive && (
+                      <select
+                        value={currentSupervisorId}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setNextDaySupervisorPlan(prev => {
+                            const n = { ...prev };
+                            if (val) n[lineId] = val; else delete n[lineId];
+                            return n;
+                          });
+                        }}
+                        style={{
+                          padding: '4px 8px',
+                          borderRadius: '6px',
+                          border: currentSupervisorId ? '1px solid #CBD5E1' : '1px solid #FCA5A5',
+                          fontSize: '10.5px',
+                          fontWeight: 600,
+                          color: currentSupervisorId ? '#1E293B' : '#B91C1C',
+                          backgroundColor: '#FFFFFF',
+                          outline: 'none',
+                          cursor: 'pointer'
+                        }}
+                        id={`select-tomorrow-supervisor-${lineId}`}
+                      >
+                        <option value="">⚠ Sin supervisor asignado</option>
+                        {authorizedSupervisors.map(sup => (
+                          <option key={sup.id} value={sup.id}>
+                            {sup.name}{sup.assignedLine ? ` (hoy en ${sup.assignedLine})` : ''}
+                          </option>
+                        ))}
+                      </select>
+                    )}
                   </div>
                 );
               })}
@@ -5043,7 +5509,7 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
                 }}
                 id="save-next-day-program-btn"
               >
-                {programingNextDay ? "Asignando..." : "Asignar Puestos"}
+                {programingNextDay ? "Guardando..." : "Guardar Borrador"}
               </button>
             </div>
           </ModalContent>

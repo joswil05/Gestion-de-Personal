@@ -27,9 +27,9 @@
     "@capacitor/barcode-scanner": "^3.0.2",
     "@capacitor/network": "^8.0.1",
     "@stitches/react": "^1.2.8",
-    "firebase": "^12.13.0",
     "react": "^19.2.6",
-    "react-dom": "^19.2.6"
+    "react-dom": "^19.2.6",
+    "socket.io-client": "^4.8.3"
   },
   "devDependencies": {
     "@capacitor/android": "^8.3.4",

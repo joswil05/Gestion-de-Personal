@@ -16,7 +16,7 @@ import {
   programNextDayShift,
   assignPuestosLive,
   dispatchWorkerToLine
-} from '../services/firebaseService';
+} from '../services/apiService';
 import { 
   doc, 
   getDoc,

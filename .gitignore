@@ -7,3 +7,6 @@ dist
 android/.idea
 android/local.properties
 .DS_Store
+
+# Ignorar credenciales temporales generadas
+server/credentials/

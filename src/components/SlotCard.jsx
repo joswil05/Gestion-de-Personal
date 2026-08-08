@@ -1,7 +1,7 @@
 import React from 'react';
 import { styled, keyframes } from '../styles/theme';
 import { MICRO_COPY } from '../skills/ui-saas-master';
-import { getServerTimeOffset } from '../services/firebaseService';
+import { getServerTimeOffset } from '../services/apiService';
 
 // Keyframes para animaciones de fatiga y advertencia (Modo Claro Premium - Sin Emojis)
 const pulseYellow = keyframes({

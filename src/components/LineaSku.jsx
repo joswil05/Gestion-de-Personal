@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { styled } from '../styles/theme';
-import { db, puestosColl, startLineParoTransaction, endLineParoTransaction } from '../services/firebaseService';
-import { doc, onSnapshot, setDoc, updateDoc, writeBatch, getDocs, where, query, serverTimestamp } from 'firebase/firestore';
+import { db, puestosColl, startLineParoTransaction, endLineParoTransaction, saveMermasForLine } from '../services/apiService';
+import { doc, onSnapshot, setDoc, writeBatch, getDocs, where, query, serverTimestamp } from 'firebase/firestore';
 import { triggerNativeHapticFeedback } from '../skills/capacitor-android-bridge';
 import { useStopTimer } from './StopTimerContext';
 
@@ -874,16 +874,12 @@ export default function LineaSku({ supervisorLineId = "L4" }) {
   const handleSaveMermas = async () => {
     triggerNativeHapticFeedback('confirm');
     try {
-      const lineDocRef = doc(db, "config", `line_${supervisorLineId}`);
-      await updateDoc(lineDocRef, {
-        mermas: mermas,
-        mermaJustification: wasteExceedsLimit ? mermaJustification : ""
-      });
+      await saveMermasForLine(supervisorLineId, mermas, wasteExceedsLimit ? mermaJustification : "");
       setMermaSavedMsg(true);
       setTimeout(() => setMermaSavedMsg(false), 3000);
     } catch (err) {
       console.error("[LineaSku] Error al guardar mermas:", err);
-      alert("Error al guardar las mermas en Firestore.");
+      alert(err.message || "Error al guardar las mermas.");
     }
   };
 

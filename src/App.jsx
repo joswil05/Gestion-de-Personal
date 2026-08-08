@@ -6,7 +6,7 @@ import LineaSku from './components/LineaSku';
 import { initializeConnectivityGuard } from './skills/state-connectivity-guard';
 import { triggerNativeHapticFeedback } from './skills/capacitor-android-bridge';
 import { doc, getDoc, updateDoc } from 'firebase/firestore';
-import { db, endLineParoTransaction, syncServerTimeOffset } from './services/firebaseService';
+import { db, endLineParoTransaction, syncServerTimeOffset } from './services/apiService';
 import { logoutUser } from './services/authService';
 
 import LoginScreen from './components/LoginScreen';

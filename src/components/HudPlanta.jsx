@@ -26,7 +26,8 @@ import {
   updateWorkerDobleTurno,
   closeShiftForLineTransaction,
   registerSkuFinishedEvent
-} from '../services/firebaseService';
+} from '../services/apiService';
+import { getPlanificacion } from '../services/coordinatorApi';
 import { onSnapshot, query, where, getDocs, doc, updateDoc, serverTimestamp } from 'firebase/firestore';
 import SlotCard from './SlotCard';
 import { initializeConnectivityGuard } from '../skills/state-connectivity-guard';
@@ -1208,6 +1209,27 @@ export default function HudPlanta({ supervisorLineId = "L4" }) {
   // Estados y manejadores para Cierre de Turno (Fase 2)
   const [cerrarTurnoModalOpen, setCerrarTurnoModalOpen] = useState(false);
   const [cerrarTurnoSelectedWorkers, setCerrarTurnoSelectedWorkers] = useState([]);
+
+  // Planificación T+1 (solo lectura): si el Coordinador ya selló un plan para
+  // mañana que incluye a este supervisor, se lo mostramos aquí. El backend
+  // (GET /api/planificacion) ya filtra para que un Supervisor solo vea sus
+  // propias filas CONFIRMADO -nunca borradores ni planes de otros-.
+  const [planificacionManana, setPlanificacionManana] = useState(null);
+
+  useEffect(() => {
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    const offset = tomorrow.getTimezoneOffset();
+    const localDate = new Date(tomorrow.getTime() - (offset * 60 * 1000));
+    const tomorrowStr = localDate.toISOString().split('T')[0];
+
+    getPlanificacion(tomorrowStr)
+      .then(rows => setPlanificacionManana(rows && rows.length > 0 ? rows[0] : null))
+      .catch(err => {
+        console.error("[HUD Planta] Error al cargar la planificación de mañana:", err);
+        setPlanificacionManana(null);
+      });
+  }, []);
 
   const handleOpenCerrarTurno = () => {
     triggerNativeHapticFeedback('short');
@@ -2508,6 +2530,22 @@ export default function HudPlanta({ supervisorLineId = "L4" }) {
           )}
           <span>{notification.message}</span>
         </AlertBanner>
+      )}
+
+      {/* PLANIFICACIÓN T+1 (solo lectura): plan de mañana ya sellado por el Coordinador para este supervisor */}
+      {planificacionManana && (
+        <div id="planificacion-manana-banner" style={{
+          display: 'flex', alignItems: 'center', gap: '8px',
+          padding: '8px 12px', margin: '0 0 8px 0',
+          backgroundColor: '#EEF2FF', border: '1px solid #C7D2FE', borderRadius: '8px',
+          fontSize: '11px', color: '#3730A3'
+        }}>
+          <span style={{ fontSize: '14px' }}>📅</span>
+          <span>
+            <strong>Mañana</strong>{planificacionManana.lineId !== supervisorLineId ? ` pasas a Línea ${planificacionManana.lineId}` : `: Línea ${planificacionManana.lineId}`}
+            {' — SKU '}{planificacionManana.sku}
+          </span>
+        </div>
       )}
 
       {/* CONTROL DE ARRANQUE EN PISO PARA EL SUPERVISOR — Exigencia y Corrección de Roles */}

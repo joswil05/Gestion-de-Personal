@@ -1,87 +1,99 @@
 /**
- * Service: Authentication & Custom Claims Manager (authService.js)
- * Responsabilidad: Controlar el ciclo de vida de sesiones Firebase Auth y la asignación
- * de custom claims (role y lineId) sin comprometer las reglas de seguridad.
+ * Service: Mock Authentication Manager (authService.js)
+ * Responsabilidad: Simular una sesión local para la migración a SQL Server,
+ * dado que TI se encargará de la autenticación real más adelante.
  */
 
-import { 
-  getAuth, 
-  signInAnonymously, 
-  signOut, 
-  onAuthStateChanged 
-} from "firebase/auth";
-import { getFunctions, httpsCallable } from "firebase/functions";
-import { app } from "./firebaseService.js";
+let currentUser = null;
+const listeners = [];
 
-export const auth = getAuth(app);
-export const functions = getFunctions(app);
+function notifyListeners() {
+  listeners.forEach(callback => callback(currentUser));
+}
+
+const API_URL = 'http://localhost:3001/api';
 
 /**
- * Autentica al usuario anónimamente en Firebase Auth y solicita la asignación
- * de custom claims (role, lineId) mediante la Cloud Function `assignUserClaims`.
- * 
- * @param {object} params { role: 'COORDINADOR'|'SUPERVISOR', lineId: string, supervisorName: string, pin?: string }
+ * Autentica al usuario contra el backend Node.js
+ * @param {object} params { username, password }
  */
-export async function loginWithRoleAndLine({ role, lineId, supervisorName, pin }) {
-  try {
-    // 1. Iniciar sesión anónima si no hay un usuario activo (con fallback para plan gratuito / Auth desactivado)
-    let currentUser = auth.currentUser;
-    if (!currentUser) {
-      try {
-        const userCred = await signInAnonymously(auth);
-        currentUser = userCred.user;
-      } catch (authErr) {
-        console.warn("[AuthService] Firebase Auth no configurado en consola o requiere activación del proveedor Anónimo:", authErr.message);
-        // Fallback suave para entornos sin Firebase Auth habilitado en plan Gratuito (Spark)
-        return { uid: `local_${Date.now()}`, isAnonymous: true, fallback: true };
-      }
-    }
+export async function loginWithRoleAndLine({ username, password }) {
+  const response = await fetch(`${API_URL}/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password })
+  });
 
-    // 2. Invocar la Cloud Function de asignación de claims (con fallback si no hay plan Blaze/Cloud Functions)
+  if (!response.ok) {
+    let errorMsg = 'Error de autenticación';
     try {
-      const assignUserClaimsFn = httpsCallable(functions, "assignUserClaims");
-      await assignUserClaimsFn({
-        role,
-        lineId: role === "COORDINADOR" ? "ALL" : lineId,
-        supervisorName,
-        pin
-      });
-    } catch (fnErr) {
-      console.warn("[AuthService] Cloud Function no disponible o proyecto en plan gratuito Spark. Continuando con sesión local de aplicación:", fnErr.message);
-    }
-
-    // 3. Intentar actualización del token JWT si la sesión de Auth existe
-    if (auth.currentUser) {
-      try {
-        await auth.currentUser.getIdToken(true);
-      } catch (tokenErr) {
-        console.warn("[AuthService] No se pudo actualizar el token JWT de Firebase Auth:", tokenErr.message);
-      }
-    }
-
-    return auth.currentUser || { uid: `local_${Date.now()}`, isAnonymous: true, fallback: true };
-  } catch (error) {
-    console.warn("[AuthService] Error en flujo de autenticación, aplicando fallback local:", error.message);
-    return { uid: `local_${Date.now()}`, isAnonymous: true, fallback: true };
+      const data = await response.json();
+      errorMsg = data.error || errorMsg;
+    } catch(e) {}
+    // NO SILENT FALLBACK. Throw exception explicitly.
+    throw new Error(errorMsg);
   }
+
+  const data = await response.json();
+  
+  currentUser = {
+    uid: data.user.id.toString(),
+    isAnonymous: false,
+    role: data.user.role,
+    lineId: data.user.role === "COORDINADOR" ? "ALL" : data.user.lineId,
+    displayName: data.user.username,
+    token: data.token,
+    forcePasswordChange: data.forcePasswordChange
+  };
+  
+  sessionStorage.setItem('smartassign_mock_user', JSON.stringify(currentUser));
+  
+  notifyListeners();
+  return currentUser;
 }
 
 /**
- * Cierra la sesión activa en Firebase Auth, revocando el token JWT del cliente.
+ * Cierra la sesión
  */
 export async function logoutUser() {
-  try {
-    await signOut(auth);
-    console.log("[AuthService] Sesión revocada exitosamente.");
-  } catch (error) {
-    console.error("[AuthService] Error al cerrar sesión:", error);
-    throw error;
-  }
+  currentUser = null;
+  sessionStorage.removeItem('smartassign_mock_user');
+  notifyListeners();
+  return true;
 }
 
 /**
- * Suscriptor al cambio de estado de autenticación.
+ * Suscriptor al cambio de estado
  */
 export function onAuthStatusChange(callback) {
-  return onAuthStateChanged(auth, callback);
+  if (!currentUser) {
+    const saved = sessionStorage.getItem('smartassign_mock_user');
+    if (saved) {
+      try {
+        currentUser = JSON.parse(saved);
+      } catch(e){}
+    }
+  }
+  
+  listeners.push(callback);
+  callback(currentUser);
+  
+  return () => {
+    const index = listeners.indexOf(callback);
+    if (index > -1) listeners.splice(index, 1);
+  };
+}
+
+export function getToken() {
+  if (!currentUser) {
+    const saved = sessionStorage.getItem('smartassign_mock_user');
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        return parsed.token;
+      } catch(e){}
+    }
+    return null;
+  }
+  return currentUser.token;
 }

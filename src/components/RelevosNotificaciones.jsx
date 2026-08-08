@@ -14,7 +14,7 @@ import {
   getSlotsInTransitChains,
   clearSlotBlacklist,
   acceptReturnToBolson
-} from '../services/firebaseService';
+} from '../services/apiService';
 import { collection, doc, onSnapshot, query, where, updateDoc, serverTimestamp } from 'firebase/firestore';
 import { triggerNativeHapticFeedback } from '../skills/capacitor-android-bridge';
 import { initializeConnectivityGuard } from '../skills/state-connectivity-guard';

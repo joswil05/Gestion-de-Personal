@@ -1,10 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { styled } from '../styles/theme';
-import { db } from '../services/firebaseService';
-import { doc, getDoc, collection, onSnapshot } from 'firebase/firestore';
 import { triggerNativeHapticFeedback } from '../skills/capacitor-android-bridge';
-import { REAL_SUPERVISORS } from '../dev/realDataSeed';
 import { loginWithRoleAndLine } from '../services/authService';
+
+const API_URL = 'http://localhost:3001/api';
 
 // --- STITCHES STYLED LOGIN COMPONENTS ---
 
@@ -161,92 +160,38 @@ const LoginButton = styled('button', {
 
 // --- COMPONENT IMPLEMENTATION ---
 
-/**
- * LoginScreen Component - Pantalla de acceso hermético y selección de línea operativa
- * Estética: Premium SaaS Light. Prohibido el uso de emojis.
- * 
- * @param {function} onLoginSuccess Callback gatillado al autenticarse de forma exitosa
- */
 export default function LoginScreen({ onLoginSuccess }) {
+  const [selectedRole, setSelectedRole] = useState("SUPERVISOR"); 
+  const [selectedLine, setSelectedLine] = useState("L1");
   const [supervisorName, setSupervisorName] = useState("");
-  const [coordinatorPin, setCoordinatorPin] = useState("9900");
-  const [selectedLine, setSelectedLine] = useState("L4");
-  const [selectedRole, setSelectedRole] = useState("SUPERVISOR"); // "SUPERVISOR" | "COORDINADOR"
-  const [activeLines, setActiveLines] = useState(["L4", "L1", "L2", "L6", "L7", "L5", "L3", "L8", "L9", "L10"]);
-  const [supervisorsAssignment, setSupervisorsAssignment] = useState({});
+  const [supervisorPassword, setSupervisorPassword] = useState("");
+  const [coordinatorPin, setCoordinatorPin] = useState("");
   const [errorText, setErrorText] = useState("");
-  const [warningText, setWarningText] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [supervisorsList, setSupervisorsList] = useState([]);
+  const [isLoadingSups, setIsLoadingSups] = useState(false);
+  const [fetchError, setFetchError] = useState("");
 
-  // Cargar líneas planificadas y prioritarias desde Firestore al montar
   useEffect(() => {
-    const fetchConfigData = async () => {
+    async function fetchSupervisors() {
+      setIsLoadingSups(true);
+      setFetchError("");
       try {
-        const globalPriorityDoc = await getDoc(doc(db, "config", "global_priority"));
-        if (globalPriorityDoc.exists()) {
-          const data = globalPriorityDoc.data();
-          if (data.priorityOrder && data.priorityOrder.length > 0) {
-            setActiveLines(data.priorityOrder);
-            setSelectedLine(data.priorityOrder[0] || "L4");
-          }
-        }
+        const res = await fetch(`${API_URL}/supervisores/publico`);
+        if (!res.ok) throw new Error("Error obteniendo supervisores");
+        const data = await res.json();
+        setSupervisorsList(data);
       } catch (err) {
-        console.warn("[LoginScreen] Error consultando config/global_priority, usando fallback:", err);
+        setFetchError("No se pudo cargar la lista de supervisores.");
+        console.error(err);
+      } finally {
+        setIsLoadingSups(false);
       }
-
-      try {
-        const supsDoc = await getDoc(doc(db, "config", "supervisors_assignment"));
-        if (supsDoc.exists()) {
-          setSupervisorsAssignment(supsDoc.data());
-        }
-      } catch (err) {
-        console.warn("[LoginScreen] Error consultando config/supervisors_assignment:", err);
-      }
-    };
-
-    fetchConfigData();
-    return () => unsubAuth();
+    }
+    fetchSupervisors();
   }, []);
 
-  // Escuchar cambio en el rol o la línea seleccionada para auto-completar supervisor
-  useEffect(() => {
-    if (selectedRole === "SUPERVISOR" && selectedLine) {
-      const assignment = supervisorsAssignment[selectedLine];
-      if (assignment && assignment.workerId) {
-        const match = authorizedSupervisors.find(s => s.id === assignment.workerId || s.workerId === assignment.workerId);
-        if (match) {
-          setSupervisorName(match.id || match.workerId);
-          setWarningText("");
-        } else {
-          setSupervisorName("");
-        }
-      } else {
-        setSupervisorName("");
-      }
-    } else {
-      setSupervisorName("");
-    }
-  }, [selectedLine, selectedRole, supervisorsAssignment, authorizedSupervisors]);
-
-  const handleSupervisorSelect = (e) => {
-    const val = e.target.value;
-    setSupervisorName(val);
-    setErrorText("");
-
-    if (!val) {
-      setWarningText("");
-      return;
-    }
-
-    const assigned = supervisorsAssignment[selectedLine];
-    if (assigned && assigned.workerId && assigned.workerId !== val) {
-      const actualName = REAL_SUPERVISORS.find(s => s.id === val)?.shortName || val;
-      const expectedName = assigned.shortName || assigned.name;
-      setWarningText(`Aviso: El coordinador asignó a "${expectedName}" a esta línea. Estás ingresando como "${actualName}".`);
-    } else {
-      setWarningText("");
-    }
-  };
+  const activeLines = ["L4", "L1", "L2", "L6", "L7", "L5", "L3", "L8", "L9", "L10"];
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -260,10 +205,13 @@ export default function LoginScreen({ onLoginSuccess }) {
     }
 
     let finalName = trimmedName;
+    let username = trimmedName.toLowerCase().replace(/\s+/g, '.'); // fallback para Coordinador
+
     if (selectedRole === "SUPERVISOR") {
-      const foundSup = REAL_SUPERVISORS.find(s => s.id === trimmedName);
+      const foundSup = supervisorsList.find(s => s.username === trimmedName);
       if (foundSup) {
         finalName = foundSup.name;
+        username = foundSup.username;
       }
     }
 
@@ -271,18 +219,18 @@ export default function LoginScreen({ onLoginSuccess }) {
 
     try {
       setIsSubmitting(true);
-      // Iniciar sesión en Firebase Auth y obtener token con custom claims
+
+      // Login real al API con JWT
+      const loginPassword = selectedRole === "COORDINADOR" ? coordinatorPin : (supervisorPassword || '123456');
+      
       await loginWithRoleAndLine({
-        role: selectedRole,
-        lineId: finalLine,
-        supervisorName: finalName,
-        pin: selectedRole === "COORDINADOR" ? coordinatorPin : undefined
+        username,
+        password: loginPassword
       });
 
       triggerNativeHapticFeedback('confirm');
-      console.log(`[Login] Acceso autenticado concedido: ${finalName} (${selectedRole}) -> ${finalLine}`);
+      console.log(`[Login] Acceso local concedido: ${finalName} (${selectedRole}) -> ${finalLine}`);
 
-      // Asentar en localStorage
       localStorage.setItem("supervisorName", finalName);
       localStorage.setItem("supervisorLineId", finalLine);
       localStorage.setItem("userRole", selectedRole);
@@ -292,7 +240,7 @@ export default function LoginScreen({ onLoginSuccess }) {
       }
     } catch (err) {
       triggerNativeHapticFeedback('error');
-      setErrorText(err.message || "Error al autenticar con Firebase. Verifica tus credenciales.");
+      setErrorText("Error al iniciar sesión local.");
     } finally {
       setIsSubmitting(false);
     }
@@ -310,7 +258,6 @@ export default function LoginScreen({ onLoginSuccess }) {
       <LoginCard>
         <LogoSection>
           <LogoIcon>
-            {/* Box/Package Vectorial Icon */}
             <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/>
               <path d="m3.3 7 8.7 5 8.7-5"/>
@@ -359,27 +306,38 @@ export default function LoginScreen({ onLoginSuccess }) {
               </FormField>
             </>
           ) : (
-            <FormField>
-              <FormLabel htmlFor="supervisor-select">Seleccionar Supervisor</FormLabel>
-              <SelectDropdown
-                id="supervisor-select"
-                value={supervisorName}
-                onChange={handleSupervisorSelect}
-              >
-                <option value="">── Seleccionar Supervisor ──</option>
-                {authorizedSupervisors.map(sup => {
-                  const supId = sup.id || sup.workerId;
-                  const assignedLine = Object.entries(supervisorsAssignment).find(
-                    ([, val]) => val?.workerId === supId
-                  );
-                  return (
-                    <option key={supId} value={supId}>
-                      {sup.shortName || sup.name}{assignedLine ? ` (Asignado a ${assignedLine[0]})` : ' (Disponible)'}
+            <>
+              <FormField>
+                <FormLabel htmlFor="supervisor-select">Seleccionar Supervisor</FormLabel>
+                <SelectDropdown
+                  id="supervisor-select"
+                  value={supervisorName}
+                  onChange={(e) => {
+                    setSupervisorName(e.target.value);
+                    setErrorText("");
+                  }}
+                >
+                  <option value="">
+                    {isLoadingSups ? "Cargando supervisores..." : fetchError ? fetchError : "── Seleccionar Supervisor ──"}
+                  </option>
+                  {!isLoadingSups && !fetchError && supervisorsList.map(sup => (
+                    <option key={sup.id} value={sup.username}>
+                      {sup.name}
                     </option>
-                  );
-                })}
-              </SelectDropdown>
-            </FormField>
+                  ))}
+                </SelectDropdown>
+              </FormField>
+              <FormField>
+                <FormLabel htmlFor="supervisor-password-input">Contraseña</FormLabel>
+                <InputText 
+                  type="password" 
+                  id="supervisor-password-input"
+                  placeholder="Ingrese contraseña" 
+                  value={supervisorPassword}
+                  onChange={(e) => setSupervisorPassword(e.target.value)}
+                />
+              </FormField>
+            </>
           )}
 
           {selectedRole !== "COORDINADOR" && (
@@ -402,20 +360,14 @@ export default function LoginScreen({ onLoginSuccess }) {
             </FormField>
           )}
 
-          {warningText && (
-            <div style={{ color: '#D97706', fontSize: '11px', fontWeight: 600, textAlign: 'center', marginTop: '4px', padding: '6px 8px', backgroundColor: '#FEF3C7', borderRadius: '6px', border: '1px solid #FCD34D' }}>
-              {warningText}
-            </div>
-          )}
-
           {errorText && (
             <div style={{ color: '#EF4444', fontSize: '11px', fontWeight: 600, textAlign: 'center', marginTop: '4px' }}>
               {errorText}
             </div>
           )}
 
-          <LoginButton type="submit" id="login-submit-button">
-            Ingresar a la Terminal
+          <LoginButton type="submit" id="login-submit-button" disabled={isSubmitting}>
+            {isSubmitting ? "Ingresando..." : "Ingresar a la Terminal"}
           </LoginButton>
         </form>
       </LoginCard>
