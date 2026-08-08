@@ -134,50 +134,32 @@ export const getDocs = async (ref) => {
     }
     return createQuerySnapshot([]);
 };
-export const setDoc = async () => {}; 
-export const updateDoc = async (ref, data) => {
-    // Si están actualizando un puesto, redirigimos al backend
-    let pathName = ref;
-    if (ref.type === 'doc') pathName = ref.path;
-    
-    if (pathName === 'puestos' || pathName === 'puestosColl') { // Podría ser el nombre de la colección
-        // Determinamos qué acción están haciendo según el payload
-        let action = 'asignar';
-        if (data.asignado === false || data.operadorId === null) {
-            action = 'liberar';
-        }
-        
-        await fetch(`${API_URL}/puestos/relevo`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                slotId: ref.id,
-                action: action,
-                newWorkerId: data.operadorId || null
-            })
-        });
-    }
-}; 
-export const deleteDoc = async () => {}; 
-export const writeBatch = () => ({ commit: async () => {} }); 
-export const serverTimestamp = () => new Date().toISOString(); 
-export const getFirestore = () => ({}); 
-export const initializeFirestore = () => ({}); 
-export const persistentLocalCache = () => ({}); 
-export const persistentMultipleTabManager = () => ({}); 
+// El shim es solo de LECTURA. Toda escritura debe pasar por apiService.js /
+// coordinatorApi.js contra la API REST. Antes estas funciones eran cuerpos vacíos:
+// la UI confirmaba al operador acciones que nunca se persistían (ver AUDIT_REPORT
+// C-3 y C-4). Ahora lanzan para que la falla sea visible y localizable.
+const escrituraNoSoportada = (op) => {
+    throw new Error(
+        `[firestore-shim] '${op}' no está soportado. Esta ruta debe migrarse a la API REST. ` +
+        `Ver AUDIT_REPORT.md, Fase 1 paso 1.3.`
+    );
+};
+
+export const setDoc      = async () => escrituraNoSoportada('setDoc');
+export const updateDoc   = async () => escrituraNoSoportada('updateDoc');
+export const deleteDoc   = async () => escrituraNoSoportada('deleteDoc');
+export const writeBatch  = () => ({
+    set:    () => escrituraNoSoportada('writeBatch.set'),
+    update: () => escrituraNoSoportada('writeBatch.update'),
+    delete: () => escrituraNoSoportada('writeBatch.delete'),
+    commit: async () => escrituraNoSoportada('writeBatch.commit')
+});
+export const runTransaction = async () => escrituraNoSoportada('runTransaction');
+export const serverTimestamp = () => new Date().toISOString();
+export const getFirestore = () => ({});
+export const initializeFirestore = () => ({});
+export const persistentLocalCache = () => ({});
+export const persistentMultipleTabManager = () => ({});
 export const connectFirestoreEmulator = () => {};
 export const getDocFromServer = async () => ({ exists: () => false, data: () => ({}) });
 export const getDocsFromServer = async () => createQuerySnapshot([]);
-export const runTransaction = async (db, transactionUpdate) => {
-    const fakeTransaction = {
-        get: async (ref) => createDocSnapshot(ref.id, {}),
-        update: (ref, data) => updateDoc(ref, data),
-        set: (ref, data) => {},
-        delete: (ref) => {}
-    };
-    try {
-        await transactionUpdate(fakeTransaction);
-    } catch(err) {
-        console.error("Mock Transaction error:", err);
-    }
-};
