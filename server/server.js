@@ -116,7 +116,7 @@ app.post('/api/auth/login', async (req, res) => {
 // Obtener operarios libres (Pool) - Accesible para cualquier rol autenticado
 app.get('/api/operarios/pool', requireAuth, async (req, res) => {
     try {
-        const selectCols = "Id, NombreCompleto, NumeroNomina, TurnoBase, PuestoBase, EstadoActual, LastActivity, Sexo, UpdatedAt, MedicalRestrictions, CurrentSlotId, PhysicalLineLocation, LineaDestinoId, TargetSlotId";
+        const selectCols = "Id, NombreCompleto, NumeroNomina, TurnoBase, PuestoBase, EstadoActual, LastActivity, Sexo, UpdatedAt, MedicalRestrictions, CurrentSlotId, PhysicalLineLocation, LineaDestinoId, TargetSlotId, DobleTurnoActivo";
         const query = `
             SELECT ${selectCols} FROM Operarios
             WHERE EstadoActual IN ('POOL_ARRANQUE', 'DISPONIBLE_BOLSON') AND Activo = 1
@@ -140,7 +140,8 @@ app.get('/api/operarios/pool', requireAuth, async (req, res) => {
                 currentSlotId: w.CurrentSlotId ? w.CurrentSlotId.toString() : null,
                 physicalLineLocation: w.PhysicalLineLocation,
                 lineaDestinoId: w.LineaDestinoId,
-                targetSlotId: w.TargetSlotId ? w.TargetSlotId.toString() : null
+                targetSlotId: w.TargetSlotId ? w.TargetSlotId.toString() : null,
+                dobleTurnoActivo: !!w.DobleTurnoActivo
             };
         });
         res.json(poolWorkers);
@@ -335,6 +336,43 @@ app.patch('/api/operarios/:id', requireAuth, requireRole('COORDINADOR'), async (
             return res.status(400).json({ error: `Ya existe un operario con ese número de nómina.` });
         }
         res.status(400).json({ error: err.message });
+    }
+});
+
+// Marca de doble turno: pre-selección de conveniencia que el supervisor
+// activa durante el día para un operario que ya confirmó que se queda al
+// turno siguiente. No dispara ningún efecto por sí sola -el efecto real
+// (mantenerlo en POOL_ARRANQUE en vez de INACTIVO) ocurre en
+// POST /lineas/:lineId/cerrar-turno, que recibe la lista final de IDs-;
+// esto solo persiste la marca para que el modal de cierre de turno la
+// traiga pre-marcada (ver AUDIT_REPORT.md, Fase 1 paso 1.5 Grupo B).
+app.patch('/api/operarios/:id/doble-turno', requireAuth, requireRole('COORDINADOR', 'SUPERVISOR'), async (req, res) => {
+    const { id } = req.params;
+    const { activo } = req.body;
+    if (typeof activo !== 'boolean') {
+        return res.status(400).json({ error: 'El campo "activo" es requerido y debe ser booleano.' });
+    }
+
+    try {
+        const opResult = await pool.request()
+            .input('Id', sql.Int, id)
+            .query('SELECT Id, PhysicalLineLocation FROM Operarios WHERE Id = @Id AND Activo = 1');
+        if (opResult.recordset.length === 0) {
+            return res.status(404).json({ error: 'Operario no encontrado.' });
+        }
+        if (req.user.role === 'SUPERVISOR' && opResult.recordset[0].PhysicalLineLocation !== req.user.lineId) {
+            return res.status(403).json({ error: 'Prohibido. El operario no se encuentra físicamente en tu línea.' });
+        }
+
+        await pool.request()
+            .input('Id', sql.Int, id)
+            .input('Activo', sql.Bit, activo)
+            .query('UPDATE Operarios SET DobleTurnoActivo = @Activo, UpdatedAt = SYSUTCDATETIME() WHERE Id = @Id');
+
+        io.emit('trabajadores_updated');
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
     }
 });
 
@@ -1042,6 +1080,35 @@ app.post('/api/puestos/relevo', requireAuth, requireRole('COORDINADOR', 'SUPERVI
                 break;
             }
 
+            // RECHAZO DE TRÁNSITO GENERAL: el operario venía EN_TRANSITO hacia
+            // esta línea sin un puesto predefinido (targetSlotId nulo -llegada
+            // "a pasillo"-) y el supervisor destino lo rechaza. A diferencia de
+            // 'rechazar_relevo' (que sí tiene un slotId y por tanto una
+            // blacklist que llenar), aquí no hay puesto que bloquear: el
+            // operario simplemente regresa de inmediato a DISPONIBLE_BOLSON en
+            // L8. Reemplaza el updateDoc directo contra el shim de Firestore
+            // que RelevosNotificaciones.jsx usaba (ver AUDIT_REPORT.md C-3).
+            case 'rechazar_transito_general': {
+                const operario = await lockOperario(transaction, workerId);
+                if (operario.EstadoActual !== 'EN_TRANSITO') {
+                    throw new Error('El operario no está en tránsito.');
+                }
+                if (!isCoordinador && operario.LineaDestinoId !== userLineId) {
+                    throw forbidden('Prohibido. Este operario no viene en tránsito hacia tu línea.');
+                }
+
+                await transaction.request()
+                    .input('OperarioId', sql.Int, workerId)
+                    .query(`UPDATE Operarios SET
+                                EstadoActual = 'DISPONIBLE_BOLSON',
+                                LineaDestinoId = NULL,
+                                TargetSlotId = NULL,
+                                CurrentSlotId = NULL,
+                                PhysicalLineLocation = 'L8'
+                            WHERE Id = @OperarioId`);
+                break;
+            }
+
             default:
                 throw new Error(`Acción de relevo desconocida: "${action}"`);
         }
@@ -1056,6 +1123,36 @@ app.post('/api/puestos/relevo', requireAuth, requireRole('COORDINADOR', 'SUPERVI
             try { await transaction.rollback(); } catch (e) {}
         }
         res.status(err.statusCode || 400).json({ error: err.message });
+    }
+});
+
+// LIMPIAR BLACKLIST DE UN PUESTO: restablece el pool de candidatos
+// disponibles para un puesto fatigado que había ido rechazando relevistas
+// (Puestos.RejectedWorkerIdsJson). Antes esto llegaba mal formado a
+// /api/puestos/relevo a través del shim de Firestore -ver AUDIT_REPORT.md
+// C-4-; endpoint dedicado para que no se pueda confundir con una asignación.
+app.post('/api/puestos/:id/limpiar-blacklist', requireAuth, requireRole('COORDINADOR', 'SUPERVISOR'), async (req, res) => {
+    const { id } = req.params;
+    const isCoordinador = req.user.role === 'COORDINADOR';
+    try {
+        const result = await pool.request()
+            .input('PuestoId', sql.Int, id)
+            .query('SELECT LineId FROM Puestos WHERE Id = @PuestoId');
+        if (result.recordset.length === 0) {
+            return res.status(404).json({ error: `Puesto ${id} no encontrado.` });
+        }
+        if (!isCoordinador && result.recordset[0].LineId !== req.user.lineId) {
+            return res.status(403).json({ error: `Prohibido. No tienes permisos sobre la línea ${result.recordset[0].LineId}.` });
+        }
+
+        await pool.request()
+            .input('PuestoId', sql.Int, id)
+            .query(`UPDATE Puestos SET RejectedWorkerIdsJson = NULL WHERE Id = @PuestoId`);
+
+        io.emit('puestos_updated', { slotId: id, action: 'limpiar_blacklist' });
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
     }
 });
 
@@ -1109,6 +1206,24 @@ app.get('/api/config/:docId', requireAuth, async (req, res) => {
                     shiftStartTimestamp: cfg.ShiftStartTimestamp ? cfg.ShiftStartTimestamp.toISOString() : null
                 }
             });
+        }
+
+        if (docId === 'production_reports') {
+            // Alimenta la sección de "Eventos de Producción" del panel del
+            // Coordinador (fin de corrida de SKU). Ver POST
+            // /api/lineas/:lineId/sku-finalizado, que inserta en esta tabla.
+            // "reports" (informes agregados por turno) nunca tuvo un escritor
+            // ni siquiera en la era Firestore: se deja como [] a propósito.
+            const eventosResult = await pool.request()
+                .query('SELECT TOP 50 Id, LineId, Sku, EventType, Timestamp FROM EventosProduccion ORDER BY Timestamp DESC');
+            const skuEvents = eventosResult.recordset.map(e => ({
+                id: `event_${e.LineId}_${e.Id}`,
+                lineId: e.LineId,
+                sku: e.Sku,
+                eventType: e.EventType,
+                timestamp: e.Timestamp.toISOString()
+            }));
+            return res.json({ exists: true, data: { reports: [], skuEvents } });
         }
 
         if (docId.startsWith('line_')) {
@@ -1178,6 +1293,64 @@ app.get('/api/config/:docId', requireAuth, async (req, res) => {
 // begin/commit/rollback ni emite eventos socket -eso es responsabilidad del
 // caller, que sabe si además necesita hacer más cosas en la misma transacción
 // (como aplicar supervisores, en el caso de la activación automática)-.
+// Auto-asigna operarios de POOL_ARRANQUE a los puestos fijos/críticos
+// VACANTES de UNA línea (Operador A, Averiero, Operador C). Extraída de
+// ejecutarInyeccionDeTurno -que la aplicaba a todas las líneas activas de
+// una vez, como parte de fijar Sku/Status- para que además pueda invocarse
+// aislada por línea sin tocar el estado de ninguna otra (ver
+// POST /api/lineas/:lineId/auto-asignar-fijos, AUDIT_REPORT.md Fase 1 paso
+// 1.5 Grupo B). Debe llamarse ya dentro de una transacción abierta; no hace
+// begin/commit/rollback ni emite eventos socket -responsabilidad del caller-.
+async function autoAsignarCriticosDeLinea(transaction, lineId) {
+    let totalAsignados = 0;
+    const puestosCriticos = await transaction.request()
+        .input('LineId', sql.NVarChar, lineId)
+        .query(`SELECT * FROM Puestos WITH (UPDLOCK, SERIALIZABLE)
+                WHERE LineId = @LineId AND Estado = 'VACANTE' AND TipoPuesto IN ('Operador A','Averiero','Operador C')`);
+
+    for (const puesto of puestosCriticos.recordset) {
+        const candidatosResult = await transaction.request()
+            .query(`SELECT * FROM Operarios WITH (UPDLOCK, SERIALIZABLE) WHERE EstadoActual = 'POOL_ARRANQUE' AND Activo = 1 ORDER BY Id`);
+
+        // Elegibles = pasan salud/género/regla 24h (canWorkerOccupiedSlot).
+        // Entre los elegibles, se prioriza a quien tenga PuestoBase igual al
+        // TipoPuesto del puesto (match de rol); si nadie coincide -no es
+        // infrecuente, la migración real deja PuestoBase en NULL-, se toma
+        // cualquier elegible disponible (ver notas de alcance del plan).
+        const elegibles = candidatosResult.recordset.filter(op => canWorkerOccupiedSlot(op, puesto).allowed);
+        if (elegibles.length === 0) continue; // Sin candidato apto: queda VACANTE para el supervisor
+
+        const candidato = elegibles.find(op => op.PuestoBase === puesto.TipoPuesto) || elegibles[0];
+
+        await transaction.request()
+            .input('PuestoId', sql.Int, puesto.Id)
+            .input('OperarioId', sql.Int, candidato.Id)
+            .query(`UPDATE Puestos SET
+                        OperarioAsignadoId = @OperarioId,
+                        Estado = 'ASIGNADO',
+                        AssignedAt = SYSUTCDATETIME()
+                    WHERE Id = @PuestoId`);
+
+        await transaction.request()
+            .input('OperarioId', sql.Int, candidato.Id)
+            .input('PuestoId', sql.Int, puesto.Id)
+            .input('Linea', sql.NVarChar, lineId)
+            .query(`UPDATE Operarios SET
+                        EstadoActual = 'ASIGNADO',
+                        CurrentSlotId = @PuestoId,
+                        PhysicalLineLocation = @Linea
+                    WHERE Id = @OperarioId`);
+
+        totalAsignados++;
+    }
+
+    await transaction.request()
+        .input('LineId', sql.NVarChar, lineId)
+        .query(`UPDATE Lineas SET FijosAssigned = 1 WHERE LineId = @LineId`);
+
+    return totalAsignados;
+}
+
 async function ejecutarInyeccionDeTurno(transaction, skuData) {
     const lineasResult = await transaction.request()
         .query('SELECT * FROM Lineas WITH (UPDLOCK, SERIALIZABLE)');
@@ -1239,50 +1412,7 @@ async function ejecutarInyeccionDeTurno(transaction, skuData) {
 
     // Auto-asignación de puestos fijos/críticos en las líneas activas.
     for (const lineId of lineasActivas) {
-        const puestosCriticos = await transaction.request()
-            .input('LineId', sql.NVarChar, lineId)
-            .query(`SELECT * FROM Puestos WITH (UPDLOCK, SERIALIZABLE)
-                    WHERE LineId = @LineId AND Estado = 'VACANTE' AND TipoPuesto IN ('Operador A','Averiero','Operador C')`);
-
-        for (const puesto of puestosCriticos.recordset) {
-            const candidatosResult = await transaction.request()
-                .query(`SELECT * FROM Operarios WITH (UPDLOCK, SERIALIZABLE) WHERE EstadoActual = 'POOL_ARRANQUE' AND Activo = 1 ORDER BY Id`);
-
-            // Elegibles = pasan salud/género/regla 24h (canWorkerOccupiedSlot).
-            // Entre los elegibles, se prioriza a quien tenga PuestoBase igual al
-            // TipoPuesto del puesto (match de rol); si nadie coincide -no es
-            // infrecuente, la migración real deja PuestoBase en NULL-, se toma
-            // cualquier elegible disponible (ver notas de alcance del plan).
-            const elegibles = candidatosResult.recordset.filter(op => canWorkerOccupiedSlot(op, puesto).allowed);
-            if (elegibles.length === 0) continue; // Sin candidato apto: queda VACANTE para el supervisor
-
-            const candidato = elegibles.find(op => op.PuestoBase === puesto.TipoPuesto) || elegibles[0];
-
-            await transaction.request()
-                .input('PuestoId', sql.Int, puesto.Id)
-                .input('OperarioId', sql.Int, candidato.Id)
-                .query(`UPDATE Puestos SET
-                            OperarioAsignadoId = @OperarioId,
-                            Estado = 'ASIGNADO',
-                            AssignedAt = SYSUTCDATETIME()
-                        WHERE Id = @PuestoId`);
-
-            await transaction.request()
-                .input('OperarioId', sql.Int, candidato.Id)
-                .input('PuestoId', sql.Int, puesto.Id)
-                .input('Linea', sql.NVarChar, lineId)
-                .query(`UPDATE Operarios SET
-                            EstadoActual = 'ASIGNADO',
-                            CurrentSlotId = @PuestoId,
-                            PhysicalLineLocation = @Linea
-                        WHERE Id = @OperarioId`);
-
-            totalAsignados++;
-        }
-
-        await transaction.request()
-            .input('LineId', sql.NVarChar, lineId)
-            .query(`UPDATE Lineas SET FijosAssigned = 1 WHERE LineId = @LineId`);
+        totalAsignados += await autoAsignarCriticosDeLinea(transaction, lineId);
     }
 
     // Marca el arranque global del turno (conserva el timestamp original si
@@ -1296,6 +1426,224 @@ async function ejecutarInyeccionDeTurno(transaction, skuData) {
 
     return { totalAsignados, lineasActivas, lineasInactivas };
 }
+
+// OFICIALIZAR ARRANQUE DE UNA LÍNEA: cambia el estado de la línea a ARRANQUE
+// sin tocar los puestos -preserva cualquier asignación manual/QR que el
+// supervisor ya haya hecho en su fase de preparación-. Reemplaza
+// apiService.startLineOfficially, que escribía contra el shim muerto de
+// Firestore (ver AUDIT_REPORT.md, Fase 1 paso 1.5 Grupo B).
+app.post('/api/lineas/:lineId/arrancar', requireAuth, requireRole('COORDINADOR', 'SUPERVISOR'), async (req, res) => {
+    const { lineId } = req.params;
+    const { sku } = req.body;
+    const isCoordinador = req.user.role === 'COORDINADOR';
+    if (!isCoordinador && lineId !== req.user.lineId) {
+        return res.status(403).json({ error: `Prohibido. No tienes permisos sobre la línea ${lineId}.` });
+    }
+    if (!sku) return res.status(400).json({ error: 'sku es requerido.' });
+
+    const transaction = new sql.Transaction(pool);
+    try {
+        await transaction.begin();
+
+        const lineaResult = await transaction.request()
+            .input('LineId', sql.NVarChar, lineId)
+            .query('SELECT LineId FROM Lineas WITH (UPDLOCK, SERIALIZABLE) WHERE LineId = @LineId');
+        if (lineaResult.recordset.length === 0) throw new Error(`Línea ${lineId} no encontrada.`);
+
+        await transaction.request()
+            .input('LineId', sql.NVarChar, lineId)
+            .input('Sku', sql.NVarChar, sku)
+            .query(`UPDATE Lineas SET
+                        Status = 'ARRANQUE',
+                        Sku = @Sku,
+                        TurnStartTimestamp = CASE WHEN TurnStartTimestamp IS NULL THEN SYSUTCDATETIME() ELSE TurnStartTimestamp END,
+                        UpdatedAt = SYSUTCDATETIME()
+                    WHERE LineId = @LineId`);
+
+        await transaction.request()
+            .query(`UPDATE ConfiguracionGlobal SET
+                        ShiftStatus = 'ARRANQUE',
+                        ShiftStartTimestamp = CASE WHEN ShiftStartTimestamp IS NULL THEN SYSUTCDATETIME() ELSE ShiftStartTimestamp END,
+                        UpdatedAt = SYSUTCDATETIME()
+                    WHERE Id = 1`);
+
+        await transaction.commit();
+
+        io.emit('config_updated', {});
+        res.json({ success: true });
+    } catch (err) {
+        if (transaction) {
+            try { await transaction.rollback(); } catch (e) {}
+        }
+        res.status(400).json({ error: err.message });
+    }
+});
+
+// AUTO-ASIGNAR FIJOS/CRÍTICOS DE UNA LÍNEA: se dispara automáticamente desde
+// el HUD del supervisor mientras la línea está en PREPARACION. Reemplaza
+// apiService.autoAssignFixedOperators, que escribía contra el shim muerto de
+// Firestore. No toca Status/Sku de la línea -eso lo deciden /arrancar y /sku-.
+app.post('/api/lineas/:lineId/auto-asignar-fijos', requireAuth, requireRole('COORDINADOR', 'SUPERVISOR'), async (req, res) => {
+    const { lineId } = req.params;
+    const isCoordinador = req.user.role === 'COORDINADOR';
+    if (!isCoordinador && lineId !== req.user.lineId) {
+        return res.status(403).json({ error: `Prohibido. No tienes permisos sobre la línea ${lineId}.` });
+    }
+
+    const transaction = new sql.Transaction(pool);
+    try {
+        await transaction.begin();
+
+        const lineaResult = await transaction.request()
+            .input('LineId', sql.NVarChar, lineId)
+            .query('SELECT LineId FROM Lineas WITH (UPDLOCK, SERIALIZABLE) WHERE LineId = @LineId');
+        if (lineaResult.recordset.length === 0) throw new Error(`Línea ${lineId} no encontrada.`);
+
+        const totalAsignados = await autoAsignarCriticosDeLinea(transaction, lineId);
+
+        await transaction.commit();
+
+        io.emit('puestos_updated', {});
+        io.emit('trabajadores_updated');
+        res.json({ success: true, totalAsignados });
+    } catch (err) {
+        if (transaction) {
+            try { await transaction.rollback(); } catch (e) {}
+        }
+        res.status(400).json({ error: err.message });
+    }
+});
+
+// CAMBIO DE SKU EN CALIENTE: activa/desactiva los puestos SKU-dependientes
+// de la línea según Puestos.RequiredSkusJson, libera hacia el Bolsón L8 a
+// quien ocupara un puesto que deja de requerirse, fija el nuevo SKU y
+// reintenta la auto-asignación de fijos sobre los puestos críticos que
+// hayan quedado vacantes. Reemplaza apiService.transitionLineToSku +
+// activateSkuDependentSlots (Firestore); a diferencia del original, no
+// replica la heurística getSlotsForSku basada en substrings del nombre del
+// SKU -no correspondía a ninguna columna real- y usa en su lugar
+// IsSkuDependent/RequiredSkusJson, que sí existen en el esquema de Puestos.
+app.post('/api/lineas/:lineId/sku', requireAuth, requireRole('COORDINADOR', 'SUPERVISOR'), async (req, res) => {
+    const { lineId } = req.params;
+    const { skuNuevo } = req.body;
+    const isCoordinador = req.user.role === 'COORDINADOR';
+    if (!isCoordinador && lineId !== req.user.lineId) {
+        return res.status(403).json({ error: `Prohibido. No tienes permisos sobre la línea ${lineId}.` });
+    }
+    if (!skuNuevo) return res.status(400).json({ error: 'skuNuevo es requerido.' });
+
+    const transaction = new sql.Transaction(pool);
+    try {
+        await transaction.begin();
+
+        const lineaResult = await transaction.request()
+            .input('LineId', sql.NVarChar, lineId)
+            .query('SELECT LineId FROM Lineas WITH (UPDLOCK, SERIALIZABLE) WHERE LineId = @LineId');
+        if (lineaResult.recordset.length === 0) throw new Error(`Línea ${lineId} no encontrada.`);
+
+        const puestosSkuDep = await transaction.request()
+            .input('LineId', sql.NVarChar, lineId)
+            .query(`SELECT * FROM Puestos WITH (UPDLOCK, SERIALIZABLE) WHERE LineId = @LineId AND IsSkuDependent = 1`);
+
+        let activados = 0, desactivados = 0;
+        for (const puesto of puestosSkuDep.recordset) {
+            let requiredSkus = [];
+            try { requiredSkus = puesto.RequiredSkusJson ? JSON.parse(puesto.RequiredSkusJson) : []; } catch (e) {}
+            const debeEstarActivo = requiredSkus.includes(skuNuevo);
+
+            if (debeEstarActivo && puesto.Estado === 'SUSPENDIDO') {
+                await transaction.request()
+                    .input('PuestoId', sql.Int, puesto.Id)
+                    .query(`UPDATE Puestos SET Estado = 'VACANTE', OperarioAsignadoId = NULL, AssignedAt = NULL WHERE Id = @PuestoId`);
+                activados++;
+            } else if (!debeEstarActivo && puesto.Estado !== 'SUSPENDIDO') {
+                if (puesto.OperarioAsignadoId) {
+                    await transaction.request()
+                        .input('OperarioId', sql.Int, puesto.OperarioAsignadoId)
+                        .query(`UPDATE Operarios SET
+                                    EstadoActual = 'DISPONIBLE_BOLSON',
+                                    CurrentSlotId = NULL,
+                                    PhysicalLineLocation = 'L8'
+                                WHERE Id = @OperarioId`);
+                }
+                await transaction.request()
+                    .input('PuestoId', sql.Int, puesto.Id)
+                    .query(`UPDATE Puestos SET
+                                Estado = 'SUSPENDIDO',
+                                OperarioAsignadoId = NULL,
+                                AssignedAt = NULL,
+                                RelevoSolicitado = 0,
+                                RejectedWorkerIdsJson = NULL
+                            WHERE Id = @PuestoId`);
+                desactivados++;
+            }
+        }
+
+        await transaction.request()
+            .input('LineId', sql.NVarChar, lineId)
+            .input('Sku', sql.NVarChar, skuNuevo)
+            .query(`UPDATE Lineas SET Status = 'ARRANQUE', Sku = @Sku, UpdatedAt = SYSUTCDATETIME() WHERE LineId = @LineId`);
+
+        const totalAsignados = await autoAsignarCriticosDeLinea(transaction, lineId);
+
+        await transaction.commit();
+
+        io.emit('puestos_updated', {});
+        io.emit('trabajadores_updated');
+        io.emit('config_updated', {});
+        res.json({ success: true, activados, desactivados, totalAsignados });
+    } catch (err) {
+        if (transaction) {
+            try { await transaction.rollback(); } catch (e) {}
+        }
+        res.status(400).json({ error: err.message });
+    }
+});
+
+// FIN DE CORRIDA DE SKU: pasa la línea a LIMPIEZA (fase de setup para la
+// siguiente orden) y registra el evento en EventosProduccion, que alimenta
+// GET /api/config/production_reports para el panel del Coordinador.
+// Reemplaza apiService.registerSkuFinishedEvent y el updateDoc inline que
+// HudPlanta.jsx hacía directo contra el shim (AUDIT_REPORT.md C-3).
+app.post('/api/lineas/:lineId/sku-finalizado', requireAuth, requireRole('COORDINADOR', 'SUPERVISOR'), async (req, res) => {
+    const { lineId } = req.params;
+    const { sku } = req.body;
+    const isCoordinador = req.user.role === 'COORDINADOR';
+    if (!isCoordinador && lineId !== req.user.lineId) {
+        return res.status(403).json({ error: `Prohibido. No tienes permisos sobre la línea ${lineId}.` });
+    }
+    if (!sku) return res.status(400).json({ error: 'sku es requerido.' });
+
+    const transaction = new sql.Transaction(pool);
+    try {
+        await transaction.begin();
+
+        const lineaResult = await transaction.request()
+            .input('LineId', sql.NVarChar, lineId)
+            .query('SELECT LineId FROM Lineas WITH (UPDLOCK, SERIALIZABLE) WHERE LineId = @LineId');
+        if (lineaResult.recordset.length === 0) throw new Error(`Línea ${lineId} no encontrada.`);
+
+        await transaction.request()
+            .input('LineId', sql.NVarChar, lineId)
+            .query(`UPDATE Lineas SET Status = 'LIMPIEZA', UpdatedAt = SYSUTCDATETIME() WHERE LineId = @LineId`);
+
+        await transaction.request()
+            .input('LineId', sql.NVarChar, lineId)
+            .input('Sku', sql.NVarChar, sku)
+            .input('CreatedBy', sql.Int, req.user.userId)
+            .query(`INSERT INTO EventosProduccion (LineId, Sku, EventType, CreatedBy) VALUES (@LineId, @Sku, 'SKU_FINALIZADO', @CreatedBy)`);
+
+        await transaction.commit();
+
+        io.emit('config_updated', {});
+        res.json({ success: true });
+    } catch (err) {
+        if (transaction) {
+            try { await transaction.rollback(); } catch (e) {}
+        }
+        res.status(400).json({ error: err.message });
+    }
+});
 
 app.post('/api/coordinador/inyectar-turno', requireAuth, requireRole('COORDINADOR'), async (req, res) => {
     const { skuData } = req.body;
