@@ -3302,50 +3302,17 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
                   </span>
                 </button>
 
-                <button
-                  onClick={async () => {
-                    triggerNativeHapticFeedback('medium');
-                    setProgramingNextDay(true);
-                    try {
-                      const { reprogramPartialNextDayShift } = await import('../services/apiService');
-                      await reprogramPartialNextDayShift(nextDaySkuPlan);
-                      alert("¡Reprogramación Parcial completada! Se recalcularon las celdas desocupadas/no-bloqueadas respetando estrictamente los Candados (Locks) del Coordinador.");
-                    } catch (err) {
-                      alert(`Error al reprogramar parcialmente: ${err.message}`);
-                    } finally {
-                      setProgramingNextDay(false);
-                    }
-                  }}
-                  disabled={programingNextDay}
-                  style={{
-                    flex: 1,
-                    minWidth: '200px',
-                    height: '44px',
-                    padding: '0 18px',
-                    backgroundColor: '#7E22CE',
-                    backgroundImage: 'linear-gradient(135deg, #7E22CE 0%, #6B21A8 100%)',
-                    color: '#FFFFFF',
-                    border: 'none',
-                    borderRadius: '10px',
-                    fontSize: '13px',
-                    fontWeight: 800,
-                    cursor: 'pointer',
-                    boxShadow: '0 4px 12px rgba(126, 34, 206, 0.25)',
-                    transition: 'all 0.2s ease',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    gap: '8px'
-                  }}
-                  id="reprogram-partial-tomorrow-btn"
-                >
-                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                    <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>
-                  </svg>
-                  <span>
-                    {programingNextDay ? "Reprogramando..." : "Reprogramar Parcial (Infracobertura)"}
-                  </span>
-                </button>
+                {/* Antes había aquí un botón "Reprogramar Parcial (Infracobertura)" que llamaba
+                    a apiService.reprogramPartialNextDayShift(), la cual leía/escribía
+                    config/next_day_plan — un doc de Firestore que quedó huérfano tras la
+                    migración a SQL Server (PlanificacionLineas solo guarda SKU/orden/supervisor
+                    por línea, sin granularidad de puesto ni concepto de "lock"). Tras el paso
+                    1.1 (AUDIT_REPORT.md), esa escritura pasó de fallar en silencio a lanzar un
+                    error visible; no existe backend real al que redirigirla sin inventar una
+                    funcionalidad que no está soportada. Se retira en vez de dejar un botón que
+                    promete "respetar candados" que no existen. El flujo real de guardado
+                    (handleSaveNextDayPlan → guardarPlanificacion) sigue disponible dentro del
+                    modal "Planificar Día Siguiente". Ver AUDIT_REPORT.md, Fase 1 paso 1.5. */}
               </>
             )}
           </div>
