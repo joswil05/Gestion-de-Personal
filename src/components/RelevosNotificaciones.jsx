@@ -13,9 +13,10 @@ import {
   confirmTransitWorkerArrival,
   getSlotsInTransitChains,
   clearSlotBlacklist,
-  acceptReturnToBolson
+  acceptReturnToBolson,
+  rejectGeneralTransit
 } from '../services/apiService';
-import { collection, doc, onSnapshot, query, where, updateDoc, serverTimestamp } from 'firebase/firestore';
+import { collection, doc, onSnapshot, query, where } from 'firebase/firestore';
 import { triggerNativeHapticFeedback } from '../skills/capacitor-android-bridge';
 import { initializeConnectivityGuard } from '../skills/state-connectivity-guard';
 
@@ -807,16 +808,8 @@ export default function RelevosNotificaciones({ supervisorLineId }) {
       if (slotId) {
         await rejectErgonomicRelevo(relevistaId, slotId, supervisorLineId);
       } else {
-        // Rechazo de tránsito general: retornar directamente al Bolsón L8 en Firestore
-        const workerRef = doc(db, "trabajadores", relevistaId);
-        await updateDoc(workerRef, {
-          status: "DISPONIBLE_BOLSON",
-          lineaDestinoId: null,
-          targetSlotId: null,
-          currentSlotId: null,
-          physicalLineLocation: "L8",
-          updatedAt: serverTimestamp()
-        });
+        // Rechazo de tránsito general: retornar directamente al Bolsón L8.
+        await rejectGeneralTransit(relevistaId);
       }
       triggerNativeHapticFeedback('confirm');
       setNotification({

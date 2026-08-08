@@ -362,57 +362,23 @@ export async function initializeSingleLineTransaction(lineId, sku) {
 }
 
 /**
- * OFICIALIZADOR DE ARRANQUE DE LÍNEA: Cambia el estado de la línea a ARRANQUE en Firestore,
+ * OFICIALIZADOR DE ARRANQUE DE LÍNEA: Cambia el estado de la línea a ARRANQUE,
  * sin sobreescribir ni borrar ninguna de las asignaciones manuales o por QR que el supervisor
  * ya haya realizado en su fase de preparación.
+ *
+ * NOTA (migración SQL Server, AUDIT_REPORT.md Fase 1 paso 1.5 Grupo B):
+ * reemplaza el writeBatch contra el shim muerto de Firestore por
+ * POST /lineas/:lineId/arrancar (server/server.js), una única transacción
+ * SQL real.
  */
 export async function startLineOfficially(lineId, sku) {
   console.log(`[Oficializador Arranque] Iniciando línea ${lineId} con SKU: ${sku}...`);
-  try {
-    const batch = writeBatch(db);
-
-    // 1. Actualizar el estado de la línea a ARRANQUE en config/line_[lineId]
-    batch.set(doc(db, "config", `line_${lineId}`), {
-      status: "ARRANQUE",
-      sku: sku,
-      updatedAt: serverTimestamp()
-    }, { merge: true });
-
-    // 2. Asegurar que el estado del turno global shift_status se active
-    batch.set(doc(db, "config", "shift_status"), {
-      status: "ARRANQUE",
-      shiftStartTimestamp: serverTimestamp()
-    }, { merge: true });
-
-    // 3. Actualizar global_priority de forma reactiva
-    const globalPriorityRef = doc(db, "config", "global_priority");
-    const globalPriorityDoc = await getDoc(globalPriorityRef);
-    let currentSkuPlan = {};
-    let currentActiveLines = [];
-
-    if (globalPriorityDoc.exists()) {
-      const data = globalPriorityDoc.data();
-      currentSkuPlan = data.skuPlan || {};
-      currentActiveLines = data.activeLines || [];
-    }
-
-    currentSkuPlan[lineId] = sku;
-    if (!currentActiveLines.includes(lineId)) {
-      currentActiveLines.push(lineId);
-    }
-
-    batch.set(globalPriorityRef, {
-      skuPlan: currentSkuPlan,
-      activeLines: currentActiveLines
-    }, { merge: true });
-
-    await batch.commit();
-    console.log(`[Oficializador Arranque] Línea ${lineId} oficializada exitosamente.`);
-    return { success: true };
-  } catch (error) {
-    console.error(`[Oficializador Arranque] Error al oficializar arranque de línea ${lineId}:`, error);
-    throw error;
-  }
+  await apiFetch(`/lineas/${lineId}/arrancar`, {
+    method: "POST",
+    body: JSON.stringify({ sku })
+  });
+  console.log(`[Oficializador Arranque] Línea ${lineId} oficializada exitosamente.`);
+  return { success: true };
 }
 
 /**
@@ -420,130 +386,23 @@ export async function startLineOfficially(lineId, sku) {
  * de la preparación de la línea. Vincula de forma atómica a los operarios fijos/titulares
  * (o reemplazos) que estén presentes en planta a sus celdas críticas, manteniendo la línea
  * en estado "PREPARACION" para que el supervisor continúe con la dotación manual/QR.
+ *
+ * NOTA (migración SQL Server, AUDIT_REPORT.md Fase 1 paso 1.5 Grupo B):
+ * reemplaza el writeBatch contra el shim muerto de Firestore por
+ * POST /lineas/:lineId/auto-asignar-fijos, que reutiliza server-side la
+ * misma lógica de emparejamiento titular/reemplazo que ejecutarInyeccionDeTurno
+ * (Motor 1), acotada a esta única línea (server/server.js,
+ * autoAsignarCriticosDeLinea). El parámetro sku se conserva solo para
+ * logging del llamador; la asignación de críticos no depende de él.
  */
 export async function autoAssignFixedOperators(lineId, sku) {
   console.log(`[AutoAsignador Fijos] Iniciando auto-asignación para línea ${lineId} (SKU: ${sku})...`);
-  
-  try {
-    // 1. Obtener todos los trabajadores que registraron asistencia (POOL_ARRANQUE)
-    const snapshotTrabajadores = await getDocs(trabajadoresColl);
-    const trabajadoresPresentes = {};
-    snapshotTrabajadores.forEach(docSnap => {
-      const data = docSnap.data();
-      if (data.status === "POOL_ARRANQUE" || data.status === "DISPONIBLE_BOLSON") {
-        trabajadoresPresentes[docSnap.id] = { id: docSnap.id, ...data };
-      }
-    });
-
-    // 2. Obtener los puestos asociados a esta línea
-    const qSlots = query(puestosColl, where("lineId", "==", lineId));
-    const snapshotPuestos = await getDocs(qSlots);
-    const puestosDeLinea = [];
-    snapshotPuestos.forEach(docSnap => {
-      puestosDeLinea.push({ id: docSnap.id, ...docSnap.data() });
-    });
-
-    const batch = writeBatch(db);
-    const asignadosEnLote = new Set();
-
-    // 3. Procesar puestos
-    for (const puesto of puestosDeLinea) {
-      const esPuestoFijoCritico = CRITICAL_TIPOS_PUESTO.includes(puesto.tipoPuesto);
-      
-      if (!esPuestoFijoCritico) {
-        continue; // Los puestos varios se quedan vacantes en preparación
-      }
-
-      // DEFENSA ABSOLUTA DE SEGURIDAD OPERATIVA: Si el puesto ya está asignado en Firestore, omitimos para no destruirlo
-      if (puesto.idWorkerCurrent && puesto.status === "ASIGNADO") {
-        console.log(`[AutoAsignador Fijos] El puesto ${puesto.id} ya se encuentra ASIGNADO a ${puesto.idWorkerCurrent}. Omitiendo.`);
-        continue;
-      }
-
-      // Si es puesto fijo crítico, intentar asignar titular
-      const titularId = puesto.idWorkerOriginal;
-      const titularPresente = titularId && trabajadoresPresentes[titularId] && !asignadosEnLote.has(titularId);
-
-      if (titularPresente) {
-        batch.update(doc(db, "puestos", puesto.id), {
-          status: "ASIGNADO",
-          idWorkerCurrent: titularId,
-          idWorkerOriginal: titularId,
-          asignadoEnSegundoVirtual: serverTimestamp(),
-          updatedAt: serverTimestamp()
-        });
-
-        batch.update(doc(db, "trabajadores", titularId), {
-          status: "ASIGNADO",
-          currentSlotId: puesto.id,
-          lineaDestinoId: null,
-          physicalLineLocation: lineId,
-          updatedAt: serverTimestamp()
-        });
-
-        asignadosEnLote.add(titularId);
-      } else {
-        // LÓGICA INTELIGENTE DE REEMPLAZO TÉCNICO:
-        // 1. Buscamos primero un operario libre del mismo rol técnico presente y desocupado
-        let reemplazoId = Object.keys(trabajadoresPresentes).find(id => {
-          const t = trabajadoresPresentes[id];
-          return t.role === puesto.tipoPuesto && !asignadosEnLote.has(id);
-        });
-
-        // 2. Si no, buscamos un 'Operador B' calificado
-        if (!reemplazoId) {
-          reemplazoId = Object.keys(trabajadoresPresentes).find(id => {
-            const t = trabajadoresPresentes[id];
-            return t.role === "Operador B" && !asignadosEnLote.has(id);
-          });
-        }
-
-        if (reemplazoId) {
-          batch.update(doc(db, "puestos", puesto.id), {
-            status: "ASIGNADO",
-            idWorkerCurrent: reemplazoId,
-            idWorkerOriginal: titularId,
-            asignadoEnSegundoVirtual: serverTimestamp(),
-            updatedAt: serverTimestamp(),
-            microCopiaContextual: "Reemplazo automático - Titular ausente"
-          });
-
-          batch.update(doc(db, "trabajadores", reemplazoId), {
-            status: "ASIGNADO",
-            currentSlotId: puesto.id,
-            lineaDestinoId: null,
-            physicalLineLocation: lineId,
-            updatedAt: serverTimestamp()
-          });
-
-          asignadosEnLote.add(reemplazoId);
-        } else {
-          // Queda en alerta vacante
-          batch.update(doc(db, "puestos", puesto.id), {
-            status: "ALERTA_VACANTE",
-            idWorkerCurrent: null,
-            idWorkerOriginal: titularId,
-            updatedAt: serverTimestamp(),
-            microCopiaContextual: "Crítico vacante sin relevo disponible"
-          });
-        }
-      }
-    }
-
-    // 4. Actualizar el documento config/line_[lineId] indicando que los fijos ya fueron asignados
-    batch.set(doc(db, "config", `line_${lineId}`), {
-      fijosAssigned: true,
-      sku: sku,
-      updatedAt: serverTimestamp()
-    }, { merge: true });
-
-    await batch.commit();
-    console.log(`[AutoAsignador Fijos] Línea ${lineId} fijos asignados exitosamente.`);
-    return { success: true, totalAsignados: asignadosEnLote.size };
-  } catch (error) {
-    console.error(`[AutoAsignador Fijos] Error asignando fijos de línea ${lineId}:`, error);
-    throw error;
-  }
+  const payload = await apiFetch(`/lineas/${lineId}/auto-asignar-fijos`, {
+    method: "POST",
+    body: JSON.stringify({ sku })
+  });
+  console.log(`[AutoAsignador Fijos] Línea ${lineId}: ${payload?.totalAsignados ?? 0} fijos asignados.`);
+  return { success: true, totalAsignados: payload?.totalAsignados ?? 0 };
 }
 
 /**
@@ -681,6 +540,36 @@ export async function acceptReturnToBolson(workerId) {
   });
 
   console.log(`[Retorno Bolsón] ÉXITO: Operario ${workerId} devuelto a DISPONIBLE_BOLSON.`);
+  return { success: true };
+}
+
+/**
+ * RECHAZAR TRÁNSITO GENERAL (sin puesto predefinido)
+ * El operario venía EN_TRANSITO hacia esta línea a llegada "de pasillo"
+ * (targetSlotId nulo) y el supervisor destino rechaza el arribo: regresa de
+ * inmediato a DISPONIBLE_BOLSON en L8.
+ *
+ * NOTA (migración SQL Server, AUDIT_REPORT.md C-3 / Fase 1 paso 1.5):
+ * reemplaza el updateDoc directo contra el shim muerto de Firestore que
+ * RelevosNotificaciones.jsx usaba para este caso (a diferencia de
+ * rejectErgonomicRelevo, que sí tiene un slotId y por tanto una blacklist
+ * que llenar).
+ *
+ * @param {string} workerId ID del operario
+ */
+export async function rejectGeneralTransit(workerId) {
+  if (!workerId) {
+    throw new Error("ID del operario no provisto.");
+  }
+
+  console.log(`[Rechazo Tránsito] Regresando a L8 al operario: ${workerId}`);
+
+  await apiFetch("/puestos/relevo", {
+    method: "POST",
+    body: JSON.stringify({ action: "rechazar_transito_general", workerId: Number(workerId) })
+  });
+
+  console.log(`[Rechazo Tránsito] ÉXITO: Operario ${workerId} devuelto a DISPONIBLE_BOLSON.`);
   return { success: true };
 }
 
@@ -902,22 +791,19 @@ export async function executeLocalSwapTransaction(slotIdA, slotIdB, lineId) {
 /**
  * LIMPIAR LISTA DE RECHAZADOS (BLACKLIST) DE UN PUESTO ESPECÍFICO
  * Permite restablecer el pool de candidatos disponibles para un puesto fatigado.
- * 
+ *
+ * NOTA (migración SQL Server, AUDIT_REPORT.md C-4 / Fase 1 paso 1.5 Grupo B):
+ * antes hacía updateDoc(doc(db,"puestos",slotId), {rejectedWorkerIds:[]}), que
+ * el shim reinterpretaba como una asignación real mal formada
+ * (POST /puestos/relevo con action:'asignar', newWorkerId:null). Ahora pega
+ * contra un endpoint dedicado que no puede confundirse con una asignación.
+ *
  * @param {string} slotId ID del puesto
  */
 export async function clearSlotBlacklist(slotId) {
   if (!slotId) throw new Error("ID del puesto no proporcionado.");
-  const puestoRef = doc(db, "puestos", slotId);
-  try {
-    await updateDoc(puestoRef, {
-      rejectedWorkerIds: [],
-      updatedAt: serverTimestamp()
-    });
-    return { success: true };
-  } catch (error) {
-    console.error("[clearSlotBlacklist] Error:", error.message);
-    throw error;
-  }
+  await apiFetch(`/puestos/${slotId}/limpiar-blacklist`, { method: "POST" });
+  return { success: true };
 }
 
 /**
@@ -2085,6 +1971,15 @@ export async function endLineParoTransaction(lineId) {
  * CAMBIO ATÓMICO DE SKU EN VIVO:
  * Realiza la transición de puestos de una línea según el nuevo SKU, liberando operarios
  * excedentes al Bolsón L8 y habilitando las nuevas vacantes.
+ *
+ * NOTA (migración SQL Server, AUDIT_REPORT.md Fase 1 paso 1.5 Grupo B):
+ * reemplaza el runTransaction contra el shim muerto de Firestore por
+ * POST /lineas/:lineId/sku (server/server.js), una única transacción SQL
+ * real que activa/desactiva puestos SKU-dependientes según
+ * Puestos.IsSkuDependent/RequiredSkusJson y reintenta la auto-asignación de
+ * críticos. A propósito NO replica getSlotsForSku (más abajo): esa
+ * heurística basada en substrings del nombre del SKU (RM/SV/BOST/EC/MX/
+ * AQUA) no corresponde a ninguna columna real del esquema migrado.
  */
 export async function transitionLineToSku(lineId, currentSku, nextSku) {
   if (!lineId || !nextSku) {
@@ -2092,122 +1987,13 @@ export async function transitionLineToSku(lineId, currentSku, nextSku) {
   }
   console.log(`[Transacción SKU] Línea ${lineId}: ${currentSku || 'Ninguno'} -> ${nextSku}`);
 
-  try {
-    // 1. Obtener todos los puestos de la línea
-    const puestosSnap = await getDocs(query(puestosColl, where("lineId", "==", lineId)));
-    const allSlots = [];
-    puestosSnap.forEach(snap => {
-      allSlots.push({ id: snap.id, ...snap.data(), ref: snap.ref });
-    });
+  const payload = await apiFetch(`/lineas/${lineId}/sku`, {
+    method: "POST",
+    body: JSON.stringify({ skuAnterior: currentSku || null, skuNuevo: nextSku })
+  });
 
-    // 2. Filtrar los puestos activos para el SKU actual y el SKU siguiente
-    const currentActiveSlots = getSlotsForSku(currentSku, allSlots);
-    const nextActiveSlots = getSlotsForSku(nextSku, allSlots);
-
-    const nextActiveIds = new Set(nextActiveSlots.map(s => s.id));
-    const currentActiveIds = new Set(currentActiveSlots.map(s => s.id));
-
-    // Puestos a desactivar: estaban en el actual pero no están en el nuevo
-    const slotsToDisable = currentActiveSlots.filter(s => !nextActiveIds.has(s.id));
-
-    // Puestos a activar: están en el nuevo pero no estaban en el actual
-    const slotsToEnable = nextActiveSlots.filter(s => !currentActiveIds.has(s.id));
-
-    const result = await runTransaction(db, async (transaction) => {
-      // 3. Liberar operarios de puestos obsoletos directamente al Bolsón L8
-      for (const slot of slotsToDisable) {
-        if (slot.idWorkerCurrent) {
-          const workerId = slot.idWorkerCurrent;
-          const workerRef = doc(db, "trabajadores", workerId);
-          const workerDoc = await transaction.get(workerRef);
-          
-          if (workerDoc.exists()) {
-            transaction.update(workerRef, {
-              status: "DISPONIBLE_BOLSON",
-              currentSlotId: null,
-              lineaDestinoId: null,
-              physicalLineLocation: "L8", // Directo al Bolsón L8 general
-              updatedAt: serverTimestamp()
-            });
-          }
-
-          transaction.update(slot.ref, {
-            status: "VACANTE",
-            idWorkerCurrent: null,
-            relevoSolicitado: false,
-            updatedAt: serverTimestamp(),
-            microCopiaContextual: `Liberado a Bolsón L8 por cambio de SKU de ${currentSku} a ${nextSku}`
-          });
-          console.log(`[Transacción SKU] Operario ${workerId} liberado de ${slot.id} a L8.`);
-        }
-      }
-
-      // 4. Preparar nuevos puestos vacantes
-      for (const slot of slotsToEnable) {
-        transaction.update(slot.ref, {
-          status: "VACANTE",
-          idWorkerCurrent: null,
-          relevoSolicitado: false,
-          updatedAt: serverTimestamp(),
-          microCopiaContextual: `Puesto activado por cambio de SKU a ${nextSku}`
-        });
-      }
-
-      // 5. Actualizar el documento de estado de la línea
-      const lineDocRef = doc(db, "config", `line_${lineId}`);
-      transaction.set(lineDocRef, {
-        status: "ARRANQUE",
-        sku: nextSku,
-        updatedAt: serverTimestamp()
-      }, { merge: true });
-
-      // 6. Actualizar global_priority de forma reactiva
-      const globalPriorityRef = doc(db, "config", "global_priority");
-      const globalPriorityDoc = await transaction.get(globalPriorityRef);
-      let currentSkuPlan = {};
-      let currentActiveLines = [];
-
-      if (globalPriorityDoc.exists()) {
-        const data = globalPriorityDoc.data();
-        currentSkuPlan = data.skuPlan || {};
-        currentActiveLines = data.activeLines || [];
-      }
-
-      currentSkuPlan[lineId] = nextSku;
-      if (!currentActiveLines.includes(lineId)) {
-        currentActiveLines.push(lineId);
-      }
-
-      transaction.set(globalPriorityRef, {
-        skuPlan: currentSkuPlan,
-        activeLines: currentActiveLines
-      }, { merge: true });
-
-      console.log(`[Transacción SKU] Línea ${lineId} cambiada exitosamente a ${nextSku}`);
-      return { success: true };
-    });
-
-    console.log(`[Transacción SKU] Transición completada en Firestore. Ejecutando auto-asignación de fijos para ${nextSku}...`);
-    try {
-      await autoAssignFixedOperators(lineId, nextSku);
-      console.log(`[Transacción SKU] Auto-asignación de fijos completada con éxito.`);
-    } catch (assignError) {
-      console.error(`[Transacción SKU] Error en auto-asignación de fijos pos-transición:`, assignError);
-    }
-
-    // Activar/desactivar puestos SKU-dependientes según el nuevo SKU
-    try {
-      const skuResult = await activateSkuDependentSlots(lineId, nextSku);
-      console.log(`[Transacción SKU] Puestos SKU-dependientes procesados: ${skuResult.activated} activados, ${skuResult.deactivated} desactivados.`);
-    } catch (skuError) {
-      console.error(`[Transacción SKU] Error en activación de puestos SKU-dependientes:`, skuError);
-    }
-
-    return result;
-  } catch (error) {
-    console.error(`[Transacción SKU] Error al realizar transición en línea ${lineId}:`, error);
-    throw error;
-  }
+  console.log(`[Transacción SKU] Línea ${lineId} cambiada a ${nextSku}: ${payload?.activados ?? 0} puestos activados, ${payload?.desactivados ?? 0} desactivados, ${payload?.totalAsignados ?? 0} fijos re-asignados.`);
+  return { success: true };
 }
 
 /**
@@ -2332,22 +2118,22 @@ export function getBestSuggestionsForSlot(slot, allSlots, allWorkers, priorityOr
 }
 
 /**
- * FASE 2: GESTIÓN DE DOBLE TURNO
- * Actualiza el estado de doble turno en caliente para un operario.
+ * GESTIÓN DE DOBLE TURNO
+ * Actualiza la marca de doble turno en caliente para un operario (pre-selección
+ * de conveniencia para el modal de Cierre de Turno; el efecto real ocurre en
+ * closeShiftForLineTransaction, más abajo).
+ *
+ * NOTA (migración SQL Server, AUDIT_REPORT.md Fase 1 paso 1.5 Grupo B):
+ * reemplaza el updateDoc contra el shim muerto de Firestore por
+ * PATCH /operarios/:id/doble-turno (Operarios.DobleTurnoActivo).
  */
 export async function updateWorkerDobleTurno(workerId, dobleTurnoActivo) {
   console.log(`[Doble Turno] Actualizando doble turno para ${workerId} a ${dobleTurnoActivo}`);
-  try {
-    const workerRef = doc(db, "trabajadores", workerId);
-    await updateDoc(workerRef, { 
-      dobleTurnoActivo,
-      updatedAt: serverTimestamp()
-    });
-    return { success: true };
-  } catch (error) {
-    console.error(`[Doble Turno] Error al actualizar doble turno para ${workerId}:`, error);
-    throw error;
-  }
+  await apiFetch(`/operarios/${workerId}/doble-turno`, {
+    method: "PATCH",
+    body: JSON.stringify({ activo: !!dobleTurnoActivo })
+  });
+  return { success: true };
 }
 
 /**
@@ -2643,29 +2429,24 @@ export async function activateSkuDependentSlots(lineId, newSku) {
 
 /**
  * Registra explícitamente el evento de finalización de SKU de una línea
- * en la colección config/production_reports para visibilidad en vivo del coordinador.
- * 
+ * para visibilidad en vivo del coordinador (panel de Eventos de Producción).
+ *
+ * NOTA (migración SQL Server, AUDIT_REPORT.md Fase 1 paso 1.5 Grupo B):
+ * reemplaza el setDoc contra el shim muerto de Firestore por
+ * POST /lineas/:lineId/sku-finalizado, que además pasa la línea a estado
+ * LIMPIEZA e inserta en la tabla real EventosProduccion (capada a los 50
+ * más recientes por GET /api/config/production_reports).
+ *
  * @param {string} lineId Ej: "L4"
  * @param {string} sku Ej: "SKU-990-BOST"
  */
 export async function registerSkuFinishedEvent(lineId, sku) {
   console.log(`[SKU Event] Registrando finalización de SKU ${sku} en línea ${lineId}...`);
   try {
-    const reportsDocRef = doc(db, "config", "production_reports");
-    const reportsDocSnap = await getDoc(reportsDocRef);
-    let eventsList = [];
-    if (reportsDocSnap.exists()) {
-      eventsList = reportsDocSnap.data().skuEvents || [];
-    }
-    eventsList.unshift({
-      id: `event_${lineId}_${Date.now()}`,
-      lineId,
-      sku,
-      eventType: "SKU_FINALIZADO",
-      timestamp: new Date().toISOString()
+    await apiFetch(`/lineas/${lineId}/sku-finalizado`, {
+      method: "POST",
+      body: JSON.stringify({ sku })
     });
-    if (eventsList.length > 50) eventsList = eventsList.slice(0, 50);
-    await setDoc(reportsDocRef, { skuEvents: eventsList }, { merge: true });
     return { success: true };
   } catch (error) {
     console.error("[registerSkuFinishedEvent] Error:", error);
