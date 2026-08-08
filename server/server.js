@@ -44,6 +44,19 @@ async function connectDB() {
 }
 connectDB();
 
+// Antes, 15 handlers devolvían res.status(500).json({ error: err.message })
+// directo: err.message es del driver de SQL Server y puede incluir nombres
+// de tabla/columna, restricciones violadas o fragmentos de la query
+// (AUDIT_REPORT.md M-5). El detalle se loguea server-side; al cliente solo
+// llega un mensaje genérico. Los errores de NEGOCIO (validaciones propias,
+// típicamente con status 400 o err.statusCode) no pasan por aquí — esos sí
+// deben seguir llegando al cliente tal cual (p. ej. "nómina duplicada",
+// "cargo inválido"): la UI de Gestión de Personal depende de leerlos.
+const errorServidor = (res, err, contexto) => {
+    console.error(`[${contexto}]`, err);
+    res.status(500).json({ error: 'Error interno del servidor.' });
+};
+
 // ==========================================
 // ENDPOINTS DE LA API (REST)
 // ==========================================
@@ -141,7 +154,7 @@ app.post('/api/auth/login', loginLimiter, async (req, res) => {
             forcePasswordChange: user.MustChangePassword === 1
         });
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        errorServidor(res, err, 'POST /api/auth/login');
     }
 });
 
@@ -178,7 +191,7 @@ app.get('/api/operarios/pool', requireAuth, async (req, res) => {
         });
         res.json(poolWorkers);
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        errorServidor(res, err, 'GET /api/operarios/pool');
     }
 });
 
@@ -208,7 +221,7 @@ app.get('/api/operarios', requireAuth, async (req, res) => {
         const result = await request.query(query);
         res.json(result.recordset);
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        errorServidor(res, err, 'GET /api/operarios');
     }
 });
 
@@ -261,7 +274,7 @@ app.get('/api/operarios/gestion', requireAuth, requireRole('COORDINADOR'), async
         });
         res.json(operarios);
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        errorServidor(res, err, 'GET /api/operarios/gestion');
     }
 });
 
@@ -295,7 +308,7 @@ app.post('/api/operarios', requireAuth, requireRole('COORDINADOR'), async (req, 
         if (/UNIQUE|duplicate key|violation of UNIQUE/i.test(err.message)) {
             return res.status(400).json({ error: `Ya existe un operario con el número de nómina "${numeroNomina}".` });
         }
-        res.status(500).json({ error: err.message });
+        errorServidor(res, err, 'POST /api/operarios');
     }
 });
 
@@ -404,7 +417,7 @@ app.patch('/api/operarios/:id/doble-turno', requireAuth, requireRole('COORDINADO
         io.emit('trabajadores_updated');
         res.json({ success: true });
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        errorServidor(res, err, 'PATCH /api/operarios/:id/doble-turno');
     }
 });
 
@@ -513,7 +526,7 @@ app.get('/api/programa', requireAuth, async (req, res) => {
 
         res.json(orders);
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        errorServidor(res, err, 'GET /api/programa');
     }
 });
 
@@ -576,7 +589,7 @@ app.get('/api/historial', requireAuth, async (req, res) => {
             lineStats
         });
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        errorServidor(res, err, 'GET /api/historial');
     }
 });
 
@@ -604,7 +617,7 @@ app.post('/api/supervisores/asignar', requireAuth, requireRole('COORDINADOR'), a
 
         res.json({ success: true });
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        errorServidor(res, err, 'POST /api/supervisores/asignar');
     }
 });
 
@@ -741,7 +754,7 @@ app.get('/api/puestos', requireAuth, async (req, res) => {
         });
         res.json(puestos);
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        errorServidor(res, err, 'GET /api/puestos');
     }
 });
 
@@ -1184,7 +1197,7 @@ app.post('/api/puestos/:id/limpiar-blacklist', requireAuth, requireRole('COORDIN
         io.emit('puestos_updated', { slotId: id, action: 'limpiar_blacklist' });
         res.json({ success: true });
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        errorServidor(res, err, 'POST /api/puestos/:id/limpiar-blacklist');
     }
 });
 
@@ -1306,7 +1319,7 @@ app.get('/api/config/:docId', requireAuth, async (req, res) => {
         // Documento de config desconocido: comportamiento neutro (no existe)
         return res.json({ exists: false, data: {} });
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        errorServidor(res, err, 'GET /api/config/:docId');
     }
 });
 
@@ -1753,7 +1766,7 @@ app.get('/api/planificacion', requireAuth, async (req, res) => {
             aplicadoEn: r.AplicadoEn ? r.AplicadoEn.toISOString() : null
         })));
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        errorServidor(res, err, 'GET /api/planificacion');
     }
 });
 
@@ -2383,7 +2396,7 @@ app.get('/api/supervisores/publico', async (req, res) => {
 
         res.json(formatted);
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        errorServidor(res, err, 'GET /api/supervisores/publico');
     }
 });
 
@@ -2423,7 +2436,7 @@ app.get('/api/supervisores', requireAuth, requireRole('COORDINADOR'), async (req
         
         res.json(formatted);
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        errorServidor(res, err, 'GET /api/supervisores');
     }
 });
 
