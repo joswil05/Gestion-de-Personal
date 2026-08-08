@@ -3451,46 +3451,46 @@ export default function PanelCoordinador({ coordinatorName, onLogout, isOffline 
                     {/* ZONA B: Center */}
                     <ZoneBLine>
                       <LineTextSku>{stats.sku}</LineTextSku>
-                      {viewDay === 'NEXT_DAY' ? (
-                        <div 
-                          onClick={(e) => {
-                            e.stopPropagation(); // Evita redirigir a Puestos
-                            handleOpenEditSupervisor(lineId);
-                          }}
-                          style={{
-                            display: 'inline-flex',
-                            alignItems: 'center',
-                            gap: '4px',
-                            cursor: 'pointer',
-                            marginTop: '4px',
-                            color: stats.supervisor === "Sin Asignar" ? '#2563EB' : 'var(--colors-textSecondary, #475569)',
-                            fontSize: '11px',
-                            fontWeight: stats.supervisor === "Sin Asignar" ? 700 : 500,
-                            padding: stats.supervisor === "Sin Asignar" ? '2px 6px' : '0',
-                            border: stats.supervisor === "Sin Asignar" ? '1px dashed #2563EB' : 'none',
-                            borderRadius: '4px',
-                            backgroundColor: stats.supervisor === "Sin Asignar" ? 'rgba(37, 99, 235, 0.05)' : 'transparent',
-                            width: 'fit-content'
-                          }}
-                        >
-                          {stats.supervisor === "Sin Asignar" ? (
-                            <>
-                              <span>+ Asignar Supervisor</span>
-                            </>
-                          ) : (
-                            <>
-                              <span>Sup: {stats.supervisor}</span>
-                              <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ marginLeft: '2px' }}>
-                                <path d="M12 20h9M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
-                              </svg>
-                            </>
-                          )}
-                        </div>
-                      ) : (
-                        <LineTextSup unassigned={stats.supervisor === "Sin Asignar"}>
-                          Sup: {stats.supervisor}
-                        </LineTextSup>
-                      )}
+                      {/* Asignación INMEDIATA de supervisor (POST /api/supervisores/asignar,
+                          vía handleOpenEditSupervisor/handleSaveSupervisor). Antes este
+                          disparador solo existía en la vista NEXT_DAY aunque la acción que
+                          dispara es de hoy, no del plan de mañana — en la vista TODAY el
+                          supervisor se mostraba como texto plano sin forma de asignarlo desde
+                          aquí. Se habilita en ambas vistas: es la misma acción real siempre. */}
+                      <div
+                        onClick={(e) => {
+                          e.stopPropagation(); // Evita redirigir a Puestos
+                          handleOpenEditSupervisor(lineId);
+                        }}
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '4px',
+                          cursor: 'pointer',
+                          marginTop: '4px',
+                          color: stats.supervisor === "Sin Asignar" ? '#2563EB' : 'var(--colors-textSecondary, #475569)',
+                          fontSize: '11px',
+                          fontWeight: stats.supervisor === "Sin Asignar" ? 700 : 500,
+                          padding: stats.supervisor === "Sin Asignar" ? '2px 6px' : '0',
+                          border: stats.supervisor === "Sin Asignar" ? '1px dashed #2563EB' : 'none',
+                          borderRadius: '4px',
+                          backgroundColor: stats.supervisor === "Sin Asignar" ? 'rgba(37, 99, 235, 0.05)' : 'transparent',
+                          width: 'fit-content'
+                        }}
+                      >
+                        {stats.supervisor === "Sin Asignar" ? (
+                          <>
+                            <span>+ Asignar Supervisor</span>
+                          </>
+                        ) : (
+                          <>
+                            <span>Sup: {stats.supervisor}</span>
+                            <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ marginLeft: '2px' }}>
+                              <path d="M12 20h9M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
+                            </svg>
+                          </>
+                        )}
+                      </div>
                     </ZoneBLine>
                     
                     {/* ZONA C: Right */}
