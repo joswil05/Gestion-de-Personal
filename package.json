@@ -8,8 +8,6 @@
     "dev": "vite",
     "build": "vite build && node scripts/verify-build.js",
     "check-build": "node scripts/verify-build.js",
-    "test:security": "node scripts/test-security-suite.js",
-    "test:unit-functions": "node functions/test-standalone.cjs",
     "preview": "vite preview"
   },
   "repository": {
@@ -27,6 +25,7 @@
     "@capacitor/barcode-scanner": "^3.0.2",
     "@capacitor/network": "^8.0.1",
     "@stitches/react": "^1.2.8",
+    "html5-qrcode": "^2.3.8",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
     "socket.io-client": "^4.8.3"
